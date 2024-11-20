@@ -5,7 +5,7 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>group.gnometrading</groupId>
-    <artifactId>ExchangeGateways</artifactId>
+    <artifactId>gnome-gateways</artifactId>
     <version>1.0.0-SNAPSHOT</version>
 
     <properties>
@@ -13,6 +13,20 @@
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
+
+    <scm>
+        <connection>scm:git:git@github.com:gnome-trading-group/gnome-gateways.git</connection>
+        <developerConnection>scm:git:git@github.com:gnome-trading-group/gnome-gateways.git</developerConnection>
+        <tag>HEAD</tag>
+    </scm>
+
+    <distributionManagement>
+        <repository>
+            <id>github</id>
+            <name>GitHub GTG Apache Maven Packages</name>
+            <url>https://maven.pkg.github.com/gnome-trading-group/gnome-gateways</url>
+        </repository>
+    </distributionManagement>
 
     <repositories>
         <repository>
@@ -34,9 +48,30 @@
             <version>1.2.17</version>
         </dependency>
         <dependency>
+            <groupId>group.gnometrading</groupId>
+            <artifactId>gnome-networking</artifactId>
+            <version>1.0.5</version>
+        </dependency>
+        <dependency>
+            <groupId>group.gnometrading</groupId>
+            <artifactId>gnome-core</artifactId>
+            <version>1.0.18</version>
+        </dependency>
+        <dependency>
+            <groupId>group.gnometrading</groupId>
+            <artifactId>gnome-registry</artifactId>
+            <version>1.0.0</version>
+        </dependency>
+        <dependency>
             <groupId>net.openhft</groupId>
             <artifactId>chronicle-logger-slf4j</artifactId>
             <version>4.22ea6</version>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.10.2</version>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 

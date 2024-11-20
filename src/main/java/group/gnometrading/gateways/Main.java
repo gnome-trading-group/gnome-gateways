@@ -12,11 +12,11 @@ import java.util.ArrayList;
 
 public class Main {
     public static void main(String[] args) {
+        final short BEGIN_STRING_SHORT = '8' << 8 | '=';
         final String channelId = "aeron:ipc";
         final String message = "This is the message to transport.";
         final int NUM_MESSAGES = 1_000_000;
         final int NUM_SUBS = 10;
-        MessageHeaderDecoder
 
         final ShutdownSignalBarrier barrier = new ShutdownSignalBarrier();
 
