@@ -10,7 +10,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.List;
 
-public abstract class GenericSocketMarketInboundGateway<T extends Resettable> extends MarketInboundGateway<T> {
+public abstract class GenericSocketMarketInboundGateway<T extends Resettable> extends MarketInboundGateway<T> implements SocketAgent {
 
     protected final SocketClient socketClient;
 

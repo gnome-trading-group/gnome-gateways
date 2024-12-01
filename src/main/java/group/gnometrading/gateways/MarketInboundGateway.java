@@ -3,14 +3,14 @@ package group.gnometrading.gateways;
 import group.gnometrading.gateways.codecs.Decoder;
 import group.gnometrading.objects.MarketUpdateEncoder;
 import group.gnometrading.sm.Listing;
-import group.gnometrading.utils.Resettable;
 import io.aeron.Publication;
+import org.agrona.concurrent.Agent;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.List;
 
-public abstract class MarketInboundGateway<T extends Resettable> implements SocketAgent {
+public abstract class MarketInboundGateway<T> implements Agent {
 
     private final Publication publication;
     protected final MarketUpdateEncoder marketUpdateEncoder;
@@ -33,7 +33,7 @@ public abstract class MarketInboundGateway<T extends Resettable> implements Sock
 
     @Override
     public int doWork() throws Exception {
-        assert publication.isConnected(); // TODO: What to test here?
+//        assert publication.isConnected(); // TODO: What to test here?
         final ByteBuffer input = readSocket();
         while (input != null && input.hasRemaining() && this.decoder.decode(input, message)) {
             handleGatewayMessage(message);

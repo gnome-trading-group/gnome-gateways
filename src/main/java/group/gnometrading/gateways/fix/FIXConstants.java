@@ -3,16 +3,16 @@ package group.gnometrading.gateways.fix;
 import java.nio.ByteBuffer;
 
 public class FIXConstants {
-    static final int CHECKSUM_LENGTH = 7; // 35=123|
-    static final byte EQUALS = '=';
-    static final byte SOH = 1;
-    static final byte YES = 'Y';
-    static final byte NO = 'N';
-    static final short BEGIN_STRING_SHORT = '8' << 8 | '=';
-    static final short BODY_LENGTH_SHORT = '9' << 8 | '=';
-    static final byte[] BEGIN_STRING_BYTES = { '8', '=' };
-    static final byte[] BODY_LENGTH_BYTES = { '9', '=' };
-    static final byte[] CHECK_SUM_BYTES = { '1', '0', '=' };
+    public static final int CHECKSUM_LENGTH = 7; // 35=123|
+    public static final byte EQUALS = '=';
+    public static final byte SOH = 1;
+    public static final byte YES = 'Y';
+    public static final byte NO = 'N';
+    public static final short BEGIN_STRING_SHORT = '8' << 8 | '=';
+    public static final short BODY_LENGTH_SHORT = '9' << 8 | '=';
+    public static final byte[] BEGIN_STRING_BYTES = { '8', '=' };
+    public static final byte[] BODY_LENGTH_BYTES = { '9', '=' };
+    public static final byte[] CHECK_SUM_BYTES = { '1', '0', '=' };
 
     static long sum(final ByteBuffer buffer, final int offset, final int length) {
         long sum = 0;

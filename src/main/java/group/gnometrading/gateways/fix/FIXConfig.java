@@ -14,7 +14,7 @@ public record FIXConfig(
 ) {
 
     static final int DEFAULT_MAX_TAG_CAPACITY = 100;
-    static final int DEFAULT_VALUE_BUFFER_CAPACITY = 64;
+    static final int DEFAULT_VALUE_BUFFER_CAPACITY = 128;
     static final int DEFAULT_WRITE_BUFFER_CAPACITY = 1024; // 1kb
     static final boolean DEFAULT_ENABLE_CHECKSUM = false;
     static final FIXVersion DEFAULT_SESSION_VERSION = FIXVersion.FIXT_1_1;

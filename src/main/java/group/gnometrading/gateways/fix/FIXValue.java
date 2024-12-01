@@ -299,6 +299,20 @@ public class FIXValue {
         length = 3;
     }
 
+    public void setByteBuffer(final ByteBuffer other) {
+        offset = 0;
+        length = 0;
+        while (other.hasRemaining()) {
+            this.writeBuffer[length++] = other.get();
+        }
+    }
+
+    public void copyTo(final ByteBuffer output) {
+        for (int i = offset; i < offset + length; i++) {
+            output.put(this.writeBuffer[i]);
+        }
+    }
+
     public boolean parseBuffer(final ByteBuffer buffer) {
         this.offset = buffer.position();
         this.length = 0;
@@ -314,10 +328,19 @@ public class FIXValue {
     }
 
     public void writeToBuffer(final ByteBuffer output) {
-        for (int i = offset; i < offset + length; i++) {
-            output.put(this.writeBuffer[i]);
-        }
+        this.copyTo(output);
         output.put(FIXConstants.SOH);
+    }
+
+    @Override
+    public String toString() {
+        if (length == -1) {
+            return null;
+        }
+
+        ByteBuffer out = ByteBuffer.allocate(length);
+        this.copyTo(out);
+        return new String(out.array());
     }
 
     private static final double[] POWERS_OF_TEN = {

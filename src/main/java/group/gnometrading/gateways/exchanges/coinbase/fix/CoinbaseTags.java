@@ -1,4 +1,4 @@
-package group.gnometrading.gateways.coinbase;
+package group.gnometrading.gateways.exchanges.coinbase.fix;
 
 public class CoinbaseTags {
 

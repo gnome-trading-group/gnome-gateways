@@ -8,7 +8,7 @@ import io.aeron.Subscription;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 
-public class GenericSocketMarketOutboundGateway extends MarketOutboundGateway {
+public abstract class GenericSocketMarketOutboundGateway extends MarketOutboundGateway {
 
     private final SocketClient socketClient;
     private final Encoder encoder;

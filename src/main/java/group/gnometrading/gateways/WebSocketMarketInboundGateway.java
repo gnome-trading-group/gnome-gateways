@@ -3,14 +3,13 @@ package group.gnometrading.gateways;
 import group.gnometrading.gateways.codecs.Decoder;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.sm.Listing;
-import group.gnometrading.utils.Resettable;
 import io.aeron.Publication;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.List;
 
-public abstract class WebSocketMarketInboundGateway<T extends Resettable> extends MarketInboundGateway<T> {
+public abstract class WebSocketMarketInboundGateway<T> extends MarketInboundGateway<T> implements SocketAgent {
 
     private final WebSocketClient socketClient;
 

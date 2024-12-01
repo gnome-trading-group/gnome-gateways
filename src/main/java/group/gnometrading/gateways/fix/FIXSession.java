@@ -30,6 +30,8 @@ public class FIXSession {
         this.heartbeatMillis = this.fixConfig.heartbeatSeconds() * 1_000L;
         this.testRequestMillis = this.fixConfig.heartbeatSeconds() * 1_100L;
         this.testRequestTxMillis = 0;
+
+        this.inMsgSeqNum = outMsgSeqNum = 1;
     }
 
     public void prepareMessage(final FIXMessage message, final char msgType) {

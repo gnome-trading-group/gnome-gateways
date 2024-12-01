@@ -224,4 +224,11 @@ public class FIXMessage implements Resettable {
         }
         return false;
     }
+
+    @Override
+    public String toString() {
+        ByteBuffer out = ByteBuffer.allocate(1 << 12);
+        int length = this.writeToBuffer(out);
+        return new String(out.array(), 0, length).replace((char) FIXConstants.SOH, '|');
+    }
 }

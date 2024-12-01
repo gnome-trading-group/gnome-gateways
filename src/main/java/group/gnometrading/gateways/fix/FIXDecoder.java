@@ -1,6 +1,6 @@
-package group.gnometrading.gateways.codecs;
+package group.gnometrading.gateways.fix;
 
-import group.gnometrading.gateways.fix.FIXMessage;
+import group.gnometrading.gateways.codecs.Decoder;
 
 import java.nio.ByteBuffer;
 

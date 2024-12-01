@@ -219,7 +219,11 @@ class FIXValueTest {
                     other.setString("123456789");
                     value.set(other);
                     other.setString("123");
-                }, fix("123456789|"), 10)
+                }, fix("123456789|"), 10),
+                Arguments.of((Consumer<FIXValue>) (value) -> {
+                    ByteBuffer other = ByteBuffer.wrap("123456".getBytes());
+                    value.setByteBuffer(other);
+                }, fix("123456|"), 7)
         );
     }
 
