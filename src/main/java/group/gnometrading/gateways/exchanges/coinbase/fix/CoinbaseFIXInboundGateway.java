@@ -1,14 +1,13 @@
 package group.gnometrading.gateways.exchanges.coinbase.fix;
 
-import group.gnometrading.gateways.codecs.Decoder;
 import group.gnometrading.gateways.fix.*;
 import group.gnometrading.gateways.fix.fix50sp2.FIX50SP2Enumerations;
 import group.gnometrading.gateways.fix.fix50sp2.FIX50SP2MsgTypes;
 import group.gnometrading.gateways.fix.fix50sp2.FIX50SP2Tags;
 import group.gnometrading.networking.client.SocketClient;
 import group.gnometrading.resources.Properties;
-import group.gnometrading.sm.Listing;
 import io.aeron.Publication;
+import org.agrona.concurrent.EpochNanoClock;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -18,7 +17,6 @@ import java.security.InvalidKeyException;
 import java.security.Key;
 import java.security.NoSuchAlgorithmException;
 import java.util.Base64;
-import java.util.List;
 
 public class CoinbaseFIXInboundGateway extends FIXMarketInboundGateway {
 
@@ -35,15 +33,13 @@ public class CoinbaseFIXInboundGateway extends FIXMarketInboundGateway {
     private final ByteBuffer signBuffer;
 
     public CoinbaseFIXInboundGateway(
-            final SocketClient socketClient,
-            final Publication publication,
-            final Decoder<FIXMessage> decoder,
-            final FIXMessage messageHolder,
-            final List<Listing> listings,
-            final FIXConfig fixConfig,
-            final Properties properties
+            SocketClient socketClient,
+            Publication publication,
+            EpochNanoClock clock,
+            FIXConfig fixConfig,
+            Properties properties
     ) {
-        super(socketClient, publication, decoder, messageHolder, listings, fixConfig);
+        super(socketClient, publication, clock, fixConfig);
 
         this.apiKey = properties.getStringProperty(API_KEY_KEY);
 //        this.apiPassphrase = properties.getStringProperty(API_PASSPHRASE_KEY);

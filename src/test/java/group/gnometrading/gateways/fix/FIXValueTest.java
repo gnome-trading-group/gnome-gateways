@@ -211,7 +211,7 @@ class FIXValueTest {
                 Arguments.of((Consumer<FIXValue>) (value) -> value.setDecimal(53.1, 2), fix("53.10|"), 6),
                 Arguments.of((Consumer<FIXValue>) (value) -> value.setDecimal(53.1, 1), fix("53.1|"), 5),
                 Arguments.of((Consumer<FIXValue>) (value) -> value.setDecimal(99.5604, 4), fix("99.5604|"), 8),
-                Arguments.of((Consumer<FIXValue>) (value) -> value.setDecimal(-99.5604, 4), fix("-99.5604|"), 9),
+                Arguments.of((Consumer<FIXValue>) (value) -> value.setDecimal(-995678.5604, 4), fix("-995678.5604|"), 13),
                 Arguments.of((Consumer<FIXValue>) (value) -> value.setCheckSum(13543215), fix("047|"), 4),
                 Arguments.of((Consumer<FIXValue>) (value) -> value.setTimestamp(1L, MILLISECONDS), fix("19700101-00:00:00.001|"), 22),
                 Arguments.of((Consumer<FIXValue>) (value) -> {

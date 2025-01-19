@@ -1,26 +1,18 @@
 package group.gnometrading.gateways;
 
-import group.gnometrading.gateways.codecs.Decoder;
 import group.gnometrading.networking.websockets.WebSocketClient;
-import group.gnometrading.sm.Listing;
 import io.aeron.Publication;
+import org.agrona.concurrent.EpochNanoClock;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.List;
 
-public abstract class WebSocketMarketInboundGateway<T> extends MarketInboundGateway<T> implements SocketAgent {
+public abstract class WebSocketMarketInboundGateway extends MarketInboundGateway implements SocketAgent {
 
-    private final WebSocketClient socketClient;
+    protected final WebSocketClient socketClient;
 
-    public WebSocketMarketInboundGateway(
-            final WebSocketClient socketClient,
-            final Publication publication,
-            final Decoder<T> decoder,
-            final T messageHolder,
-            final List<Listing> listings
-    ) {
-        super(publication, decoder, messageHolder, listings);
+    public WebSocketMarketInboundGateway(WebSocketClient socketClient, Publication publication, EpochNanoClock clock) {
+        super(publication, clock);
         this.socketClient = socketClient;
     }
 

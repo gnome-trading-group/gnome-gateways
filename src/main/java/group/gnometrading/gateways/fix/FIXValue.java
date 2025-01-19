@@ -4,6 +4,7 @@ import group.gnometrading.annotations.VisibleForTesting;
 import group.gnometrading.strings.ExpandingMutableString;
 import group.gnometrading.strings.GnomeString;
 import group.gnometrading.utils.ArrayCopy;
+import group.gnometrading.utils.AsciiEncoding;
 
 import java.nio.ByteBuffer;
 
@@ -227,28 +228,28 @@ public class FIXValue {
             significand = 10 * significand + b - '0';
             exponent++;
         }
-        double x = significand / POWERS_OF_TEN[exponent];
+        double x = significand / (double) AsciiEncoding.LONG_POW_10[exponent];
 
         return negative ? -x : +x;
     }
 
-    public void setDecimal(double x, int precision) {
+    public void setDecimal(double x, int scale) {
         if (x < 0.0) {
-            setNegativeDecimal(x, precision);
+            setNegativeDecimal(x, scale);
             return;
         }
 
         int i = this.writeBuffer.length;
         this.writeBuffer[--i] = FIXConstants.SOH;
 
-        long y = Math.round(POWERS_OF_TEN[precision] * x);
+        long y = Math.round(AsciiEncoding.LONG_POW_10[scale] * x);
 
-        for (int j = 0; j < precision; j++) {
+        for (int j = 0; j < scale; j++) {
             this.writeBuffer[--i] = (byte)('0' + y % 10);
             y /= 10;
         }
 
-        if (precision > 0)
+        if (scale > 0)
             this.writeBuffer[--i] = '.';
 
         do {
@@ -260,18 +261,18 @@ public class FIXValue {
         length = this.writeBuffer.length - offset - 1;
     }
 
-    private void setNegativeDecimal(double x, int precision) {
+    private void setNegativeDecimal(double x, int scale) {
         int i = this.writeBuffer.length;
 
         this.writeBuffer[--i] = FIXConstants.SOH;
 
-        long y = Math.round(POWERS_OF_TEN[precision] * -x);
-        for (int j = 0; j < precision; j++) {
+        long y = Math.round(AsciiEncoding.LONG_POW_10[scale] * -x);
+        for (int j = 0; j < scale; j++) {
             this.writeBuffer[--i] = (byte)('0' + y % 10);
             y /= 10;
         }
 
-        if (precision > 0)
+        if (scale > 0)
             this.writeBuffer[--i] = '.';
 
         do {
@@ -342,25 +343,4 @@ public class FIXValue {
         this.copyTo(out);
         return new String(out.array());
     }
-
-    private static final double[] POWERS_OF_TEN = {
-            1e0,
-            1e1,
-            1e2,
-            1e3,
-            1e4,
-            1e5,
-            1e6,
-            1e7,
-            1e8,
-            1e9,
-            1e10,
-            1e11,
-            1e12,
-            1e13,
-            1e14,
-            1e15,
-            1e16,
-            1e17,
-    };
 }

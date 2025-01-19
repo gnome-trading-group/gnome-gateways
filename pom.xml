@@ -28,6 +28,44 @@
         </repository>
     </distributionManagement>
 
+    <profiles>
+        <profile>
+            <id>linux</id>
+            <activation>
+                <os>
+                    <family>unix</family>
+                </os>
+            </activation>
+            <properties>
+                <os.classifier>linux</os.classifier>
+            </properties>
+        </profile>
+
+        <profile>
+            <id>macos</id>
+            <activation>
+                <os>
+                    <family>mac</family>
+                </os>
+            </activation>
+            <properties>
+                <os.classifier>macos</os.classifier>
+            </properties>
+        </profile>
+
+        <profile>
+            <id>windows</id>
+            <activation>
+                <os>
+                    <family>windows</family>
+                </os>
+            </activation>
+            <properties>
+                <os.classifier>windows</os.classifier>
+            </properties>
+        </profile>
+    </profiles>
+
     <repositories>
         <repository>
             <id>github</id>
@@ -45,27 +83,23 @@
         <dependency>
             <groupId>group.gnometrading</groupId>
             <artifactId>sbe-objects</artifactId>
-            <version>1.2.17</version>
+            <version>1.2.22</version>
         </dependency>
         <dependency>
             <groupId>group.gnometrading</groupId>
             <artifactId>gnome-networking</artifactId>
-            <version>1.0.6</version>
+            <version>1.0.34</version>
+            <classifier>${os.classifier}</classifier>
         </dependency>
         <dependency>
             <groupId>group.gnometrading</groupId>
             <artifactId>gnome-core</artifactId>
-            <version>1.0.20</version>
+            <version>1.0.25</version>
         </dependency>
         <dependency>
             <groupId>group.gnometrading</groupId>
             <artifactId>gnome-registry</artifactId>
             <version>1.0.0</version>
-        </dependency>
-        <dependency>
-            <groupId>net.openhft</groupId>
-            <artifactId>chronicle-logger-slf4j</artifactId>
-            <version>4.22ea6</version>
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>

@@ -1,27 +1,18 @@
 package group.gnometrading.gateways;
 
-import group.gnometrading.gateways.codecs.Decoder;
 import group.gnometrading.networking.client.SocketClient;
-import group.gnometrading.sm.Listing;
-import group.gnometrading.utils.Resettable;
 import io.aeron.Publication;
+import org.agrona.concurrent.EpochNanoClock;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.List;
 
-public abstract class GenericSocketMarketInboundGateway<T extends Resettable> extends MarketInboundGateway<T> implements SocketAgent {
+public abstract class GenericSocketMarketInboundGateway extends MarketInboundGateway implements SocketAgent {
 
     protected final SocketClient socketClient;
 
-    public GenericSocketMarketInboundGateway(
-            final SocketClient socketClient,
-            final Publication publication,
-            final Decoder<T> decoder,
-            final T messageHolder,
-            final List<Listing> listings
-    ) {
-        super(publication, decoder, messageHolder, listings);
+    public GenericSocketMarketInboundGateway(SocketClient socketClient, Publication publication, EpochNanoClock clock) {
+        super(publication, clock);
         this.socketClient = socketClient;
     }
 

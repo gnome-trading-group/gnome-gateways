@@ -1,37 +1,40 @@
 package group.gnometrading.gateways.fix;
 
 import group.gnometrading.gateways.GenericSocketMarketInboundGateway;
-import group.gnometrading.gateways.codecs.Decoder;
 import group.gnometrading.networking.client.SocketClient;
-import group.gnometrading.sm.Listing;
 import io.aeron.Publication;
+import org.agrona.concurrent.EpochNanoClock;
 
 import java.io.IOException;
-import java.util.List;
+import java.nio.ByteBuffer;
 
-public abstract class FIXMarketInboundGateway extends GenericSocketMarketInboundGateway<FIXMessage> implements FIXStatusListener {
+public abstract class FIXMarketInboundGateway extends GenericSocketMarketInboundGateway implements FIXStatusListener {
 
     protected final FIXSession fixSession;
     protected final FIXMessage adminMessage;
+    private final FIXMessage message;
     protected final FIXConfig fixConfig;
 
     public FIXMarketInboundGateway(
-            final SocketClient socketClient,
-            final Publication publication,
-            final Decoder<FIXMessage> decoder,
-            final FIXMessage messageHolder,
-            final List<Listing> listings,
-            final FIXConfig fixConfig
+            SocketClient socketClient,
+            Publication publication,
+            EpochNanoClock clock,
+            FIXConfig fixConfig
     ) {
-        super(socketClient, publication, decoder, messageHolder, listings);
+        super(socketClient, publication, clock);
 
+        this.message = new FIXMessage(fixConfig);
         this.adminMessage = new FIXMessage(fixConfig);
         this.fixSession = new FIXSession(fixConfig, socketClient, this);
         this.fixConfig = fixConfig;
     }
 
     @Override
-    protected void handleGatewayMessage(final FIXMessage message) throws IOException {
+    protected void handleGatewayMessage(final ByteBuffer buffer) throws IOException {
+        if (!this.message.parseBuffer(buffer)) {
+            return; // incomplete message
+        }
+
         if (!fixSession.handleFIXMessage(message)) {
             handleMarketUpdate(message);
         }
