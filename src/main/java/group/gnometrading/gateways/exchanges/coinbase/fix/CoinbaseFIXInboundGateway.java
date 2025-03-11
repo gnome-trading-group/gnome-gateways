@@ -6,6 +6,8 @@ import group.gnometrading.gateways.fix.fix50sp2.FIX50SP2MsgTypes;
 import group.gnometrading.gateways.fix.fix50sp2.FIX50SP2Tags;
 import group.gnometrading.networking.client.SocketClient;
 import group.gnometrading.resources.Properties;
+import group.gnometrading.schemas.Schema;
+import group.gnometrading.schemas.SchemaType;
 import io.aeron.Publication;
 import org.agrona.concurrent.EpochNanoClock;
 
@@ -33,13 +35,15 @@ public class CoinbaseFIXInboundGateway extends FIXMarketInboundGateway {
     private final ByteBuffer signBuffer;
 
     public CoinbaseFIXInboundGateway(
-            SocketClient socketClient,
             Publication publication,
             EpochNanoClock clock,
+            Schema<?, ?> inputSchema,
+            SchemaType outputSchemaType,
+            SocketClient socketClient,
             FIXConfig fixConfig,
             Properties properties
     ) {
-        super(socketClient, publication, clock, fixConfig);
+        super(publication, clock, inputSchema, outputSchemaType, socketClient, fixConfig);
 
         this.apiKey = properties.getStringProperty(API_KEY_KEY);
 //        this.apiPassphrase = properties.getStringProperty(API_PASSPHRASE_KEY);

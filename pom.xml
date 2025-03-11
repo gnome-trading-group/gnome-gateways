@@ -80,8 +80,8 @@
         </dependency>
         <dependency>
             <groupId>group.gnometrading</groupId>
-            <artifactId>sbe-objects</artifactId>
-            <version>1.2.22</version>
+            <artifactId>gnome-schemas</artifactId>
+            <version>1.0.1</version>
         </dependency>
         <dependency>
             <groupId>group.gnometrading</groupId>
@@ -103,6 +103,18 @@
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
             <version>5.10.2</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <version>5.14.2</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-junit-jupiter</artifactId>
+            <version>5.14.2</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

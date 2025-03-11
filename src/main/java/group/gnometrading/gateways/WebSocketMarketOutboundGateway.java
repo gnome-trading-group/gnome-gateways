@@ -1,7 +1,7 @@
 package group.gnometrading.gateways;
 
 import group.gnometrading.networking.websockets.WebSocketClient;
-import group.gnometrading.objects.OrderDecoder;
+import group.gnometrading.schemas.OrderDecoder;
 import io.aeron.Subscription;
 
 import java.io.IOException;

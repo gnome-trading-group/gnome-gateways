@@ -2,6 +2,8 @@ package group.gnometrading.gateways;
 
 import group.gnometrading.codecs.json.JSONDecoder;
 import group.gnometrading.networking.websockets.WebSocketClient;
+import group.gnometrading.schemas.Schema;
+import group.gnometrading.schemas.SchemaType;
 import io.aeron.Publication;
 import org.agrona.concurrent.EpochNanoClock;
 
@@ -16,15 +18,17 @@ public abstract class JSONWebSocketMarketInboundGateway extends WebSocketMarketI
     protected final ByteBuffer writeBuffer;
 
     public JSONWebSocketMarketInboundGateway(
-            WebSocketClient socketClient,
             Publication publication,
             EpochNanoClock clock,
+            Schema<?, ?> inputSchema,
+            SchemaType outputSchemaType,
+            WebSocketClient socketClient,
             JSONDecoder jsonDecoder,
-            int writeBufferSize
+            ByteBuffer writeBuffer
     ) {
-        super(socketClient, publication, clock);
+        super(publication, clock, inputSchema, outputSchemaType, socketClient);
         this.jsonDecoder = jsonDecoder;
-        this.writeBuffer = ByteBuffer.allocate(writeBufferSize);
+        this.writeBuffer = writeBuffer;
     }
 
     @Override

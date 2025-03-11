@@ -1,6 +1,6 @@
 package group.gnometrading.gateways;
 
-import group.gnometrading.objects.OrderDecoder;
+import group.gnometrading.schemas.OrderDecoder;
 import io.aeron.Subscription;
 import io.aeron.logbuffer.Header;
 import org.agrona.DirectBuffer;

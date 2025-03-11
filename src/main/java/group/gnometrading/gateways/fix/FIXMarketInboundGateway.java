@@ -2,6 +2,8 @@ package group.gnometrading.gateways.fix;
 
 import group.gnometrading.gateways.GenericSocketMarketInboundGateway;
 import group.gnometrading.networking.client.SocketClient;
+import group.gnometrading.schemas.Schema;
+import group.gnometrading.schemas.SchemaType;
 import io.aeron.Publication;
 import org.agrona.concurrent.EpochNanoClock;
 
@@ -16,12 +18,14 @@ public abstract class FIXMarketInboundGateway extends GenericSocketMarketInbound
     protected final FIXConfig fixConfig;
 
     public FIXMarketInboundGateway(
-            SocketClient socketClient,
             Publication publication,
             EpochNanoClock clock,
+            Schema<?, ?> inputSchema,
+            SchemaType outputSchemaType,
+            SocketClient socketClient,
             FIXConfig fixConfig
     ) {
-        super(socketClient, publication, clock);
+        super(publication, clock, inputSchema, outputSchemaType, socketClient);
 
         this.message = new FIXMessage(fixConfig);
         this.adminMessage = new FIXMessage(fixConfig);

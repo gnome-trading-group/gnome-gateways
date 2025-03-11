@@ -1,12 +1,12 @@
 package group.gnometrading.gateways;
 
-import group.gnometrading.objects.MarketUpdateEncoder;
-import group.gnometrading.objects.MarketUpdateFlagsEncoder;
-import group.gnometrading.objects.MessageHeaderEncoder;
+import group.gnometrading.schemas.Schema;
+import group.gnometrading.schemas.SchemaType;
+import group.gnometrading.schemas.converters.SchemaConversionRegistry;
+import group.gnometrading.schemas.converters.SchemaConverter;
 import io.aeron.Publication;
 import org.agrona.concurrent.Agent;
 import org.agrona.concurrent.EpochNanoClock;
-import org.agrona.concurrent.UnsafeBuffer;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -14,22 +14,26 @@ import java.nio.ByteBuffer;
 public abstract class MarketInboundGateway implements Agent {
 
     private final Publication publication;
-    protected final MarketUpdateEncoder marketUpdateEncoder;
-    protected final MarketUpdateFlagsEncoder marketUpdateFlagsEncoder;
+    private final SchemaConverter<Schema<?, ?>, Schema<?, ?>> schemaConverter;
+    protected final Schema<?, ?> inputSchema;
     protected final EpochNanoClock clock;
     protected long recvTimestamp;
 
-    public MarketInboundGateway(final Publication publication, final EpochNanoClock clock) {
+    public MarketInboundGateway(
+            Publication publication,
+            EpochNanoClock clock,
+            Schema<?, ?> inputSchema,
+            SchemaType outputSchemaType
+    ) {
         this.publication = publication;
-        this.marketUpdateEncoder = new MarketUpdateEncoder();
-        this.marketUpdateFlagsEncoder = new MarketUpdateFlagsEncoder();
         this.clock = clock;
+        this.inputSchema = inputSchema;
 
-        final int totalMessageSize = MessageHeaderEncoder.ENCODED_LENGTH + MarketUpdateEncoder.BLOCK_LENGTH;
-        final UnsafeBuffer directBuffer = new UnsafeBuffer(ByteBuffer.allocateDirect(totalMessageSize));
-
-        this.marketUpdateEncoder.wrapAndApplyHeader(directBuffer, 0, new MessageHeaderEncoder());
-        this.marketUpdateFlagsEncoder.wrap(directBuffer, this.marketUpdateEncoder.offset() + MarketUpdateEncoder.flagsEncodingOffset());
+        if (outputSchemaType != inputSchema.schemaType) {
+            schemaConverter = (SchemaConverter<Schema<?, ?>, Schema<?, ?>>) SchemaConversionRegistry.getConverter(inputSchema.schemaType, outputSchemaType);
+        } else {
+            schemaConverter = null;
+        }
     }
 
     @Override
@@ -37,10 +41,6 @@ public abstract class MarketInboundGateway implements Agent {
 //        assert publication.isConnected(); // TODO: What to test here?
         final ByteBuffer buffer = readSocket();
         while (buffer != null && buffer.hasRemaining()) {
-            StringBuilder s = new StringBuilder();
-            for (int i = buffer.position(); i < buffer.limit(); i++) {
-                s.append((char) buffer.get(i));
-            }
             this.recvTimestamp = clock.nanoTime();
             handleGatewayMessage(buffer);
         }
@@ -57,7 +57,17 @@ public abstract class MarketInboundGateway implements Agent {
     }
 
     protected long offer() {
-        final long result = publication.offer(marketUpdateEncoder.buffer());
+        long result;
+        if (schemaConverter != null) {
+            final var output = schemaConverter.convert(this.inputSchema);
+            if (output != null) {
+                result = publication.offer(output.buffer);
+            } else {
+                result = 0;
+            }
+        } else {
+            result = publication.offer(this.inputSchema.buffer);
+        }
         if (result < 0) {
             throw new RuntimeException("Invalid offer: " + result);
         }

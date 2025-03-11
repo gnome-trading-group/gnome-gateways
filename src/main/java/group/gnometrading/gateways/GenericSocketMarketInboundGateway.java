@@ -1,6 +1,8 @@
 package group.gnometrading.gateways;
 
 import group.gnometrading.networking.client.SocketClient;
+import group.gnometrading.schemas.Schema;
+import group.gnometrading.schemas.SchemaType;
 import io.aeron.Publication;
 import org.agrona.concurrent.EpochNanoClock;
 
@@ -11,8 +13,14 @@ public abstract class GenericSocketMarketInboundGateway extends MarketInboundGat
 
     protected final SocketClient socketClient;
 
-    public GenericSocketMarketInboundGateway(SocketClient socketClient, Publication publication, EpochNanoClock clock) {
-        super(publication, clock);
+    public GenericSocketMarketInboundGateway(
+            Publication publication,
+            EpochNanoClock clock,
+            Schema<?, ?> inputSchema,
+            SchemaType outputSchemaType,
+            SocketClient socketClient
+    ) {
+        super(publication, clock, inputSchema, outputSchemaType);
         this.socketClient = socketClient;
     }
 
