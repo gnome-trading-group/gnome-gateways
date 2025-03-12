@@ -12,7 +12,6 @@ import io.aeron.Publication;
 import org.agrona.concurrent.EpochNanoClock;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
 
 public class HyperliquidInboundGateway extends JSONWebSocketMarketInboundGateway {
 
@@ -35,11 +34,11 @@ public class HyperliquidInboundGateway extends JSONWebSocketMarketInboundGateway
             SchemaType outputSchemaType,
             WebSocketClient socketClient,
             JSONDecoder jsonDecoder,
-            ByteBuffer writeBuffer,
+            int writeBufferSize,
             Listing listing,
             JSONEncoder jsonEncoder
     ) {
-        super(publication, clock, new MBP10Schema(), outputSchemaType, socketClient, jsonDecoder, writeBuffer);
+        super(publication, clock, new MBP10Schema(), outputSchemaType, socketClient, jsonDecoder, writeBufferSize);
         this.jsonEncoder = jsonEncoder;
         this.listing = listing;
         this.encoder = (MBP10Encoder) this.inputSchema.encoder;

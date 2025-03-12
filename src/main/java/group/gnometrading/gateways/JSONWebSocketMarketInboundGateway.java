@@ -24,11 +24,11 @@ public abstract class JSONWebSocketMarketInboundGateway extends WebSocketMarketI
             SchemaType outputSchemaType,
             WebSocketClient socketClient,
             JSONDecoder jsonDecoder,
-            ByteBuffer writeBuffer
+            int writeBufferSize
     ) {
         super(publication, clock, inputSchema, outputSchemaType, socketClient);
         this.jsonDecoder = jsonDecoder;
-        this.writeBuffer = writeBuffer;
+        this.writeBuffer = ByteBuffer.allocate(writeBufferSize);
     }
 
     @Override

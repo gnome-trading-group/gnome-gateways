@@ -38,14 +38,13 @@ class HyperliquidInboundGatewayTest {
 
     @BeforeEach
     void setup() {
-        ByteBuffer buffer = ByteBuffer.allocate(1 << 12);
         gateway = new HyperliquidInboundGateway(
                 publication,
                 null,
                 SchemaType.MBP_10,
                 null,
                 null,
-                buffer,
+                1 << 12,
                 new Listing(0, EXCHANGE_ID, SECURITY_ID, null, null),
                 new JSONEncoder()
         );
