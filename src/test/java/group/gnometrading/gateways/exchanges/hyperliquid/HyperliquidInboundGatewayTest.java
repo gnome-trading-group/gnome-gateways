@@ -44,9 +44,9 @@ class HyperliquidInboundGatewayTest {
                 SchemaType.MBP_10,
                 null,
                 null,
+                new JSONEncoder(),
                 1 << 12,
-                new Listing(0, EXCHANGE_ID, SECURITY_ID, null, null),
-                new JSONEncoder()
+                new Listing(0, EXCHANGE_ID, SECURITY_ID, null, null)
         );
     }
 

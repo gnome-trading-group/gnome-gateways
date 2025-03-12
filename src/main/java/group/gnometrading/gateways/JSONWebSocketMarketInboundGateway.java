@@ -1,6 +1,7 @@
 package group.gnometrading.gateways;
 
 import group.gnometrading.codecs.json.JSONDecoder;
+import group.gnometrading.codecs.json.JSONEncoder;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.schemas.Schema;
 import group.gnometrading.schemas.SchemaType;
@@ -14,7 +15,8 @@ public abstract class JSONWebSocketMarketInboundGateway extends WebSocketMarketI
 
     public static final int DEFAULT_WRITE_BUFFER_SIZE = 1 << 10; // 1kb
 
-    private final JSONDecoder jsonDecoder;
+    protected final JSONDecoder jsonDecoder;
+    protected final JSONEncoder jsonEncoder;
     protected final ByteBuffer writeBuffer;
 
     public JSONWebSocketMarketInboundGateway(
@@ -24,11 +26,14 @@ public abstract class JSONWebSocketMarketInboundGateway extends WebSocketMarketI
             SchemaType outputSchemaType,
             WebSocketClient socketClient,
             JSONDecoder jsonDecoder,
+            JSONEncoder jsonEncoder,
             int writeBufferSize
     ) {
         super(publication, clock, inputSchema, outputSchemaType, socketClient);
         this.jsonDecoder = jsonDecoder;
+        this.jsonEncoder = jsonEncoder;
         this.writeBuffer = ByteBuffer.allocate(writeBufferSize);
+        this.jsonEncoder.wrap(this.writeBuffer);
     }
 
     @Override

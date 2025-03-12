@@ -23,7 +23,6 @@ public class HyperliquidInboundGateway extends JSONWebSocketMarketInboundGateway
         ADMIN
     }
 
-    private final JSONEncoder jsonEncoder;
     private final Listing listing;
     private final MBP10Encoder encoder;
     @VisibleForTesting protected final PriceLevel[] asks, bids;
@@ -34,15 +33,13 @@ public class HyperliquidInboundGateway extends JSONWebSocketMarketInboundGateway
             SchemaType outputSchemaType,
             WebSocketClient socketClient,
             JSONDecoder jsonDecoder,
+            JSONEncoder jsonEncoder,
             int writeBufferSize,
-            Listing listing,
-            JSONEncoder jsonEncoder
+            Listing listing
     ) {
-        super(publication, clock, new MBP10Schema(), outputSchemaType, socketClient, jsonDecoder, writeBufferSize);
-        this.jsonEncoder = jsonEncoder;
+        super(publication, clock, new MBP10Schema(), outputSchemaType, socketClient, jsonDecoder, jsonEncoder, writeBufferSize);
         this.listing = listing;
         this.encoder = (MBP10Encoder) this.inputSchema.encoder;
-        this.jsonEncoder.wrap(this.writeBuffer);
 
         this.encoder.exchangeId(listing.exchangeId());
         this.encoder.securityId(listing.securityId());
