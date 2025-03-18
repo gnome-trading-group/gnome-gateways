@@ -81,23 +81,23 @@
         <dependency>
             <groupId>group.gnometrading</groupId>
             <artifactId>gnome-schemas</artifactId>
-            <version>1.0.1</version>
+            <version>1.0.3</version>
         </dependency>
         <dependency>
             <groupId>group.gnometrading</groupId>
             <artifactId>gnome-networking</artifactId>
-            <version>1.0.34</version>
+            <version>1.0.40</version>
             <classifier>${os.classifier}</classifier>
         </dependency>
         <dependency>
             <groupId>group.gnometrading</groupId>
             <artifactId>gnome-core</artifactId>
-            <version>1.0.25</version>
+            <version>1.0.27</version>
         </dependency>
         <dependency>
             <groupId>group.gnometrading</groupId>
             <artifactId>gnome-registry</artifactId>
-            <version>1.0.0</version>
+            <version>1.0.4</version>
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>

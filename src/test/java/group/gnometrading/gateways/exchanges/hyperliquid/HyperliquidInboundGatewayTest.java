@@ -236,6 +236,7 @@ class HyperliquidInboundGatewayTest {
         encoder.depth(MBP10Encoder.depthNullValue());
         encoder.sequence(MBP10Encoder.sequenceNullValue());
         encoder.flags().clear();
+        encoder.flags().marketByPrice(true);
 
         writeLevels(encoder, bids, asks);
 

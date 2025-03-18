@@ -25,6 +25,7 @@ public class HyperliquidInboundGateway extends JSONWebSocketMarketInboundGateway
 
     private final Listing listing;
     private final MBP10Encoder encoder;
+    private long lastTradePrice, lastTradeSize;
     @VisibleForTesting protected final PriceLevel[] asks, bids;
 
     public HyperliquidInboundGateway(
@@ -45,6 +46,8 @@ public class HyperliquidInboundGateway extends JSONWebSocketMarketInboundGateway
         this.encoder.securityId(listing.securityId());
         this.encoder.sequence(MBP10Encoder.sequenceNullValue()); // Hyperliquid does not have sequence nums
         this.encoder.timestampSent(MBP10Encoder.timestampSentNullValue()); // Hyperliquid only has event timestamps
+        this.lastTradePrice = MBP10Encoder.priceNullValue();
+        this.lastTradeSize = MBP10Encoder.sizeNullValue();
 
         this.asks = new PriceLevel[MAX_LEVEL_DEPTH];
         this.bids = new PriceLevel[MAX_LEVEL_DEPTH];
@@ -225,8 +228,8 @@ public class HyperliquidInboundGateway extends JSONWebSocketMarketInboundGateway
     private void parseL2Book(final JSONDecoder.JSONNode node) {
         this.encoder.timestampRecv(recvTimestamp);
         this.encoder.timestampEvent(MBP10Encoder.timestampEventNullValue());
-        this.encoder.price(MBP10Encoder.priceNullValue());
-        this.encoder.size(MBP10Encoder.sizeNullValue());
+        this.encoder.price(this.lastTradePrice);
+        this.encoder.size(lastTradeSize);
         this.encoder.action(Action.Modify);
         this.encoder.side(Side.None);
         this.encoder.depth(MBP10Encoder.depthNullValue());
@@ -284,9 +287,12 @@ public class HyperliquidInboundGateway extends JSONWebSocketMarketInboundGateway
         this.encoder.action(Action.Trade);
         this.encoder.side(side);
         this.encoder.flags().clear();
+        this.encoder.flags().marketByPrice(true);
         this.encoder.depth(MBP10Encoder.depthNullValue()); // TODO: Do we want to send the correct depth? Is it worth?
 
         offer();
+        this.lastTradeSize = size;
+        this.lastTradePrice = price;
     }
 
     private void parseTrades(final JSONDecoder.JSONNode node) {
