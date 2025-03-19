@@ -346,6 +346,7 @@ public class HyperliquidInboundGateway extends JSONWebSocketMarketInboundGateway
     public void onStart() {
         try {
             this.socketClient.connect();
+            this.socketClient.configureBlocking(false);
             this.subscribe();
         } catch (IOException e) {
             throw new RuntimeException(e);
