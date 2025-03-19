@@ -4,7 +4,7 @@
 
     <groupId>group.gnometrading</groupId>
     <artifactId>gnome-gateways</artifactId>
-    <version>1.0.5</version>
+    <version>1.0.6-SNAPSHOT</version>
 
     <properties>
         <maven.compiler.source>17</maven.compiler.source>
@@ -15,7 +15,7 @@
     <scm>
         <connection>scm:git:git@github.com:gnome-trading-group/gnome-gateways.git</connection>
         <developerConnection>scm:git:git@github.com:gnome-trading-group/gnome-gateways.git</developerConnection>
-        <tag>gnome-gateways-1.0.5</tag>
+        <tag>HEAD</tag>
     </scm>
 
     <distributionManagement>
