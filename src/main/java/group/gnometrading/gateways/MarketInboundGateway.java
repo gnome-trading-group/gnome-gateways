@@ -68,6 +68,9 @@ public abstract class MarketInboundGateway implements Agent {
         } else {
             result = publication.offer(this.inputSchema.buffer);
         }
+        if (result == Publication.ADMIN_ACTION) {
+            return offer(); // TODO: Should we sleep here?
+        }
         if (result < 0) {
             throw new RuntimeException("Invalid offer: " + result);
         }
