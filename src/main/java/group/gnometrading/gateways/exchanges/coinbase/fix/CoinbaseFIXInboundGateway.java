@@ -14,6 +14,7 @@ import org.agrona.concurrent.EpochNanoClock;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.io.IOException;
+import java.net.SocketException;
 import java.nio.ByteBuffer;
 import java.security.InvalidKeyException;
 import java.security.Key;
@@ -65,11 +66,23 @@ public class CoinbaseFIXInboundGateway extends FIXMarketInboundGateway {
 
     @Override
     public void onStart() {
+        this.connect();
+    }
+
+    @Override
+    protected void reconnect() {
+        try {
+            this.socketClient.close();
+            this.socketClient.clearBuffers();
+            this.connect();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
     @Override
     public void handleLogout(FIXMessage message) {
-        System.out.println("Socket logout");
+        throw new RuntimeException("Socket logout");
     }
 
     @Override
@@ -79,13 +92,13 @@ public class CoinbaseFIXInboundGateway extends FIXMarketInboundGateway {
 
     @Override
     public void onSocketClose() {
-        System.out.println("Socket closed");
+        throw new RuntimeException("Socket closed");
     }
 
     private void connect() {
-        // TODO: How do we reconnect a socket here?
         try {
             this.socketClient.connect();
+            this.sendLogon();
         } catch (IOException e) {
             throw new RuntimeException(e);
         }

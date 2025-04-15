@@ -18,6 +18,7 @@ public abstract class MarketInboundGateway implements Agent {
     protected final Schema<?, ?> inputSchema;
     protected final EpochNanoClock clock;
     protected long recvTimestamp;
+    private boolean shouldReconnect;
 
     public MarketInboundGateway(
             Publication publication,
@@ -28,6 +29,7 @@ public abstract class MarketInboundGateway implements Agent {
         this.publication = publication;
         this.clock = clock;
         this.inputSchema = inputSchema;
+        this.shouldReconnect = false;
 
         if (outputSchemaType != inputSchema.schemaType) {
             schemaConverter = (SchemaConverter<Schema<?, ?>, Schema<?, ?>>) SchemaConversionRegistry.getConverter(inputSchema.schemaType, outputSchemaType);
@@ -38,7 +40,10 @@ public abstract class MarketInboundGateway implements Agent {
 
     @Override
     public int doWork() throws Exception {
-//        assert publication.isConnected(); // TODO: What to test here?
+        if (this.shouldReconnect) {
+            this.reconnect();
+        }
+
         final ByteBuffer buffer = readSocket();
         while (buffer != null && buffer.hasRemaining()) {
             this.recvTimestamp = clock.nanoTime();
@@ -50,6 +55,17 @@ public abstract class MarketInboundGateway implements Agent {
     protected abstract ByteBuffer readSocket() throws IOException;
 
     protected abstract void handleGatewayMessage(final ByteBuffer buffer) throws IOException;
+
+    protected abstract void reconnect();
+
+    /**
+     * Set this market gateway as marked to be reconnected. The reconnection
+     * should *only* happen within the same thread, so external threads can use
+     * this to signify it's time to reconnect.
+     */
+    public void markReconnect() {
+        this.shouldReconnect = true;
+    }
 
     @Override
     public String roleName() {

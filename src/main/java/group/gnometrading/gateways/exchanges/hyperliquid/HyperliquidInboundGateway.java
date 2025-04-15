@@ -342,8 +342,7 @@ public class HyperliquidInboundGateway extends JSONWebSocketMarketInboundGateway
         }
     }
 
-    @Override
-    public void onStart() {
+    private void connect() {
         try {
             this.socketClient.connect();
             this.socketClient.configureBlocking(false);
@@ -354,8 +353,24 @@ public class HyperliquidInboundGateway extends JSONWebSocketMarketInboundGateway
     }
 
     @Override
-    public void onSocketClose() {
+    public void reconnect() {
+        try {
+            this.socketClient.close();
+            this.socketClient.reset();
+            this.connect();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
 
+    @Override
+    public void onStart() {
+        this.connect();
+    }
+
+    @Override
+    public void onSocketClose() {
+        throw new RuntimeException("Socket closed");
     }
 
     protected static class PriceLevel {
