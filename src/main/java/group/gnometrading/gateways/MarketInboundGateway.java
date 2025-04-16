@@ -41,6 +41,7 @@ public abstract class MarketInboundGateway implements Agent {
     @Override
     public int doWork() throws Exception {
         if (this.shouldReconnect) {
+            this.shouldReconnect = false;
             this.reconnect();
         }
 
