@@ -572,7 +572,7 @@ class HyperliquidInboundGatewayTest {
     @Test
     public void testMessageParsingLatency() {
         // Test parsing latency for different message types
-        int iterations = 100_000;
+        int iterations = 1_000_000;
         long[] latencies = new long[iterations];
         
         // Test L2 book parsing
@@ -595,17 +595,17 @@ class HyperliquidInboundGatewayTest {
         long p50 = latencies[iterations / 2];
         long p99 = latencies[(int) (iterations * 0.99)];
         long p99_9 = latencies[(int) (iterations * 0.999)];
-        
+
         // Assert latency bounds
-        assertTrue(p50 < 20_000, () -> "P50 latency too high: " + p50 + "ns"); // 20 microseconds
-        assertTrue(p99 < 50_000, () -> "P99 latency too high: " + p99 + "ns"); // 50 microseconds
-        assertTrue(p99_9 < 300_000, () -> "P99.9 latency too high: " + p99_9 + "ns"); // 300 microseconds
+        assertTrue(p50 < 10_000, () -> "P50 latency too high: " + p50 + "ns"); // 10 microseconds
+        assertTrue(p99 < 30_000, () -> "P99 latency too high: " + p99 + "ns"); // 30 microseconds
+        assertTrue(p99_9 < 100_000, () -> "P99.9 latency too high: " + p99_9 + "ns"); // 100 microseconds
     }
 
     @Test
     public void testTradeParsingLatency() {
         // Test trade parsing latency
-        int iterations = 100_000;
+        int iterations = 1_000_000;
         long[] latencies = new long[iterations];
         
         String tradeMessage = trades(0, Side.Ask, "138.2|500.1");
@@ -630,8 +630,8 @@ class HyperliquidInboundGatewayTest {
         long p99_9 = latencies[(int) (iterations * 0.999)];
         
         // Assert latency bounds
-        assertTrue(p50 < 10_000, () -> "P50 latency too high: " + p50 + "ns"); // 10 microseconds
-        assertTrue(p99 < 30_000, () -> "P99 latency too high: " + p99 + "ns"); // 30 microseconds
-        assertTrue(p99_9 < 80_000, () -> "P99.9 latency too high: " + p99_9 + "ns"); // 80 microseconds
+        assertTrue(p50 < 5_000, () -> "P50 latency too high: " + p50 + "ns"); // 5 microseconds
+        assertTrue(p99 < 20_000, () -> "P99 latency too high: " + p99 + "ns"); // 20 microseconds
+        assertTrue(p99_9 < 50_000, () -> "P99.9 latency too high: " + p99_9 + "ns"); // 50 microseconds
     }
 }
