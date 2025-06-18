@@ -15,10 +15,12 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.stubbing.Answer;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -565,5 +567,71 @@ class HyperliquidInboundGatewayTest {
                     {"px": "%.2f", "sz": "%.2f", "n": %d}
                     """.formatted(px, sz, n);
         }
+    }
+
+    @Test
+    public void testMessageParsingLatency() {
+        // Test parsing latency for different message types
+        int iterations = 100_000;
+        long[] latencies = new long[iterations];
+        
+        // Test L2 book parsing
+        String l2Message = l2(0, l("138.2|500.1|2 138.4|10.4|2"), l("138.6|100.1|1 138.8|200.2|2"));
+        ByteBuffer buffer = ByteBuffer.wrap(l2Message.getBytes());
+        
+        for (int i = 0; i < iterations; i++) {
+            long start = System.nanoTime();
+            try (final var node = new JSONDecoder().wrap(buffer)) {
+                gateway.handleJSONMessage(node);
+            } catch (IOException e) {
+                fail("Failed to parse message", e);
+            }
+            latencies[i] = System.nanoTime() - start;
+            buffer.rewind();
+        }
+        
+        // Calculate statistics
+        Arrays.sort(latencies);
+        long p50 = latencies[iterations / 2];
+        long p99 = latencies[(int) (iterations * 0.99)];
+        long p99_9 = latencies[(int) (iterations * 0.999)];
+        
+        // Assert latency bounds
+        assertTrue(p50 < 20_000, () -> "P50 latency too high: " + p50 + "ns"); // 20 microseconds
+        assertTrue(p99 < 50_000, () -> "P99 latency too high: " + p99 + "ns"); // 50 microseconds
+        assertTrue(p99_9 < 300_000, () -> "P99.9 latency too high: " + p99_9 + "ns"); // 300 microseconds
+    }
+
+    @Test
+    public void testTradeParsingLatency() {
+        // Test trade parsing latency
+        int iterations = 100_000;
+        long[] latencies = new long[iterations];
+        
+        String tradeMessage = trades(0, Side.Ask, "138.2|500.1");
+        ByteBuffer buffer = ByteBuffer.wrap(tradeMessage.getBytes());
+        JSONDecoder decoder = new JSONDecoder();
+        
+        for (int i = 0; i < iterations; i++) {
+            long start = System.nanoTime();
+            try (final var node = decoder.wrap(buffer)) {
+                gateway.handleJSONMessage(node);
+            } catch (IOException e) {
+                fail("Failed to parse message", e);
+            }
+            latencies[i] = System.nanoTime() - start;
+            buffer.rewind();
+        }
+        
+        // Calculate statistics
+        Arrays.sort(latencies);
+        long p50 = latencies[iterations / 2];
+        long p99 = latencies[(int) (iterations * 0.99)];
+        long p99_9 = latencies[(int) (iterations * 0.999)];
+        
+        // Assert latency bounds
+        assertTrue(p50 < 10_000, () -> "P50 latency too high: " + p50 + "ns"); // 10 microseconds
+        assertTrue(p99 < 30_000, () -> "P99 latency too high: " + p99 + "ns"); // 30 microseconds
+        assertTrue(p99_9 < 80_000, () -> "P99.9 latency too high: " + p99_9 + "ns"); // 80 microseconds
     }
 }

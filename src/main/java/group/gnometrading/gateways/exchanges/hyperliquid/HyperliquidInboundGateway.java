@@ -16,6 +16,7 @@ import java.io.IOException;
 public class HyperliquidInboundGateway extends JSONWebSocketMarketInboundGateway {
 
     private static final int MAX_LEVEL_DEPTH = 10;
+    private static final long NANOS_PER_MILLI = 1_000_000L;
 
     private enum Channel {
         L2BOOK,
@@ -244,7 +245,7 @@ public class HyperliquidInboundGateway extends JSONWebSocketMarketInboundGateway
                         // NO-OP: Maybe check if it's correct in the future?
                     } else if (key.getName().equals("time")) {
                         // Hyperliquid is in epoch millis
-                        this.encoder.timestampEvent(key.asLong() * 1_000_000);
+                        this.encoder.timestampEvent(key.asLong() * NANOS_PER_MILLI);
                     } else if (key.getName().equals("levels")) {
                         try (final var array = key.asArray()) {
                             this.encoder.depth(parseLevels(array));
