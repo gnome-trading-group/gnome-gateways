@@ -93,4 +93,9 @@ public abstract class MarketInboundGateway implements Agent {
         }
         return result;
     }
+
+    @Override
+    public void onClose() {
+        this.publication.close();
+    }
 }

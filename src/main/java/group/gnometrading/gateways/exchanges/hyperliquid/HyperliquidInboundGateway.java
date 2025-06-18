@@ -347,6 +347,8 @@ public class HyperliquidInboundGateway extends JSONWebSocketMarketInboundGateway
         try {
             this.socketClient.connect();
             this.socketClient.configureBlocking(false);
+            this.socketClient.setTcpNoDelay(true);
+            this.socketClient.setKeepAlive(true);
             this.subscribe();
         } catch (IOException e) {
             throw new RuntimeException(e);
@@ -357,7 +359,6 @@ public class HyperliquidInboundGateway extends JSONWebSocketMarketInboundGateway
     public void reconnect() {
         try {
             this.socketClient.close();
-            this.socketClient.reset();
             this.connect();
         } catch (Exception e) {
             throw new RuntimeException(e);

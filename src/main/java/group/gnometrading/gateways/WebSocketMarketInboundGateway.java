@@ -37,4 +37,14 @@ public abstract class WebSocketMarketInboundGateway extends MarketInboundGateway
             return null;
         }
     }
+
+    @Override
+    public void onClose() {
+        super.onClose();
+        try {
+            this.socketClient.close();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
 }
