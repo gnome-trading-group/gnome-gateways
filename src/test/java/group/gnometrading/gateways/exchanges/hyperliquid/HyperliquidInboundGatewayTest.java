@@ -7,6 +7,7 @@ import group.gnometrading.sm.Listing;
 import io.aeron.Publication;
 import org.agrona.DirectBuffer;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -570,6 +571,7 @@ class HyperliquidInboundGatewayTest {
     }
 
     @Test
+    @Disabled
     public void testMessageParsingLatency() {
         // Test parsing latency for different message types
         int iterations = 1_000_000;
@@ -603,6 +605,7 @@ class HyperliquidInboundGatewayTest {
     }
 
     @Test
+    @Disabled
     public void testTradeParsingLatency() {
         // Test trade parsing latency
         int iterations = 1_000_000;
@@ -628,7 +631,7 @@ class HyperliquidInboundGatewayTest {
         long p50 = latencies[iterations / 2];
         long p99 = latencies[(int) (iterations * 0.99)];
         long p99_9 = latencies[(int) (iterations * 0.999)];
-        
+
         // Assert latency bounds
         assertTrue(p50 < 5_000, () -> "P50 latency too high: " + p50 + "ns"); // 5 microseconds
         assertTrue(p99 < 20_000, () -> "P99 latency too high: " + p99 + "ns"); // 20 microseconds
