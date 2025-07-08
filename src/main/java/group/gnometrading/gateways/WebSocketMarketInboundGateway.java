@@ -1,9 +1,8 @@
 package group.gnometrading.gateways;
 
+import com.lmax.disruptor.RingBuffer;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.schemas.Schema;
-import group.gnometrading.schemas.SchemaType;
-import io.aeron.Publication;
 import org.agrona.concurrent.EpochNanoClock;
 
 import java.io.IOException;
@@ -14,13 +13,11 @@ public abstract class WebSocketMarketInboundGateway extends MarketInboundGateway
     protected final WebSocketClient socketClient;
 
     public WebSocketMarketInboundGateway(
-            Publication publication,
+            RingBuffer<Schema<?, ?>> ringBuffer,
             EpochNanoClock clock,
-            Schema<?, ?> inputSchema,
-            SchemaType outputSchemaType,
             WebSocketClient socketClient
     ) {
-        super(publication, clock, inputSchema, outputSchemaType);
+        super(ringBuffer, clock);
         this.socketClient = socketClient;
     }
 
@@ -40,7 +37,6 @@ public abstract class WebSocketMarketInboundGateway extends MarketInboundGateway
 
     @Override
     public void onClose() {
-        super.onClose();
         try {
             this.socketClient.close();
         } catch (Exception e) {

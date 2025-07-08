@@ -2,7 +2,6 @@ package group.gnometrading.gateways;
 
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.schemas.OrderDecoder;
-import io.aeron.Subscription;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -14,10 +13,8 @@ public abstract class WebSocketMarketOutboundGateway extends MarketOutboundGatew
 
     public WebSocketMarketOutboundGateway(
             final WebSocketClient socketClient,
-            final Subscription subscription,
             final int writeBufferSize
     ) {
-        super(subscription);
         this.socketClient = socketClient;
         this.writeBuffer = ByteBuffer.allocate(writeBufferSize);
     }

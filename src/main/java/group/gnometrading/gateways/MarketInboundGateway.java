@@ -1,42 +1,33 @@
 package group.gnometrading.gateways;
 
+import com.lmax.disruptor.RingBuffer;
+import group.gnometrading.concurrent.GnomeAgent;
 import group.gnometrading.schemas.Schema;
-import group.gnometrading.schemas.SchemaType;
-import group.gnometrading.schemas.converters.SchemaConversionRegistry;
-import group.gnometrading.schemas.converters.SchemaConverter;
-import io.aeron.Publication;
-import org.agrona.concurrent.Agent;
 import org.agrona.concurrent.EpochNanoClock;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
 
-public abstract class MarketInboundGateway implements Agent {
+public abstract class MarketInboundGateway implements GnomeAgent {
 
-    private final Publication publication;
-    private final SchemaConverter<Schema<?, ?>, Schema<?, ?>> schemaConverter;
-    protected final Schema<?, ?> inputSchema;
+    private final RingBuffer<Schema<?, ?>> ringBuffer;
     protected final EpochNanoClock clock;
+
     protected long recvTimestamp;
+    protected Schema<?, ?> schema;
+
     private boolean shouldReconnect;
+    private long sequence;
 
     public MarketInboundGateway(
-            Publication publication,
-            EpochNanoClock clock,
-            Schema<?, ?> inputSchema,
-            SchemaType outputSchemaType
+            RingBuffer<Schema<?, ?>> ringBuffer,
+            EpochNanoClock clock
     ) {
-        this.publication = publication;
+        this.ringBuffer = ringBuffer;
         this.clock = clock;
-        this.inputSchema = inputSchema;
         this.shouldReconnect = false;
-
-        if (outputSchemaType != inputSchema.schemaType) {
-            schemaConverter = (SchemaConverter<Schema<?, ?>, Schema<?, ?>>) SchemaConversionRegistry.getConverter(inputSchema.schemaType, outputSchemaType);
-        } else {
-            schemaConverter = null;
-        }
     }
+
 
     @Override
     public int doWork() throws Exception {
@@ -73,29 +64,12 @@ public abstract class MarketInboundGateway implements Agent {
         return getClass().getSimpleName();
     }
 
-    protected long offer() {
-        long result;
-        if (schemaConverter != null) {
-            final var output = schemaConverter.convert(this.inputSchema);
-            if (output != null) {
-                result = publication.offer(output.buffer);
-            } else {
-                result = 0;
-            }
-        } else {
-            result = publication.offer(this.inputSchema.buffer);
-        }
-        if (result == Publication.ADMIN_ACTION) {
-            return offer(); // TODO: Should we sleep here?
-        }
-        if (result < 0) {
-            throw new RuntimeException("Invalid offer: " + result);
-        }
-        return result;
+    protected void claim() {
+        this.sequence = this.ringBuffer.next();
+        this.schema = this.ringBuffer.get(this.sequence);
     }
 
-    @Override
-    public void onClose() {
-        this.publication.close();
+    protected void offer() {
+        this.ringBuffer.publish(this.sequence);
     }
 }

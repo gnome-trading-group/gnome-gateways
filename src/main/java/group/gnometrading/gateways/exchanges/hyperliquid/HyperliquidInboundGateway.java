@@ -1,5 +1,6 @@
 package group.gnometrading.gateways.exchanges.hyperliquid;
 
+import com.lmax.disruptor.RingBuffer;
 import group.gnometrading.annotations.VisibleForTesting;
 import group.gnometrading.codecs.json.JSONDecoder;
 import group.gnometrading.codecs.json.JSONEncoder;
@@ -8,7 +9,6 @@ import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.networking.websockets.enums.Opcode;
 import group.gnometrading.schemas.*;
 import group.gnometrading.sm.Listing;
-import io.aeron.Publication;
 import org.agrona.concurrent.EpochNanoClock;
 
 import java.io.IOException;
@@ -25,30 +25,22 @@ public class HyperliquidInboundGateway extends JSONWebSocketMarketInboundGateway
     }
 
     private final Listing listing;
-    private final MBP10Encoder encoder;
+    private MBP10Encoder encoder;
     private long lastTradePrice, lastTradeSize;
     @VisibleForTesting protected final PriceLevel[] asks, bids;
 
     public HyperliquidInboundGateway(
-            Publication publication,
+            RingBuffer<Schema<?, ?>> ringBuffer,
             EpochNanoClock clock,
-            SchemaType outputSchemaType,
             WebSocketClient socketClient,
             JSONDecoder jsonDecoder,
             JSONEncoder jsonEncoder,
             int writeBufferSize,
             Listing listing
     ) {
-        super(publication, clock, new MBP10Schema(), outputSchemaType, socketClient, jsonDecoder, jsonEncoder, writeBufferSize);
+        super(ringBuffer, clock, socketClient, jsonDecoder, jsonEncoder, writeBufferSize);
         this.listing = listing;
-        this.encoder = (MBP10Encoder) this.inputSchema.encoder;
 
-        this.encoder.exchangeId(listing.exchangeId());
-        this.encoder.securityId(listing.securityId());
-        this.encoder.sequence(MBP10Encoder.sequenceNullValue()); // Hyperliquid does not have sequence nums
-        this.encoder.timestampSent(MBP10Encoder.timestampSentNullValue()); // Hyperliquid only has event timestamps
-        this.lastTradePrice = MBP10Encoder.priceNullValue();
-        this.lastTradeSize = MBP10Encoder.sizeNullValue();
 
         this.asks = new PriceLevel[MAX_LEVEL_DEPTH];
         this.bids = new PriceLevel[MAX_LEVEL_DEPTH];
@@ -227,6 +219,8 @@ public class HyperliquidInboundGateway extends JSONWebSocketMarketInboundGateway
     }
 
     private void parseL2Book(final JSONDecoder.JSONNode node) {
+        newEncoder();
+
         this.encoder.timestampRecv(recvTimestamp);
         this.encoder.timestampEvent(MBP10Encoder.timestampEventNullValue());
         this.encoder.price(this.lastTradePrice);
@@ -259,6 +253,11 @@ public class HyperliquidInboundGateway extends JSONWebSocketMarketInboundGateway
     }
 
     private void parseTrade(final JSONDecoder.JSONObject trade) {
+        newEncoder();
+
+        this.encoder.timestampRecv(recvTimestamp);
+        writeBookLevels();
+
         Side side = Side.None;
         long price = MBP10Encoder.priceNullValue();
         long size = MBP10Encoder.sizeNullValue();
@@ -297,9 +296,6 @@ public class HyperliquidInboundGateway extends JSONWebSocketMarketInboundGateway
     }
 
     private void parseTrades(final JSONDecoder.JSONNode node) {
-        this.encoder.timestampRecv(recvTimestamp);
-        writeBookLevels();
-
         try (final var trades = node.asArray()) {
             while (trades.hasNextItem()) {
                 try (final var tradeNode = trades.nextItem(); final var trade = tradeNode.asObject()) {
@@ -353,6 +349,18 @@ public class HyperliquidInboundGateway extends JSONWebSocketMarketInboundGateway
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    private void newEncoder() {
+        claim();
+        this.encoder = (MBP10Encoder) this.schema.encoder;
+
+        this.encoder.exchangeId(listing.exchangeId());
+        this.encoder.securityId(listing.securityId());
+        this.encoder.sequence(MBP10Encoder.sequenceNullValue()); // Hyperliquid does not have sequence nums
+        this.encoder.timestampSent(MBP10Encoder.timestampSentNullValue()); // Hyperliquid only has event timestamps
+        this.lastTradePrice = MBP10Encoder.priceNullValue();
+        this.lastTradeSize = MBP10Encoder.sizeNullValue();
     }
 
     @Override

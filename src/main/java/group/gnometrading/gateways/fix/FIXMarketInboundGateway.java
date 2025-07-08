@@ -1,10 +1,9 @@
 package group.gnometrading.gateways.fix;
 
+import com.lmax.disruptor.RingBuffer;
 import group.gnometrading.gateways.GenericSocketMarketInboundGateway;
 import group.gnometrading.networking.client.SocketClient;
 import group.gnometrading.schemas.Schema;
-import group.gnometrading.schemas.SchemaType;
-import io.aeron.Publication;
 import org.agrona.concurrent.EpochNanoClock;
 
 import java.io.IOException;
@@ -18,14 +17,12 @@ public abstract class FIXMarketInboundGateway extends GenericSocketMarketInbound
     protected final FIXConfig fixConfig;
 
     public FIXMarketInboundGateway(
-            Publication publication,
+            RingBuffer<Schema<?, ?>> ringBuffer,
             EpochNanoClock clock,
-            Schema<?, ?> inputSchema,
-            SchemaType outputSchemaType,
             SocketClient socketClient,
             FIXConfig fixConfig
     ) {
-        super(publication, clock, inputSchema, outputSchemaType, socketClient);
+        super(ringBuffer, clock, socketClient);
 
         this.message = new FIXMessage(fixConfig);
         this.adminMessage = new FIXMessage(fixConfig);

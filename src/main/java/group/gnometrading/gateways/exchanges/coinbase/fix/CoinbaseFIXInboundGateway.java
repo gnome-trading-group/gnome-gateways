@@ -1,5 +1,6 @@
 package group.gnometrading.gateways.exchanges.coinbase.fix;
 
+import com.lmax.disruptor.RingBuffer;
 import group.gnometrading.gateways.fix.*;
 import group.gnometrading.gateways.fix.fix50sp2.FIX50SP2Enumerations;
 import group.gnometrading.gateways.fix.fix50sp2.FIX50SP2MsgTypes;
@@ -7,14 +8,11 @@ import group.gnometrading.gateways.fix.fix50sp2.FIX50SP2Tags;
 import group.gnometrading.networking.client.SocketClient;
 import group.gnometrading.resources.Properties;
 import group.gnometrading.schemas.Schema;
-import group.gnometrading.schemas.SchemaType;
-import io.aeron.Publication;
 import org.agrona.concurrent.EpochNanoClock;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.io.IOException;
-import java.net.SocketException;
 import java.nio.ByteBuffer;
 import java.security.InvalidKeyException;
 import java.security.Key;
@@ -36,15 +34,13 @@ public class CoinbaseFIXInboundGateway extends FIXMarketInboundGateway {
     private final ByteBuffer signBuffer;
 
     public CoinbaseFIXInboundGateway(
-            Publication publication,
+            RingBuffer<Schema<?, ?>> ringBuffer,
             EpochNanoClock clock,
-            Schema<?, ?> inputSchema,
-            SchemaType outputSchemaType,
             SocketClient socketClient,
             FIXConfig fixConfig,
             Properties properties
     ) {
-        super(publication, clock, inputSchema, outputSchemaType, socketClient, fixConfig);
+        super(ringBuffer, clock, socketClient, fixConfig);
 
         this.apiKey = properties.getStringProperty(API_KEY_KEY);
 //        this.apiPassphrase = properties.getStringProperty(API_PASSPHRASE_KEY);
@@ -67,6 +63,11 @@ public class CoinbaseFIXInboundGateway extends FIXMarketInboundGateway {
     @Override
     public void onStart() {
         this.connect();
+    }
+
+    @Override
+    public void onClose() {
+
     }
 
     @Override

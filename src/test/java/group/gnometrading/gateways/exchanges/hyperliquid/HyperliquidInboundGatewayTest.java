@@ -1,10 +1,12 @@
 package group.gnometrading.gateways.exchanges.hyperliquid;
 
+import com.lmax.disruptor.RingBuffer;
+import com.lmax.disruptor.WaitStrategy;
+import com.lmax.disruptor.BlockingWaitStrategy;
 import group.gnometrading.codecs.json.JSONDecoder;
 import group.gnometrading.codecs.json.JSONEncoder;
 import group.gnometrading.schemas.*;
 import group.gnometrading.sm.Listing;
-import io.aeron.Publication;
 import org.agrona.DirectBuffer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
@@ -35,16 +37,20 @@ class HyperliquidInboundGatewayTest {
     private static final int SECURITY_ID = 124;
 
     @Mock
-    private Publication publication;
+    @SuppressWarnings("rawtypes")
+    private RingBuffer ringBuffer;
 
     private HyperliquidInboundGateway gateway;
 
     @BeforeEach
     void setup() {
+        RingBuffer<Schema<?, ?>> realRingBuffer = RingBuffer.createSingleProducer(
+                MBP10Schema::new, 1024, new BlockingWaitStrategy());
+        ringBuffer = spy(realRingBuffer);
+        
         gateway = new HyperliquidInboundGateway(
-                publication,
+                ringBuffer,
                 null,
-                SchemaType.MBP_10,
                 null,
                 null,
                 new JSONEncoder(),
@@ -149,13 +155,14 @@ class HyperliquidInboundGatewayTest {
             throw new RuntimeException(e);
         }
 
-        ArgumentCaptor<DirectBuffer> captor = ArgumentCaptor.forClass(DirectBuffer.class);
-        verify(publication, times(messages.size())).offer(captor.capture());
+        ArgumentCaptor<Long> captor = ArgumentCaptor.forClass(Long.class);
+        verify(ringBuffer, times(messages.size())).publish(captor.capture());
         var captured = captor.getAllValues();
         assertEquals(messages.size(), captured.size());
 
         for (int i = 0; i < messages.size(); i++) {
-            assertEquals(messages.get(i), new MBP10Decoder().wrapAndApplyHeader(captured.get(i), 0, new MessageHeaderDecoder()).toString());
+            Schema<?, ?> schema = (Schema<?, ?>) ringBuffer.get(captured.get(i));
+            assertEquals(messages.get(i), schema.decoder.toString());
         }
     }
 
@@ -202,12 +209,11 @@ class HyperliquidInboundGatewayTest {
         List<String> capturedMessages = new ArrayList<>();
 
         doAnswer((Answer<Long>) invocation -> {
-            DirectBuffer buffer = invocation.getArgument(0);
-            capturedMessages.add(
-                    new MBP10Decoder().wrapAndApplyHeader(buffer, 0, new MessageHeaderDecoder()).toString()
-            );
+            Long sequence = invocation.getArgument(0);
+            Schema<?, ?> schema = (Schema<?, ?>) ringBuffer.get(sequence);
+            capturedMessages.add(schema.decoder.toString());
             return 0L;
-        }).when(publication).offer(any(DirectBuffer.class));
+        }).when(ringBuffer).publish(any(Long.class));
 
         ByteBuffer input = ByteBuffer.wrap(message.getBytes());
         try (var node = new JSONDecoder().wrap(input)) {
@@ -216,7 +222,7 @@ class HyperliquidInboundGatewayTest {
             throw new RuntimeException(e);
         }
 
-        verify(publication, times(messages.size())).offer(any(DirectBuffer.class));
+        verify(ringBuffer, times(messages.size())).publish(any(Long.class));
         assertEquals(messages.size(), capturedMessages.size());
 
         for (int i = 0; i < messages.size(); i++) {

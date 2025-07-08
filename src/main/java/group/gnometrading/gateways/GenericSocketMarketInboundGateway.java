@@ -1,9 +1,8 @@
 package group.gnometrading.gateways;
 
+import com.lmax.disruptor.RingBuffer;
 import group.gnometrading.networking.client.SocketClient;
 import group.gnometrading.schemas.Schema;
-import group.gnometrading.schemas.SchemaType;
-import io.aeron.Publication;
 import org.agrona.concurrent.EpochNanoClock;
 
 import java.io.IOException;
@@ -14,13 +13,11 @@ public abstract class GenericSocketMarketInboundGateway extends MarketInboundGat
     protected final SocketClient socketClient;
 
     public GenericSocketMarketInboundGateway(
-            Publication publication,
+            RingBuffer<Schema<?, ?>> ringBuffer,
             EpochNanoClock clock,
-            Schema<?, ?> inputSchema,
-            SchemaType outputSchemaType,
             SocketClient socketClient
     ) {
-        super(publication, clock, inputSchema, outputSchemaType);
+        super(ringBuffer, clock);
         this.socketClient = socketClient;
     }
 

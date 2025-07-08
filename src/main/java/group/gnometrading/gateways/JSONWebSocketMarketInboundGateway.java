@@ -1,11 +1,10 @@
 package group.gnometrading.gateways;
 
+import com.lmax.disruptor.RingBuffer;
 import group.gnometrading.codecs.json.JSONDecoder;
 import group.gnometrading.codecs.json.JSONEncoder;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.schemas.Schema;
-import group.gnometrading.schemas.SchemaType;
-import io.aeron.Publication;
 import org.agrona.concurrent.EpochNanoClock;
 
 import java.io.IOException;
@@ -20,16 +19,14 @@ public abstract class JSONWebSocketMarketInboundGateway extends WebSocketMarketI
     protected final ByteBuffer writeBuffer;
 
     public JSONWebSocketMarketInboundGateway(
-            Publication publication,
+            RingBuffer<Schema<?, ?>> ringBuffer,
             EpochNanoClock clock,
-            Schema<?, ?> inputSchema,
-            SchemaType outputSchemaType,
             WebSocketClient socketClient,
             JSONDecoder jsonDecoder,
             JSONEncoder jsonEncoder,
             int writeBufferSize
     ) {
-        super(publication, clock, inputSchema, outputSchemaType, socketClient);
+        super(ringBuffer, clock, socketClient);
         this.jsonDecoder = jsonDecoder;
         this.jsonEncoder = jsonEncoder;
         this.writeBuffer = ByteBuffer.allocate(writeBufferSize);
