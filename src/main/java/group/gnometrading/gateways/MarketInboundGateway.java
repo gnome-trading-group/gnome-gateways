@@ -10,17 +10,17 @@ import java.nio.ByteBuffer;
 
 public abstract class MarketInboundGateway implements GnomeAgent {
 
-    private final RingBuffer<Schema<?, ?>> ringBuffer;
+    private final RingBuffer<Schema> ringBuffer;
     protected final EpochNanoClock clock;
 
     protected long recvTimestamp;
-    protected Schema<?, ?> schema;
+    protected Schema schema;
 
     private boolean shouldReconnect;
     private long sequence;
 
     public MarketInboundGateway(
-            RingBuffer<Schema<?, ?>> ringBuffer,
+            RingBuffer<Schema> ringBuffer,
             EpochNanoClock clock
     ) {
         this.ringBuffer = ringBuffer;
@@ -35,6 +35,10 @@ public abstract class MarketInboundGateway implements GnomeAgent {
             this.shouldReconnect = false;
             this.reconnect();
         }
+
+        // keep alive pings exchanges, every 30 seconds
+        // sanity check if your internal book matches
+        // every 24 hours, reconnect
 
         final ByteBuffer buffer = readSocket();
         while (buffer != null && buffer.hasRemaining()) {

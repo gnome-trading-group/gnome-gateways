@@ -13,7 +13,7 @@ public abstract class WebSocketMarketInboundGateway extends MarketInboundGateway
     protected final WebSocketClient socketClient;
 
     public WebSocketMarketInboundGateway(
-            RingBuffer<Schema<?, ?>> ringBuffer,
+            RingBuffer<Schema> ringBuffer,
             EpochNanoClock clock,
             WebSocketClient socketClient
     ) {

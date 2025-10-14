@@ -17,7 +17,7 @@ public abstract class FIXMarketInboundGateway extends GenericSocketMarketInbound
     protected final FIXConfig fixConfig;
 
     public FIXMarketInboundGateway(
-            RingBuffer<Schema<?, ?>> ringBuffer,
+            RingBuffer<Schema> ringBuffer,
             EpochNanoClock clock,
             SocketClient socketClient,
             FIXConfig fixConfig

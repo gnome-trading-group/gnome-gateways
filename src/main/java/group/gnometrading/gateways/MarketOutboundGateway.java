@@ -1,12 +1,12 @@
 package group.gnometrading.gateways;
 
 import com.lmax.disruptor.EventHandler;
-import group.gnometrading.disruptor.SBEWrapper;
 import group.gnometrading.schemas.OrderDecoder;
+import group.gnometrading.schemas.Schema;
 
 import java.io.IOException;
 
-public abstract class MarketOutboundGateway implements SocketAgent, EventHandler<SBEWrapper> {
+public abstract class MarketOutboundGateway implements SocketAgent, EventHandler<Schema> {
 
     private final OrderDecoder orderDecoder;
 
@@ -15,8 +15,7 @@ public abstract class MarketOutboundGateway implements SocketAgent, EventHandler
     }
 
     @Override
-    public void onEvent(SBEWrapper sbeWrapper, long sequence, boolean endOfBatch) throws Exception {
-        this.orderDecoder.wrap(sbeWrapper.buffer, sbeWrapper.offset, sbeWrapper.length, OrderDecoder.SCHEMA_VERSION);
+    public void onEvent(Schema schema, long sequence, boolean endOfBatch) throws Exception {
         try {
             this.send(orderDecoder);
         } catch (IOException e) {

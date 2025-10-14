@@ -19,7 +19,7 @@ public abstract class JSONWebSocketMarketInboundGateway extends WebSocketMarketI
     protected final ByteBuffer writeBuffer;
 
     public JSONWebSocketMarketInboundGateway(
-            RingBuffer<Schema<?, ?>> ringBuffer,
+            RingBuffer<Schema> ringBuffer,
             EpochNanoClock clock,
             WebSocketClient socketClient,
             JSONDecoder jsonDecoder,

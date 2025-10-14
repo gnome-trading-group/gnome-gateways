@@ -13,7 +13,7 @@ public abstract class GenericSocketMarketInboundGateway extends MarketInboundGat
     protected final SocketClient socketClient;
 
     public GenericSocketMarketInboundGateway(
-            RingBuffer<Schema<?, ?>> ringBuffer,
+            RingBuffer<Schema> ringBuffer,
             EpochNanoClock clock,
             SocketClient socketClient
     ) {

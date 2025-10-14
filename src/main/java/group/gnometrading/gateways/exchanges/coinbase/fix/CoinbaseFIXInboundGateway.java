@@ -34,7 +34,7 @@ public class CoinbaseFIXInboundGateway extends FIXMarketInboundGateway {
     private final ByteBuffer signBuffer;
 
     public CoinbaseFIXInboundGateway(
-            RingBuffer<Schema<?, ?>> ringBuffer,
+            RingBuffer<Schema> ringBuffer,
             EpochNanoClock clock,
             SocketClient socketClient,
             FIXConfig fixConfig,
