@@ -95,6 +95,8 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
         }
 
         this.attachSocket();
+        this.internalBook.reset();
+        this.replayBuffer.reset();
 
         this.pause = false;
         while (this.isPaused) {
@@ -177,5 +179,10 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
             this.ringBuffer.publish(this.sequence);
             this.claim();
         }
+    }
+
+    protected void onSocketClose() {
+        this.pause = true;
+        throw new RuntimeException("Socket closed");
     }
 }

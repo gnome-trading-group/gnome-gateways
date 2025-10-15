@@ -8,7 +8,7 @@ public record MarketInboundGatewayConfig(
         long sanityCheckIntervalSeconds
 ) {
 
-    static long DEFAULT_RECONNECT_INTERVAL_SECONDS = TimeUnit.DAYS.toSeconds(1);
+    static long DEFAULT_RECONNECT_INTERVAL_SECONDS = TimeUnit.HOURS.toSeconds(12);
     static long DEFAULT_KEEP_ALIVE_INTERVAL_SECONDS = TimeUnit.SECONDS.toSeconds(30);
     static long DEFAULT_SANITY_CHECK_INTERVAL_SECONDS = TimeUnit.HOURS.toSeconds(1);
 

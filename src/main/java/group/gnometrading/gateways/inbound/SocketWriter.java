@@ -7,7 +7,6 @@ import group.gnometrading.concurrent.GnomeAgent;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 
 public abstract class SocketWriter implements GnomeAgent {
 

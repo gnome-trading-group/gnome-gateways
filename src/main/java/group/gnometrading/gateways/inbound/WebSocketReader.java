@@ -28,7 +28,8 @@ public abstract class WebSocketReader<T extends Schema> extends SocketReader<T> 
         if (result.isSuccess()) {
             return result.getBody();
         } else if (result.isClosed()) {
-            throw new IOException("Socket closed");
+            this.onSocketClose();
+            return null;
         } else {
             return null;
         }
