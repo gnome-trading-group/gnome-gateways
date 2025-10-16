@@ -8,6 +8,7 @@ import group.gnometrading.gateways.inbound.mbp.MBP10Book;
 import group.gnometrading.gateways.inbound.mbp.MBP10SchemaFactory;
 import group.gnometrading.schemas.MBP10Schema;
 import org.agrona.concurrent.EpochNanoClock;
+import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -15,7 +16,9 @@ import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -72,7 +75,7 @@ class SocketReaderTest {
     void testDoWorkWhenNotPaused() throws Exception {
         socketReader = new TestSocketReader(ringBuffer, clock);
         socketReader.pause = false;
-        socketReader.setNextReadResult(ByteBuffer.wrap("test".getBytes()));
+        socketReader.addNextReadResult(ByteBuffer.wrap("test".getBytes()));
 
         int result = socketReader.doWork();
 
@@ -85,7 +88,6 @@ class SocketReaderTest {
     void testDoWorkWithNullBuffer() throws Exception {
         socketReader = new TestSocketReader(ringBuffer, clock);
         socketReader.pause = false;
-        socketReader.setNextReadResult(null);
 
         int result = socketReader.doWork();
 
@@ -99,7 +101,7 @@ class SocketReaderTest {
         socketReader = new TestSocketReader(ringBuffer, clock);
         socketReader.pause = false;
         ByteBuffer emptyBuffer = ByteBuffer.allocate(0);
-        socketReader.setNextReadResult(emptyBuffer);
+        socketReader.addNextReadResult(emptyBuffer);
 
         int result = socketReader.doWork();
 
@@ -115,7 +117,7 @@ class SocketReaderTest {
 
         // Create buffer with multiple "messages" (each byte is a message in our test)
         ByteBuffer buffer = ByteBuffer.wrap(new byte[]{1, 2, 3, 4, 5});
-        socketReader.setNextReadResult(buffer);
+        socketReader.addNextReadResult(buffer);
 
         int result = socketReader.doWork();
 
@@ -128,7 +130,7 @@ class SocketReaderTest {
     void testDoWorkSetsRecvTimestamp() throws Exception {
         socketReader = new TestSocketReader(ringBuffer, clock);
         socketReader.pause = false;
-        socketReader.setNextReadResult(ByteBuffer.wrap("test".getBytes()));
+        socketReader.addNextReadResult(ByteBuffer.wrap("test".getBytes()));
 
         long beforeTime = clock.nanoTime();
         socketReader.doWork();
@@ -196,7 +198,7 @@ class SocketReaderTest {
 
     @Test
     void testConnectWithSnapshot() throws IOException {
-        socketReader = new TestSocketReader(ringBuffer, clock);
+        socketReader = new TestSocketReader(ringBuffer, clock, true);
         GnomeAgentRunner.startOnThread(new GnomeAgentRunner(socketReader, null));
 
         // Set up snapshot
@@ -205,11 +207,13 @@ class SocketReaderTest {
         snapshot.bids[0].update(50000L, 100L, 1L);
         socketReader.setSnapshot(snapshot);
 
-        // Add some replay buffer data
-        socketReader.schema.encoder.sequence(999L); // Before snapshot
-        socketReader.offer();
-        socketReader.schema.encoder.sequence(1001L); // After snapshot
-        socketReader.offer();
+        var schema1 = new MBP10Schema();
+        schema1.encoder.sequence(999L);
+        socketReader.addNextReadResult(schema1.buffer, schema1.totalMessageSize());
+
+        var schema2 = new MBP10Schema();
+        schema2.encoder.sequence(1001L);
+        socketReader.addNextReadResult(schema2.buffer, schema2.totalMessageSize());
 
         socketReader.connect();
 
@@ -247,7 +251,7 @@ class SocketReaderTest {
             workerStarted.countDown();
             while (workerRunning.get()) {
                 try {
-                    socketReader.setNextReadResult(ByteBuffer.wrap(new byte[]{1}));
+                    socketReader.addNextReadResult(ByteBuffer.wrap(new byte[]{1}));
                     socketReader.doWork();
                     doWorkCalls.incrementAndGet();
                     Thread.yield();
@@ -307,7 +311,7 @@ class SocketReaderTest {
             workerStarted.countDown();
             while (workerRunning.get()) {
                 try {
-                    socketReader.setNextReadResult(ByteBuffer.wrap(new byte[]{1}));
+                    socketReader.addNextReadResult(ByteBuffer.wrap(new byte[]{1}));
                     socketReader.doWork();
                     Thread.yield();
                 } catch (Exception e) {
@@ -393,7 +397,7 @@ class SocketReaderTest {
             while (workerRunning.get()) {
                 try {
                     // Simulate continuous message flow
-                    socketReader.setNextReadResult(ByteBuffer.wrap(new byte[]{1, 2, 3, 4, 5}));
+                    socketReader.addNextReadResult(ByteBuffer.wrap(new byte[]{1, 2, 3, 4, 5}));
                     socketReader.doWork();
                     messagesProcessed.addAndGet(5);
                     Thread.yield();
@@ -452,7 +456,7 @@ class SocketReaderTest {
             workerStarted.countDown();
             while (workerRunning.get()) {
                 try {
-                    socketReader.setNextReadResult(ByteBuffer.wrap(new byte[]{1}));
+                    socketReader.addNextReadResult(ByteBuffer.wrap(new byte[]{1}));
                     socketReader.doWork();
                     Thread.yield();
                 } catch (Exception e) {
@@ -501,14 +505,13 @@ class SocketReaderTest {
     @Test
     @Timeout(10)
     void testReplayBufferDuringConnect() throws Exception {
-        socketReader = new TestSocketReader(ringBuffer, clock);
+        socketReader = new TestSocketReader(ringBuffer, clock, true);
         GnomeAgentRunner.startOnThread(new GnomeAgentRunner(socketReader, null));
 
         // Add messages to replay buffer
-        socketReader.buffer = true;
         for (int i = 0; i < 10; i++) {
             socketReader.schema.encoder.sequence(i);
-            socketReader.offer();
+            socketReader.addNextReadResult(socketReader.schema.buffer, socketReader.schema.totalMessageSize());
         }
 
         // Set snapshot with sequence 5
@@ -577,7 +580,7 @@ class SocketReaderTest {
             workersStarted.countDown();
             while (workerRunning.get()) {
                 try {
-                    socketReader.setNextReadResult(ByteBuffer.wrap(new byte[]{1, 2, 3}));
+                    socketReader.addNextReadResult(ByteBuffer.wrap(new byte[]{1, 2, 3}));
                     socketReader.doWork();
                     doWorkCalls.incrementAndGet();
                 } catch (Exception e) {
@@ -638,16 +641,31 @@ class SocketReaderTest {
         final AtomicInteger connectCallCount = new AtomicInteger(0);
         final AtomicBoolean attachSocketCalled = new AtomicBoolean(false);
         final AtomicBoolean fetchSnapshotCalled = new AtomicBoolean(false);
+        final AtomicBoolean pendingReads = new AtomicBoolean(false);
 
-        private ByteBuffer nextReadResult;
+        private final Deque<ByteBuffer> readResults = new ArrayDeque<>();
         private Book<MBP10Schema> snapshot;
+        private final boolean shouldOfferBuffer;
 
         public TestSocketReader(RingBuffer<MBP10Schema> outputBuffer, EpochNanoClock clock) {
-            super(outputBuffer, clock, null);
+            this(outputBuffer, clock, false);
         }
 
-        public void setNextReadResult(ByteBuffer buffer) {
-            this.nextReadResult = buffer;
+        public TestSocketReader(RingBuffer<MBP10Schema> outputBuffer, EpochNanoClock clock, boolean shouldOfferBuffer) {
+            super(outputBuffer, clock, null);
+            this.shouldOfferBuffer = shouldOfferBuffer;
+        }
+
+        public void addNextReadResult(ByteBuffer buffer) {
+            readResults.add(buffer);
+            pendingReads.set(true);
+        }
+
+        public void addNextReadResult(UnsafeBuffer buffer, int size) {
+            ByteBuffer byteBuffer = ByteBuffer.allocate(size);
+            buffer.getBytes(0, byteBuffer, 0, size);
+            readResults.add(byteBuffer);
+            pendingReads.set(true);
         }
 
         public void setSnapshot(Book<MBP10Schema> snapshot) {
@@ -657,15 +675,27 @@ class SocketReaderTest {
         @Override
         protected ByteBuffer readSocket() throws IOException {
             readSocketCallCount.incrementAndGet();
-            return nextReadResult;
+            if (!readResults.isEmpty()) {
+                return readResults.removeFirst();
+            }
+            return null;
         }
 
         @Override
         protected void handleGatewayMessage(ByteBuffer buffer) {
-            // Process one byte at a time to simulate multiple messages
-            if (buffer.hasRemaining()) {
-                buffer.get();
-                handleMessageByteCount.incrementAndGet();
+            if (shouldOfferBuffer) {
+                this.schema.buffer.putBytes(0, buffer, buffer.remaining());
+                offer();
+            } else {
+                // Process one byte at a time to simulate multiple messages
+                if (buffer.hasRemaining()) {
+                    buffer.get();
+                    handleMessageByteCount.incrementAndGet();
+                }
+            }
+            // Check if we have processed all pending reads
+            if (readResults.isEmpty()) {
+                pendingReads.set(false);
             }
         }
 
@@ -677,6 +707,9 @@ class SocketReaderTest {
         @Override
         public Book<MBP10Schema> fetchSnapshot() throws IOException {
             fetchSnapshotCalled.set(true);
+            while (pendingReads.get()) {
+                Thread.yield();
+            }
             return snapshot;
         }
 

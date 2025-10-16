@@ -99,21 +99,20 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
         this.replayBuffer.reset();
 
         this.pause = false;
-        while (this.isPaused) {
-            Thread.yield();
-        }
 
         this.snapshot = this.fetchSnapshot();
+        if (this.snapshot != null) {
+            this.internalBook.copyFrom(this.snapshot);
+        }
 
         this.pause = true;
-        this.buffer = false;
-
         while (!this.isPaused) {
             Thread.yield();
         }
 
         this.replayBuffer.read(this::consumeReplay);
 
+        this.buffer = false;
         this.pause = false;
     }
 
