@@ -9,6 +9,7 @@ import group.gnometrading.gateways.inbound.JSONWebSocketWriter;
 import group.gnometrading.gateways.inbound.SocketWriter;
 import group.gnometrading.gateways.inbound.mbp.MBP10Book;
 import group.gnometrading.gateways.inbound.mbp.MBP10SchemaFactory;
+import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.schemas.*;
 import group.gnometrading.sm.Listing;
@@ -32,6 +33,7 @@ public class HyperliquidSocketReader extends JSONWebSocketReader<MBP10Schema> im
     private long lastTradePrice, lastTradeSize;
 
     public HyperliquidSocketReader(
+            Logger logger,
             RingBuffer<MBP10Schema> outputBuffer,
             EpochNanoClock clock,
             SocketWriter socketWriter,
@@ -39,7 +41,7 @@ public class HyperliquidSocketReader extends JSONWebSocketReader<MBP10Schema> im
             JSONDecoder jsonDecoder,
             Listing listing
     ) {
-        super(outputBuffer, clock, socketWriter, socketClient, jsonDecoder);
+        super(logger, outputBuffer, clock, socketWriter, socketClient, jsonDecoder);
         this.listing = listing;
         this.book = (MBP10Book) this.internalBook;
     }

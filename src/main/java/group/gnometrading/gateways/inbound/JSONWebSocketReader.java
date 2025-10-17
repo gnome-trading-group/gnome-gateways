@@ -2,6 +2,7 @@ package group.gnometrading.gateways.inbound;
 
 import com.lmax.disruptor.RingBuffer;
 import group.gnometrading.codecs.json.JSONDecoder;
+import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.schemas.Schema;
 import org.agrona.concurrent.EpochNanoClock;
@@ -13,13 +14,14 @@ public abstract class JSONWebSocketReader<T extends Schema> extends WebSocketRea
     protected final JSONDecoder jsonDecoder;
 
     public JSONWebSocketReader(
+            Logger logger,
             RingBuffer<T> outputBuffer,
             EpochNanoClock clock,
             SocketWriter socketWriter,
             WebSocketClient socketClient,
             JSONDecoder jsonDecoder
     ) {
-        super(outputBuffer, clock, socketWriter, socketClient);
+        super(logger, outputBuffer, clock, socketWriter, socketClient);
         this.jsonDecoder = jsonDecoder;
     }
 

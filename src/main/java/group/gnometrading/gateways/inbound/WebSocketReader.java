@@ -1,6 +1,7 @@
 package group.gnometrading.gateways.inbound;
 
 import com.lmax.disruptor.RingBuffer;
+import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.schemas.Schema;
 import org.agrona.concurrent.EpochNanoClock;
@@ -13,12 +14,13 @@ public abstract class WebSocketReader<T extends Schema> extends SocketReader<T> 
     protected final WebSocketClient socketClient;
 
     public WebSocketReader(
+            Logger logger,
             RingBuffer<T> outputBuffer,
             EpochNanoClock clock,
             SocketWriter socketWriter,
             WebSocketClient socketClient
     ) {
-        super(outputBuffer, clock, socketWriter);
+        super(logger, outputBuffer, clock, socketWriter);
         this.socketClient = socketClient;
     }
 

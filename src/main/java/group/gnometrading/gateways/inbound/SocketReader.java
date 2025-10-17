@@ -3,6 +3,8 @@ package group.gnometrading.gateways.inbound;
 import com.lmax.disruptor.RingBuffer;
 import group.gnometrading.collections.buffer.OneToOneRingBuffer;
 import group.gnometrading.concurrent.GnomeAgent;
+import group.gnometrading.logging.LogMessage;
+import group.gnometrading.logging.Logger;
 import group.gnometrading.schemas.Schema;
 import org.agrona.concurrent.EpochNanoClock;
 
@@ -14,6 +16,7 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
     private static final int DEFAULT_BOOK_BUFFER_SIZE = 1 << 7; // 128 slots
     private static final int DEFAULT_REPLAY_BUFFER_SIZE = 1 << 11; // 2048 slots
 
+    private final Logger logger;
     private final RingBuffer<T> ringBuffer;
     private final EpochNanoClock clock;
     protected final SocketWriter socketWriter;
@@ -28,10 +31,12 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
     public volatile boolean pause, isPaused, buffer;
 
     public SocketReader(
+            Logger logger,
             RingBuffer<T> outputBuffer,
             EpochNanoClock clock,
             SocketWriter socketWriter
     ) {
+        this.logger = logger;
         this.ringBuffer = outputBuffer;
         this.clock = clock;
         this.socketWriter = socketWriter;
@@ -114,6 +119,7 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
 
         this.buffer = false;
         this.pause = false;
+        logger.log(LogMessage.SOCKET_CONNECTED);
     }
 
     protected abstract void attachSocket() throws IOException;
@@ -182,6 +188,7 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
 
     protected void onSocketClose() {
         this.pause = true;
+        logger.log(LogMessage.SOCKET_DISCONNECTED);
         throw new RuntimeException("Socket closed");
     }
 }

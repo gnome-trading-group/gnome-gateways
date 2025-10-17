@@ -6,6 +6,7 @@ import com.lmax.disruptor.util.DaemonThreadFactory;
 import group.gnometrading.concurrent.GnomeAgentRunner;
 import group.gnometrading.gateways.inbound.mbp.MBP10Book;
 import group.gnometrading.gateways.inbound.mbp.MBP10SchemaFactory;
+import group.gnometrading.logging.NullLogger;
 import group.gnometrading.schemas.MBP10Schema;
 import org.agrona.concurrent.EpochNanoClock;
 import org.agrona.concurrent.UnsafeBuffer;
@@ -652,7 +653,7 @@ class SocketReaderTest {
         }
 
         public TestSocketReader(RingBuffer<MBP10Schema> outputBuffer, EpochNanoClock clock, boolean shouldOfferBuffer) {
-            super(outputBuffer, clock, null);
+            super(new NullLogger(), outputBuffer, clock, null);
             this.shouldOfferBuffer = shouldOfferBuffer;
         }
 
