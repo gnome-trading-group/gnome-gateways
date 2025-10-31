@@ -5,6 +5,7 @@ import group.gnometrading.codecs.json.JSONDecoder;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.schemas.Schema;
+import group.gnometrading.sm.Listing;
 import org.agrona.concurrent.EpochNanoClock;
 
 import java.nio.ByteBuffer;
@@ -18,10 +19,11 @@ public abstract class JSONWebSocketReader<T extends Schema> extends WebSocketRea
             RingBuffer<T> outputBuffer,
             EpochNanoClock clock,
             SocketWriter socketWriter,
+            Listing listing,
             WebSocketClient socketClient,
             JSONDecoder jsonDecoder
     ) {
-        super(logger, outputBuffer, clock, socketWriter, socketClient);
+        super(logger, outputBuffer, clock, socketWriter, listing, socketClient);
         this.jsonDecoder = jsonDecoder;
     }
 

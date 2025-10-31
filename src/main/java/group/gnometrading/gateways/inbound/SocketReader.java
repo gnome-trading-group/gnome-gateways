@@ -6,6 +6,7 @@ import group.gnometrading.concurrent.GnomeAgent;
 import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.schemas.Schema;
+import group.gnometrading.sm.Listing;
 import org.agrona.concurrent.EpochNanoClock;
 
 import java.io.IOException;
@@ -18,12 +19,13 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
 
     private final Logger logger;
     private final RingBuffer<T> ringBuffer;
-    private final EpochNanoClock clock;
+    public final EpochNanoClock clock;
     protected final SocketWriter socketWriter;
+    protected final Listing listing;
     private final OneToOneRingBuffer<T> replayBuffer;
     private long sequence;
 
-    protected long recvTimestamp;
+    public volatile long recvTimestamp = 0L;
     protected T schema;
     protected Book<T> internalBook;
     private Book<T> snapshot;
@@ -34,12 +36,14 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
             Logger logger,
             RingBuffer<T> outputBuffer,
             EpochNanoClock clock,
-            SocketWriter socketWriter
+            SocketWriter socketWriter,
+            Listing listing
     ) {
         this.logger = logger;
         this.ringBuffer = outputBuffer;
         this.clock = clock;
         this.socketWriter = socketWriter;
+        this.listing = listing;
         this.replayBuffer = new OneToOneRingBuffer<>(this::createSchemaArray, this::createSchema, DEFAULT_REPLAY_BUFFER_SIZE);
         this.internalBook = createBook();
         this.snapshot = null;
@@ -119,7 +123,6 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
 
         this.buffer = false;
         this.pause = false;
-        logger.log(LogMessage.SOCKET_CONNECTED);
     }
 
     protected abstract void attachSocket() throws IOException;
@@ -137,6 +140,7 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
      * @throws Exception if there is an error disconnecting from the gateway
      */
     public void disconnect() throws Exception {
+        logger.log(LogMessage.SOCKET_DISCONNECTING);
         this.pause = true;
         this.buffer = true;
 
@@ -147,6 +151,7 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
         this.disconnectSocket();
         this.internalBook.reset();
         this.replayBuffer.reset();
+        logger.log(LogMessage.SOCKET_DISCONNECTED);
     }
 
     @Override

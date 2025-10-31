@@ -5,6 +5,9 @@ import group.gnometrading.schemas.MBP10Encoder;
 import group.gnometrading.schemas.MBP10Schema;
 import group.gnometrading.utils.Copyable;
 
+/**
+ * MBPBook is used when an exchange sends entire book updates rather than incremental updates.
+ */
 public class MBPBook implements Book<MBP10Schema> {
 
     public final PriceLevel[] asks, bids;
@@ -188,9 +191,9 @@ public class MBPBook implements Book<MBP10Schema> {
     }
 
     public static class PriceLevel implements Copyable<PriceLevel> {
-        long price = MBP10Encoder.askPrice0NullValue();
-        long size = MBP10Encoder.askSize0NullValue();
-        long count = MBP10Encoder.askCount0NullValue();
+        public long price = MBP10Encoder.askPrice0NullValue();
+        public long size = MBP10Encoder.askSize0NullValue();
+        public long count = MBP10Encoder.askCount0NullValue();
 
         public void reset() {
             price = MBP10Encoder.askPrice0NullValue();

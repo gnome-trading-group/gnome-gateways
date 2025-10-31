@@ -17,8 +17,6 @@ public abstract class SocketWriter implements GnomeAgent {
     private final RingBuffer<ByteBuffer> controlWriteBuffer;
     private final int writeBufferSize;
 
-    private int writeSequence, controlWriteSequence;
-
     public SocketWriter() {
         this(DEFAULT_WRITE_BUFFER_SIZE, DEFAULT_MESSAGE_BUS_CAPACITY);
     }
@@ -27,8 +25,6 @@ public abstract class SocketWriter implements GnomeAgent {
         this.writeBufferSize = writeBufferSize;
         this.writeBuffer = new ManyToOneRingBuffer<>(ByteBuffer[]::new, this::createWriteBuffer, messageBusCapacity);
         this.controlWriteBuffer = new ManyToOneRingBuffer<>(ByteBuffer[]::new, this::createWriteBuffer, messageBusCapacity);
-
-        this.writeSequence = this.controlWriteSequence = -1;
     }
 
     private ByteBuffer createWriteBuffer() {
@@ -54,33 +50,35 @@ public abstract class SocketWriter implements GnomeAgent {
         buffer.clear();
     }
 
-    public boolean hasPendingWrites() {
-        return this.controlWriteSequence >= 0 || this.writeSequence >= 0;
+    public void publishWriteBuffer(int writeSequence) {
+        this.writeBuffer.commit(writeSequence);
     }
 
-    public void publishWriteBuffer() {
-        this.writeBuffer.commit(this.writeSequence);
-        this.writeSequence = -1;
-    }
-
-    public ByteBuffer getWriteBuffer() {
-        this.writeSequence = this.writeBuffer.tryClaim();
-        if (this.writeSequence < 0) {
+    public int claimWriteBuffer() {
+        int writeSequence = this.writeBuffer.tryClaim();
+        if (writeSequence < 0) {
             throw new RuntimeException("Write buffer is full");
         }
-        return this.writeBuffer.indexAt(this.writeSequence);
+        return writeSequence;
     }
 
-    public void publishControlWriteBuffer() {
-        this.controlWriteBuffer.commit(this.controlWriteSequence);
-        this.controlWriteSequence = -1;
+    public ByteBuffer getWriteBuffer(int writeSequence) {
+        return this.writeBuffer.indexAt(writeSequence);
     }
 
-    public ByteBuffer getControlWriteBuffer() {
-        this.controlWriteSequence = this.controlWriteBuffer.tryClaim();
-        if (this.controlWriteSequence < 0) {
+    public void publishControlWriteBuffer(int controlWriteSequence) {
+        this.controlWriteBuffer.commit(controlWriteSequence);
+    }
+
+    public int claimControlWriteBuffer() {
+        int controlWriteSequence = this.controlWriteBuffer.tryClaim();
+        if (controlWriteSequence < 0) {
             throw new RuntimeException("Control write buffer is full");
         }
-        return this.controlWriteBuffer.indexAt(this.controlWriteSequence);
+        return controlWriteSequence;
+    }
+
+    public ByteBuffer getControlWriteBuffer(int controlWriteSequence) {
+        return this.controlWriteBuffer.indexAt(controlWriteSequence);
     }
 }

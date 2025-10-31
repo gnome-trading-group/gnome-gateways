@@ -81,7 +81,7 @@
         <dependency>
             <groupId>group.gnometrading</groupId>
             <artifactId>gnome-networking</artifactId>
-            <version>1.0.60</version>
+            <version>1.0.63</version>
             <classifier>${os.classifier}</classifier>
         </dependency>
         <dependency>
@@ -97,7 +97,7 @@
         <dependency>
             <groupId>group.gnometrading</groupId>
             <artifactId>gnome-logging</artifactId>
-            <version>1.0.2</version>
+            <version>1.0.4</version>
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>

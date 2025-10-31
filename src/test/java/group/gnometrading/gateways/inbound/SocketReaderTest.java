@@ -653,7 +653,7 @@ class SocketReaderTest {
         }
 
         public TestSocketReader(RingBuffer<MBP10Schema> outputBuffer, EpochNanoClock clock, boolean shouldOfferBuffer) {
-            super(new NullLogger(), outputBuffer, clock, null);
+            super(new NullLogger(), outputBuffer, clock, null, null);
             this.shouldOfferBuffer = shouldOfferBuffer;
         }
 

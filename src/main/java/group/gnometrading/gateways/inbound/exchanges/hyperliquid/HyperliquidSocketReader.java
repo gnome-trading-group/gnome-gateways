@@ -3,10 +3,7 @@ package group.gnometrading.gateways.inbound.exchanges.hyperliquid;
 import com.lmax.disruptor.RingBuffer;
 import group.gnometrading.codecs.json.JSONDecoder;
 import group.gnometrading.codecs.json.JSONEncoder;
-import group.gnometrading.gateways.inbound.Book;
-import group.gnometrading.gateways.inbound.JSONWebSocketReader;
-import group.gnometrading.gateways.inbound.JSONWebSocketWriter;
-import group.gnometrading.gateways.inbound.SocketWriter;
+import group.gnometrading.gateways.inbound.*;
 import group.gnometrading.gateways.inbound.mbp.MBP10Book;
 import group.gnometrading.gateways.inbound.mbp.MBP10SchemaFactory;
 import group.gnometrading.logging.Logger;
@@ -28,7 +25,6 @@ public class HyperliquidSocketReader extends JSONWebSocketReader<MBP10Schema> im
         ADMIN
     }
 
-    private final Listing listing;
     private final MBP10Book book;
     private long lastTradePrice, lastTradeSize;
 
@@ -37,24 +33,24 @@ public class HyperliquidSocketReader extends JSONWebSocketReader<MBP10Schema> im
             RingBuffer<MBP10Schema> outputBuffer,
             EpochNanoClock clock,
             SocketWriter socketWriter,
+            Listing listing,
             WebSocketClient socketClient,
-            JSONDecoder jsonDecoder,
-            Listing listing
+            JSONDecoder jsonDecoder
     ) {
-        super(logger, outputBuffer, clock, socketWriter, socketClient, jsonDecoder);
-        this.listing = listing;
+        super(logger, outputBuffer, clock, socketWriter, listing, socketClient, jsonDecoder);
         this.book = (MBP10Book) this.internalBook;
     }
 
     @Override
     protected void keepAlive() throws IOException {
         // { "method": "ping" }
-        final JSONEncoder jsonEncoder = ((JSONWebSocketWriter) this.socketWriter).getWrappedJSONEncoder(true);
+        final JSONWebSocketWriter jsonWebSocketWriter = (JSONWebSocketWriter) this.socketWriter;
+        final JSONEncoder jsonEncoder = jsonWebSocketWriter.getJSONEncoder();
         jsonEncoder.writeObjectStart();
         jsonEncoder.writeObjectEntry("method", "ping");
         jsonEncoder.writeObjectEnd();
 
-        this.socketWriter.publishControlWriteBuffer();
+        ((WebSocketWriter) this.socketWriter).writeText(jsonWebSocketWriter.getAndFlipJSONBodyBuffer(), true);
     }
 
     @Override
@@ -150,7 +146,6 @@ public class HyperliquidSocketReader extends JSONWebSocketReader<MBP10Schema> im
     private void parseL2Book(final JSONDecoder.JSONNode node) {
         prepareEncoder();
 
-        this.schema.encoder.timestampRecv(recvTimestamp);
         this.schema.encoder.timestampEvent(MBP10Encoder.timestampEventNullValue());
         this.schema.encoder.sequence(MBP10Encoder.sequenceNullValue());
         this.schema.encoder.price(this.lastTradePrice);
@@ -187,7 +182,6 @@ public class HyperliquidSocketReader extends JSONWebSocketReader<MBP10Schema> im
     private void parseTrade(final JSONDecoder.JSONObject trade) {
         prepareEncoder();
 
-        this.schema.encoder.timestampRecv(recvTimestamp);
         this.book.writeTo(this.schema);
 
         Side side = Side.None;
@@ -242,14 +236,14 @@ public class HyperliquidSocketReader extends JSONWebSocketReader<MBP10Schema> im
         this.schema.encoder.exchangeId(listing.exchangeId());
         this.schema.encoder.securityId(listing.securityId());
         this.schema.encoder.timestampSent(MBP10Encoder.timestampSentNullValue()); // Hyperliquid only has event timestamps
-        this.lastTradePrice = MBP10Encoder.priceNullValue();
-        this.lastTradeSize = MBP10Encoder.sizeNullValue();
+        this.schema.encoder.timestampRecv(recvTimestamp);
     }
 
     private void writeSubscription(final String channel) {
-        final JSONEncoder jsonEncoder = ((JSONWebSocketWriter) this.socketWriter).getWrappedJSONEncoder(false);
-
         // { "method": "subscribe", "subscription": { "type": "<channel>", "coin": "<coin_symbol>" } }
+        final JSONWebSocketWriter jsonWebSocketWriter = (JSONWebSocketWriter) this.socketWriter;
+        final JSONEncoder jsonEncoder = jsonWebSocketWriter.getJSONEncoder();
+
         jsonEncoder.writeObjectStart();
         jsonEncoder.writeObjectEntry("method", "subscribe");
 
@@ -265,17 +259,13 @@ public class HyperliquidSocketReader extends JSONWebSocketReader<MBP10Schema> im
 
         jsonEncoder.writeObjectEnd();
 
-        this.socketWriter.publishWriteBuffer();
+        ((WebSocketWriter) this.socketWriter).writeText(jsonWebSocketWriter.getAndFlipJSONBodyBuffer(), false);
     }
 
     @Override
     protected void subscribe() throws IOException {
         this.writeSubscription("l2Book");
         this.writeSubscription("trades");
-
-        while (this.socketWriter.hasPendingWrites()) {
-            Thread.onSpinWait();
-        }
     }
 
 }
