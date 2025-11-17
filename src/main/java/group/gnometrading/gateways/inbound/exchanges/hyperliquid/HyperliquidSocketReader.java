@@ -202,7 +202,7 @@ public class HyperliquidSocketReader extends JSONWebSocketReader<MBP10Schema> im
                 } else if (key.getName().equals("sz")) {
                     size = key.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR);
                 } else if (key.getName().equals("time")) {
-                    timestampEvent = key.asLong() * 1_000_000;
+                    timestampEvent = key.asLong() * NANOS_PER_MILLI;
                 }
             }
         }
