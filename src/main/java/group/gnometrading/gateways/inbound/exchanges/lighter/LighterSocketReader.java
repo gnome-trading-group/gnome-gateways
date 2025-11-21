@@ -56,8 +56,7 @@ public class LighterSocketReader extends JSONWebSocketReader<MBP10Schema> implem
                     } else if (key.getName().equals("order_book")) {
                         shouldOffer = true;
                         parseOrderBook(key);
-                    } else if (key.getName().equals("trades") && this.lastSequenceNumber != MBP10Encoder.sequenceNullValue()) {
-                        // We don't care about trades before we have a valid book
+                    } else if (key.getName().equals("trades")) {
                         parseTrades(key);
                     } else if (key.getName().equals("type") && key.asString().equals("ping")) {
                         sendPong();
