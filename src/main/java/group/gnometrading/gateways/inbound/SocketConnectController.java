@@ -41,7 +41,7 @@ public class SocketConnectController {
     public void connect() {
         this.logger.log(LogMessage.SOCKET_CONNECTING);
         Exception lastException = null;
-        for (int i = 0; i < this.maxReconnectAttempts; i++) {
+        for (int i = 0; i < 1 + this.maxReconnectAttempts; i++) {
             this.connectThread = Thread.currentThread();
             this.timeoutOccurred = false;
 
