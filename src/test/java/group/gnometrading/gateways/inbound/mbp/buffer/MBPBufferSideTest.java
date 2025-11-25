@@ -158,8 +158,8 @@ class MBPBufferSideTest {
     @Test
     void testRemoveNonExistentLevel() {
         bidSide.update(10000L, 100L, 1L);
-        int depth = bidSide.update(9900L, 0L, 0L); // Try to remove non-existent level
-        assertEquals(-1, depth, "Should return -1 for non-existent level");
+        int depth = bidSide.update(9900L, 0L, 0L); // Try to remove non-existent level (would be at index 1)
+        assertEquals(1, depth, "Should return index where it would've been inserted");
     }
 
     @Test
@@ -280,6 +280,259 @@ class MBPBufferSideTest {
         bidSide.update(10000L, 300L, 3L); // Update first
         bidSide.update(9900L, 400L, 4L);  // Update second
     }
+
+
+    // ========== Return Value (Index) Tests ==========
+
+    @Test
+    void testReturnValueForFirstInsert() {
+        int idx = bidSide.update(10000L, 100L, 1L);
+        assertEquals(0, idx, "First insert should return index 0");
+    }
+
+    @Test
+    void testReturnValueForInsertAtBeginningBid() {
+        bidSide.update(10000L, 100L, 1L);
+        bidSide.update(9900L, 200L, 2L);
+        bidSide.update(9800L, 300L, 3L);
+        // Insert highest price (should go to index 0)
+        int idx = bidSide.update(10500L, 400L, 4L);
+        assertEquals(0, idx, "Insert at beginning should return index 0");
+    }
+
+    @Test
+    void testReturnValueForInsertAtEndBid() {
+        bidSide.update(10000L, 100L, 1L);
+        bidSide.update(9900L, 200L, 2L);
+        bidSide.update(9800L, 300L, 3L);
+        // Insert lowest price (should go to index 3)
+        int idx = bidSide.update(9700L, 400L, 4L);
+        assertEquals(3, idx, "Insert at end should return index 3");
+    }
+
+    @Test
+    void testReturnValueForInsertInMiddleBid() {
+        bidSide.update(10000L, 100L, 1L);
+        bidSide.update(9800L, 200L, 2L);
+        // Insert between 10000 and 9800 (should go to index 1)
+        int idx = bidSide.update(9900L, 300L, 3L);
+        assertEquals(1, idx, "Insert in middle should return index 1");
+    }
+
+    @Test
+    void testReturnValueForInsertAtBeginningAsk() {
+        askSide.update(10000L, 100L, 1L);
+        askSide.update(10100L, 200L, 2L);
+        askSide.update(10200L, 300L, 3L);
+        // Insert lowest price (should go to index 0)
+        int idx = askSide.update(9500L, 400L, 4L);
+        assertEquals(0, idx, "Insert at beginning should return index 0");
+    }
+
+    @Test
+    void testReturnValueForInsertAtEndAsk() {
+        askSide.update(10000L, 100L, 1L);
+        askSide.update(10100L, 200L, 2L);
+        askSide.update(10200L, 300L, 3L);
+        // Insert highest price (should go to index 3)
+        int idx = askSide.update(10700L, 400L, 4L);
+        assertEquals(3, idx, "Insert at end should return index 3");
+    }
+
+    @Test
+    void testReturnValueForInsertInMiddleAsk() {
+        askSide.update(10000L, 100L, 1L);
+        askSide.update(10200L, 200L, 2L);
+        // Insert between 10000 and 10200 (should go to index 1)
+        int idx = askSide.update(10100L, 300L, 3L);
+        assertEquals(1, idx, "Insert in middle should return index 1");
+    }
+
+    @Test
+    void testReturnValueForUpdateAtIndex0() {
+        bidSide.update(10000L, 100L, 1L);
+        bidSide.update(9900L, 200L, 2L);
+        // Update first level
+        int idx = bidSide.update(10000L, 150L, 5L);
+        assertEquals(0, idx, "Update at index 0 should return 0");
+    }
+
+    @Test
+    void testReturnValueForUpdateAtIndex1() {
+        bidSide.update(10000L, 100L, 1L);
+        bidSide.update(9900L, 200L, 2L);
+        bidSide.update(9800L, 300L, 3L);
+        // Update second level
+        int idx = bidSide.update(9900L, 250L, 5L);
+        assertEquals(1, idx, "Update at index 1 should return 1");
+    }
+
+    @Test
+    void testReturnValueForUpdateAtLastIndex() {
+        bidSide.update(10000L, 100L, 1L);
+        bidSide.update(9900L, 200L, 2L);
+        bidSide.update(9800L, 300L, 3L);
+        bidSide.update(9700L, 400L, 4L);
+        // Update last level (index 3)
+        int idx = bidSide.update(9700L, 450L, 5L);
+        assertEquals(3, idx, "Update at last index should return 3");
+    }
+
+    @Test
+    void testReturnValueForRemoveAtIndex0() {
+        bidSide.update(10000L, 100L, 1L);
+        bidSide.update(9900L, 200L, 2L);
+        // Remove first level
+        int idx = bidSide.update(10000L, 0L, 0L);
+        assertEquals(0, idx, "Remove at index 0 should return 0");
+    }
+
+    @Test
+    void testReturnValueForRemoveAtIndex1() {
+        bidSide.update(10000L, 100L, 1L);
+        bidSide.update(9900L, 200L, 2L);
+        bidSide.update(9800L, 300L, 3L);
+        // Remove second level
+        int idx = bidSide.update(9900L, 0L, 0L);
+        assertEquals(1, idx, "Remove at index 1 should return 1");
+    }
+
+    @Test
+    void testReturnValueForRemoveAtLastIndex() {
+        bidSide.update(10000L, 100L, 1L);
+        bidSide.update(9900L, 200L, 2L);
+        bidSide.update(9800L, 300L, 3L);
+        // Remove last level (index 2)
+        int idx = bidSide.update(9800L, 0L, 0L);
+        assertEquals(2, idx, "Remove at last index should return 2");
+    }
+
+    @Test
+    void testReturnValueForRemoveNonExistent() {
+        bidSide.update(10000L, 100L, 1L);
+        bidSide.update(9900L, 200L, 2L);
+        // Try to remove non-existent price (9500 would be inserted at index 2 for bids)
+        int idx = bidSide.update(9500L, 0L, 0L);
+        assertEquals(2, idx, "Remove non-existent should return index where it would've been inserted");
+    }
+
+    @Test
+    void testReturnValueSequenceOfInserts() {
+        // Test a sequence of inserts and verify each returns correct index
+        assertEquals(0, bidSide.update(10000L, 100L, 1L)); // First insert at 0
+        assertEquals(0, bidSide.update(10100L, 200L, 2L)); // Higher price, goes to 0
+        assertEquals(2, bidSide.update(9900L, 300L, 3L));  // Lower price, goes to 2
+        assertEquals(1, bidSide.update(10050L, 400L, 4L)); // Middle price, goes to 1
+        assertEquals(3, bidSide.update(9950L, 500L, 5L));  // Between 10000 and 9900, goes to 3
+    }
+
+    @Test
+    void testReturnValueWhenBookIsFull() {
+        // Fill the book to max capacity
+        for (int i = 0; i < 10; i++) {
+            int idx = bidSide.update(10000L - i * 100L, 100L + i, i + 1L);
+            assertEquals(i, idx, "Insert at position " + i + " should return " + i);
+        }
+        // Try to insert beyond max at low priority (would be at index 10)
+        int idx = bidSide.update(9000L, 999L, 99L);
+        assertEquals(10, idx, "Insert beyond max at low priority should return 10 (would-be insertion index)");
+    }
+
+    @Test
+    void testReturnValueWhenBookIsFullHighPriority() {
+        // Fill the book to max capacity
+        for (int i = 0; i < 10; i++) {
+            bidSide.update(10000L - i * 100L, 100L + i, i + 1L);
+        }
+        // Insert at high priority (should push out last level)
+        int idx = bidSide.update(10500L, 999L, 99L);
+        assertEquals(0, idx, "Insert at high priority when full should return 0");
+    }
+
+    @Test
+    void testReturnValueAfterMultipleOperations() {
+        // Complex sequence: insert, update, remove, insert
+        assertEquals(0, bidSide.update(10000L, 100L, 1L)); // Insert at 0
+        assertEquals(0, bidSide.update(10100L, 200L, 2L)); // Insert at 0
+        assertEquals(0, bidSide.update(10100L, 250L, 3L)); // Update at 0
+        assertEquals(0, bidSide.update(10100L, 0L, 0L));   // Remove at 0
+        assertEquals(0, bidSide.update(10200L, 300L, 4L)); // Insert at 0
+    }
+
+    @Test
+    void testReturnValueForAllPositionsInBook() {
+        // Insert 5 levels and verify each position
+        assertEquals(0, bidSide.update(10000L, 100L, 1L));
+        assertEquals(0, bidSide.update(10400L, 200L, 2L));
+        assertEquals(0, bidSide.update(10800L, 300L, 3L));
+        assertEquals(3, bidSide.update(9600L, 400L, 4L));
+        assertEquals(2, bidSide.update(10200L, 500L, 5L));
+
+        // Now update each position and verify return value
+        assertEquals(0, bidSide.update(10800L, 310L, 6L));
+        assertEquals(1, bidSide.update(10400L, 210L, 7L));
+        assertEquals(2, bidSide.update(10200L, 510L, 8L));
+        assertEquals(3, bidSide.update(10000L, 110L, 9L));
+        assertEquals(4, bidSide.update(9600L, 410L, 10L));
+    }
+
+    @Test
+    void testReturnValueWithSingleLevelBook() {
+        MBPBufferSide side = new MBPBufferSide(1, true);
+        assertEquals(0, side.update(10000L, 100L, 1L)); // First insert
+        assertEquals(0, side.update(10000L, 200L, 2L)); // Update same
+        assertEquals(0, side.update(10100L, 300L, 3L)); // Replace with higher priority
+        assertEquals(0, side.update(10100L, 0L, 0L));   // Remove
+        assertEquals(0, side.update(9900L, 400L, 4L));  // Insert again
+    }
+
+    @Test
+    void testReturnValueForRemoveNonExistentAtBeginning() {
+        bidSide.update(10000L, 100L, 1L);
+        bidSide.update(9900L, 200L, 2L);
+        bidSide.update(9800L, 300L, 3L);
+        // Try to remove non-existent price that would be at beginning (highest for bids)
+        int idx = bidSide.update(10500L, 0L, 0L);
+        assertEquals(0, idx, "Remove non-existent at beginning should return 0");
+    }
+
+    @Test
+    void testReturnValueForRemoveNonExistentAtEnd() {
+        bidSide.update(10000L, 100L, 1L);
+        bidSide.update(9900L, 200L, 2L);
+        bidSide.update(9800L, 300L, 3L);
+        // Try to remove non-existent price that would be at end (lowest for bids)
+        int idx = bidSide.update(9700L, 0L, 0L);
+        assertEquals(3, idx, "Remove non-existent at end should return 3");
+    }
+
+    @Test
+    void testReturnValueForRemoveNonExistentInMiddle() {
+        bidSide.update(10000L, 100L, 1L);
+        bidSide.update(9800L, 200L, 2L);
+        // Try to remove non-existent price that would be in middle
+        int idx = bidSide.update(9900L, 0L, 0L);
+        assertEquals(1, idx, "Remove non-existent in middle should return 1");
+    }
+
+    @Test
+    void testReturnValueForRemoveNonExistentOnEmptyBook() {
+        // Try to remove from empty book
+        int idx = bidSide.update(10000L, 0L, 0L);
+        assertEquals(0, idx, "Remove non-existent on empty book should return 0");
+    }
+
+    @Test
+    void testReturnValueForRemoveNonExistentBeyondMaxLevels() {
+        // Fill the book to max capacity
+        for (int i = 0; i < 10; i++) {
+            bidSide.update(10000L - i * 100L, 100L + i, i + 1L);
+        }
+        // Try to remove non-existent price beyond max levels (low priority for bids)
+        int idx = bidSide.update(9000L, 0L, 0L);
+        assertEquals(10, idx, "Remove non-existent beyond max should return 10 (would-be insertion index)");
+    }
+
 
     // ========== Price Ordering Tests ==========
 

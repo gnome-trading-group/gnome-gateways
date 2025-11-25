@@ -42,7 +42,7 @@ class MBPBufferSide {
             return idxOrIns;
         } else {
             final int ins = ~idxOrIns;
-            if (size == 0L) return -1; // removing a non-present level -> ignore
+            if (size == 0L) return ins; // removing a non-present level -> ignore
             insertAt(ins, price, size, count);
             return ins;
         }

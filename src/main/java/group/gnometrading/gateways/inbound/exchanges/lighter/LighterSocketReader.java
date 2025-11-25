@@ -17,6 +17,7 @@ import java.io.IOException;
 public class LighterSocketReader extends JSONWebSocketReader<MBP10Schema> implements MBPBufferSchemaFactory {
 
     private static final long NANOS_PER_MILLIS = 1_000_000L;
+    private static final int MAX_LEVELS = 10;
 
     private final MBPBufferBook book;
     private final String orderBookChannel, tradeChannel;
@@ -54,8 +55,7 @@ public class LighterSocketReader extends JSONWebSocketReader<MBP10Schema> implem
                     if (key.getName().equals("offset")) {
                         this.lastSequenceNumber = key.asLong();
                     } else if (key.getName().equals("order_book")) {
-                        shouldOffer = true;
-                        parseOrderBook(key);
+                        shouldOffer = parseOrderBook(key);
                     } else if (key.getName().equals("trades")) {
                         parseTrades(key);
                     } else if (key.getName().equals("type") && key.asString().equals("ping")) {
@@ -99,7 +99,7 @@ public class LighterSocketReader extends JSONWebSocketReader<MBP10Schema> implem
                 } else if (key.getName().equals("timestamp")) {
                     timestamp = key.asLong() * NANOS_PER_MILLIS;
                 } else if (key.getName().equals("is_maker_ask")) {
-                    side = key.asBoolean() ? Side.Bid : Side.Ask; // is_maker_ask = true means the aggressor was a bid
+                    side = key.asBoolean() ? Side.Bid : Side.Ask; // is_maker_ask = true implies the aggressor was a bid
                 } else {
                     // NO-OP: consume it
                 }
@@ -121,7 +121,7 @@ public class LighterSocketReader extends JSONWebSocketReader<MBP10Schema> implem
         offer();
     }
 
-    private void parseOrderBook(final JSONDecoder.JSONNode node) {
+    private boolean parseOrderBook(final JSONDecoder.JSONNode node) {
         int depth = MBP10Encoder.depthNullValue();
         try (final var obj = node.asObject()) {
             while (obj.hasNextKey()) {
@@ -136,8 +136,8 @@ public class LighterSocketReader extends JSONWebSocketReader<MBP10Schema> implem
                 }
             }
         }
-        if (depth == MBP10Encoder.depthNullValue()) {
-            return;
+        if (depth == MBP10Encoder.depthNullValue() || depth >= MAX_LEVELS) {
+            return false;
         }
 
         prepareEncoder();
@@ -154,6 +154,7 @@ public class LighterSocketReader extends JSONWebSocketReader<MBP10Schema> implem
         this.schema.encoder.flags().marketByPrice(true);
 
         this.book.writeTo(this.schema);
+        return true;
     }
 
     private int parseOrders(final JSONDecoder.JSONNode node, final boolean isAsk) {
@@ -161,10 +162,7 @@ public class LighterSocketReader extends JSONWebSocketReader<MBP10Schema> implem
         try (final var array = node.asArray()) {
             while (array.hasNextItem()) {
                 try (final var item = array.nextItem(); final var obj = item.asObject()) {
-                    int res = parseOrder(obj, isAsk);
-                    if (res >= 0) {
-                        depth = Math.min(depth, res);
-                    }
+                    depth = Math.min(depth, parseOrder(obj, isAsk));
                 }
             }
         }
