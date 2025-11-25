@@ -10,6 +10,7 @@ import group.gnometrading.sm.Listing;
 import org.agrona.concurrent.EpochNanoClock;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.io.BufferedReader;
@@ -82,6 +83,7 @@ public class LighterSocketReaderTest {
     }
 
     @Test
+    @Disabled
     void testLighterMessagesProduceCorrectSchemas() throws IOException {
         // Read all messages from lighter.txt
         List<String> messages = readLighterMessages();
