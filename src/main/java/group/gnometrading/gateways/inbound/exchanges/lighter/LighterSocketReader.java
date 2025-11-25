@@ -99,7 +99,7 @@ public class LighterSocketReader extends JSONWebSocketReader<MBP10Schema> implem
                 } else if (key.getName().equals("timestamp")) {
                     timestamp = key.asLong() * NANOS_PER_MILLIS;
                 } else if (key.getName().equals("is_maker_ask")) {
-                    side = key.asBoolean() ? Side.Ask : Side.Bid;
+                    side = key.asBoolean() ? Side.Bid : Side.Ask; // is_maker_ask = true means the aggressor was a bid
                 } else {
                     // NO-OP: consume it
                 }
