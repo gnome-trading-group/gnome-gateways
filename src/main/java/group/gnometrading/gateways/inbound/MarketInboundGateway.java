@@ -6,8 +6,6 @@ import group.gnometrading.logging.Logger;
 import group.gnometrading.utils.Schedule;
 import org.agrona.concurrent.EpochClock;
 
-import java.util.concurrent.TimeUnit;
-
 public class MarketInboundGateway implements GnomeAgent {
 
     private final Logger logger;
@@ -28,15 +26,15 @@ public class MarketInboundGateway implements GnomeAgent {
         this.socketReader = socketReader;
         this.config = config;
 
-        this.reconnectSchedule = new Schedule(clock, TimeUnit.SECONDS.toMillis(config.reconnectIntervalSeconds()), this::reconnect);
-        this.keepAliveSchedule = new Schedule(clock, TimeUnit.SECONDS.toMillis(config.keepAliveIntervalSeconds()), this::keepAlive);
-        this.sanityCheckSchedule = new Schedule(clock, TimeUnit.SECONDS.toMillis(config.sanityCheckIntervalSeconds()), this::sanityCheck);
+        this.reconnectSchedule = new Schedule(clock, config.reconnectInterval().toMillis(), this::reconnect);
+        this.keepAliveSchedule = new Schedule(clock, config.keepAliveInterval().toMillis(), this::keepAlive);
+        this.sanityCheckSchedule = new Schedule(clock, config.sanityCheckInterval().toMillis(), this::sanityCheck);
         this.connectController = new SocketConnectController(
                 this.logger,
                 this.socketReader,
-                this.config.connectTimeoutSeconds(),
+                this.config.connectTimeout(),
                 this.config.maxReconnectAttempts(),
-                this.config.initialBackoffSeconds()
+                this.config.initialBackoff()
         );
     }
 
@@ -78,7 +76,7 @@ public class MarketInboundGateway implements GnomeAgent {
         this.sanityCheckSchedule.check();
 
         long nanosSinceLastRecv = this.socketReader.clock.nanoTime() - this.socketReader.recvTimestamp;
-        if (this.socketReader.recvTimestamp > 0 && nanosSinceLastRecv > TimeUnit.SECONDS.toNanos(this.config.maxSilentIntervalSeconds())) {
+        if (this.socketReader.recvTimestamp > 0 && nanosSinceLastRecv > this.config.maxSilentInterval().toNanos()) {
             this.reconnectSchedule.forceTrigger();
         }
 

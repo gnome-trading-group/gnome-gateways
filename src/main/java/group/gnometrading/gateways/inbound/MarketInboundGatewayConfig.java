@@ -1,57 +1,57 @@
 package group.gnometrading.gateways.inbound;
 
-import java.util.concurrent.TimeUnit;
+import java.time.Duration;
 
 public record MarketInboundGatewayConfig(
-        long reconnectIntervalSeconds,
-        long keepAliveIntervalSeconds,
-        long sanityCheckIntervalSeconds,
+        Duration reconnectInterval,
+        Duration keepAliveInterval,
+        Duration sanityCheckInterval,
         int maxReconnectAttempts,
-        long maxSilentIntervalSeconds,
-        long initialBackoffSeconds,
-        long connectTimeoutSeconds
+        Duration maxSilentInterval,
+        Duration initialBackoff,
+        Duration connectTimeout
 ) {
 
-    static long DEFAULT_RECONNECT_INTERVAL_SECONDS = TimeUnit.HOURS.toSeconds(12);
-    static long DEFAULT_KEEP_ALIVE_INTERVAL_SECONDS = TimeUnit.SECONDS.toSeconds(30);
-    static long DEFAULT_SANITY_CHECK_INTERVAL_SECONDS = TimeUnit.HOURS.toSeconds(1);
+    static Duration DEFAULT_RECONNECT_INTERVAL = Duration.ofHours(12);
+    static Duration DEFAULT_KEEP_ALIVE_INTERVAL = Duration.ofSeconds(30);
+    static Duration DEFAULT_SANITY_CHECK_INTERVAL = Duration.ofHours(1);
     static int DEFAULT_MAX_RECONNECT_ATTEMPTS = 5;
-    static long DEFAULT_MAX_SILENT_INTERVAL_SECONDS = TimeUnit.MINUTES.toSeconds(30);
-    static long DEFAULT_INITIAL_BACKOFF_SECONDS = TimeUnit.SECONDS.toSeconds(1);
-    static long DEFAULT_CONNECT_TIMEOUT_SECONDS = TimeUnit.SECONDS.toSeconds(10);
+    static Duration DEFAULT_MAX_SILENT_INTERVAL = Duration.ofSeconds(30);
+    static Duration DEFAULT_INITIAL_BACKOFF = Duration.ofSeconds(1);
+    static Duration DEFAULT_CONNECT_TIMEOUT = Duration.ofSeconds(10);
 
     public static final class Builder implements group.gnometrading.utils.Builder<MarketInboundGatewayConfig> {
 
-        private long reconnectIntervalSeconds = DEFAULT_RECONNECT_INTERVAL_SECONDS;
-        private long keepAliveIntervalSeconds = DEFAULT_KEEP_ALIVE_INTERVAL_SECONDS;
-        private long sanityCheckIntervalSeconds = DEFAULT_SANITY_CHECK_INTERVAL_SECONDS;
+        private Duration reconnectInterval = DEFAULT_RECONNECT_INTERVAL;
+        private Duration keepAliveInterval = DEFAULT_KEEP_ALIVE_INTERVAL;
+        private Duration sanityCheckInterval = DEFAULT_SANITY_CHECK_INTERVAL;
         private int maxReconnectAttempts = DEFAULT_MAX_RECONNECT_ATTEMPTS;
-        private long maxSilentIntervalSeconds = DEFAULT_MAX_SILENT_INTERVAL_SECONDS;
-        private long initialBackoffSeconds = DEFAULT_INITIAL_BACKOFF_SECONDS;
-        private long connectTimeoutSeconds = DEFAULT_CONNECT_TIMEOUT_SECONDS;
+        private Duration maxSilentInterval = DEFAULT_MAX_SILENT_INTERVAL;
+        private Duration initialBackoff = DEFAULT_INITIAL_BACKOFF;
+        private Duration connectTimeout = DEFAULT_CONNECT_TIMEOUT;
 
-        public Builder withConnectTimeoutSeconds(long connectTimeoutSeconds) {
-            this.connectTimeoutSeconds = connectTimeoutSeconds;
+        public Builder withConnectTimeout(Duration connectTimeout) {
+            this.connectTimeout = connectTimeout;
             return this;
         }
 
-        public Builder withInitialBackoffSeconds(long initialBackoffSeconds) {
-            this.initialBackoffSeconds = initialBackoffSeconds;
+        public Builder withInitialBackoff(Duration initialBackoff) {
+            this.initialBackoff = initialBackoff;
             return this;
         }
 
-        public Builder withReconnectIntervalSeconds(long reconnectIntervalSeconds) {
-            this.reconnectIntervalSeconds = reconnectIntervalSeconds;
+        public Builder withReconnectInterval(Duration reconnectInterval) {
+            this.reconnectInterval = reconnectInterval;
             return this;
         }
 
-        public Builder withKeepAliveIntervalSeconds(long keepAliveIntervalSeconds) {
-            this.keepAliveIntervalSeconds = keepAliveIntervalSeconds;
+        public Builder withKeepAliveInterval(Duration keepAliveInterval) {
+            this.keepAliveInterval = keepAliveInterval;
             return this;
         }
 
-        public Builder withSanityCheckIntervalSeconds(long sanityCheckIntervalSeconds) {
-            this.sanityCheckIntervalSeconds = sanityCheckIntervalSeconds;
+        public Builder withSanityCheckInterval(Duration sanityCheckInterval) {
+            this.sanityCheckInterval = sanityCheckInterval;
             return this;
         }
 
@@ -60,21 +60,21 @@ public record MarketInboundGatewayConfig(
             return this;
         }
 
-        public Builder withMaxSilentIntervalSeconds(long maxSilentIntervalSeconds) {
-            this.maxSilentIntervalSeconds = maxSilentIntervalSeconds;
+        public Builder withMaxSilentInterval(Duration maxSilentInterval) {
+            this.maxSilentInterval = maxSilentInterval;
             return this;
         }
 
         @Override
         public MarketInboundGatewayConfig build() {
             return new MarketInboundGatewayConfig(
-                    this.reconnectIntervalSeconds,
-                    this.keepAliveIntervalSeconds,
-                    this.sanityCheckIntervalSeconds,
+                    this.reconnectInterval,
+                    this.keepAliveInterval,
+                    this.sanityCheckInterval,
                     this.maxReconnectAttempts,
-                    this.maxSilentIntervalSeconds,
-                    this.initialBackoffSeconds,
-                    this.connectTimeoutSeconds
+                    this.maxSilentInterval,
+                    this.initialBackoff,
+                    this.connectTimeout
             );
         }
 

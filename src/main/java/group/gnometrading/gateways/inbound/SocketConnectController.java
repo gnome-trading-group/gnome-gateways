@@ -3,6 +3,13 @@ package group.gnometrading.gateways.inbound;
 import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.Logger;
 
+import java.time.Duration;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+
 /**
  * This class is responsible for managing the connection to the socket.
  * <p>
@@ -10,102 +17,92 @@ import group.gnometrading.logging.Logger;
  */
 public class SocketConnectController {
 
-    private static final long MAX_BACKOFF_SECONDS = 10;
+    private static final Duration MAX_BACKOFF = Duration.ofSeconds(10);
 
     private final Logger logger;
     private final SocketReader<?> socketReader;
-    private final long connectTimeoutSeconds;
+    private final Duration connectTimeout, initialBackoff;
     private final int maxReconnectAttempts;
-    private final long initialBackoffSeconds;
 
-    private long backoffSeconds;
-    private volatile Thread connectThread;
-    private volatile boolean timeoutOccurred;
+    private Duration backoff;
 
     public SocketConnectController(
             Logger logger,
             SocketReader<?> socketReader,
-            long connectTimeoutSeconds,
+            Duration connectTimeout,
             int maxReconnectAttempts,
-            long initialBackoffSeconds
+            Duration initialBackoff
     ) {
         this.logger = logger;
         this.socketReader = socketReader;
-        this.connectTimeoutSeconds = connectTimeoutSeconds;
         this.maxReconnectAttempts = maxReconnectAttempts;
-        this.initialBackoffSeconds = initialBackoffSeconds;
-
-        this.backoffSeconds = initialBackoffSeconds;
+        this.connectTimeout = connectTimeout;
+        this.initialBackoff = initialBackoff;
+        this.backoff = initialBackoff;
     }
 
     public void connect() {
         this.logger.log(LogMessage.SOCKET_CONNECTING);
         Exception lastException = null;
-        for (int i = 0; i < 1 + this.maxReconnectAttempts; i++) {
-            this.connectThread = Thread.currentThread();
-            this.timeoutOccurred = false;
 
-            final var watchdog = createWatchdogThread();
+        ScheduledExecutorService timeoutExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "SocketConnectTimeout");
+            t.setDaemon(true);
+            return t;
+        });
 
-            try {
-                this.socketReader.connect();
+        try {
+            for (int i = 0; i < 1 + this.maxReconnectAttempts; i++) {
+                Thread connectThread = Thread.currentThread();
+                AtomicBoolean timedOut = new AtomicBoolean(false);
 
-                // Success - cancel watchdog
-                watchdog.interrupt();
-                this.connectThread = null;
+                Future<?> timeoutTask = timeoutExecutor.schedule(() -> {
+                    timedOut.set(true);
+                    connectThread.interrupt();
+                }, this.connectTimeout.toMillis(), TimeUnit.MILLISECONDS);
 
-                if (!this.timeoutOccurred) {
-                    this.logger.log(LogMessage.SOCKET_CONNECTED);
-                    this.backoffSeconds = this.initialBackoffSeconds;
-                    // Clear interrupt flag if it was set
-                    Thread.interrupted();
-                    return;
-                } else {
-                    this.logger.log(LogMessage.SOCKET_CONNECT_TIMED_OUT);
+                try {
+                    this.socketReader.connect();
+
+                    timeoutTask.cancel(false);
+
+                    if (!timedOut.get()) {
+                        this.logger.log(LogMessage.SOCKET_CONNECTED);
+                        this.backoff = this.initialBackoff;
+                        return;
+                    } else {
+                        this.logger.log(LogMessage.SOCKET_CONNECT_TIMED_OUT);
+                    }
+
+                } catch (Exception e) {
+                    timeoutTask.cancel(false);
+
+                    if (timedOut.get()) {
+                        this.logger.log(LogMessage.SOCKET_CONNECT_TIMED_OUT);
+                    } else {
+                        this.logger.log(LogMessage.SOCKET_CONNECT_FAILED);
+                    }
+                    lastException = e;
                 }
-            } catch (Exception e) {
-                lastException = e;
 
-                watchdog.interrupt();
-                this.connectThread = null;
+                try {
+                    Thread.sleep(this.backoff.toMillis());
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException(ex);
+                }
 
-                if (this.timeoutOccurred) {
-                    this.logger.log(LogMessage.SOCKET_CONNECT_TIMED_OUT);
-                } else {
-                    this.logger.log(LogMessage.SOCKET_CONNECT_FAILED);
+                this.backoff = this.backoff.multipliedBy(2);
+                if (this.backoff.compareTo(MAX_BACKOFF) > 0) {
+                    this.backoff = MAX_BACKOFF;
                 }
             }
 
-            try {
-                Thread.sleep(this.backoffSeconds * 1000);
-            } catch (InterruptedException ex) {
-                Thread.currentThread().interrupt();
-                throw new RuntimeException(ex);
-            }
+            throw new RuntimeException(lastException);
 
-            this.backoffSeconds = Math.min(this.backoffSeconds * 2, MAX_BACKOFF_SECONDS);
+        } finally {
+            timeoutExecutor.shutdown();
         }
-
-        throw new RuntimeException(lastException);
-    }
-
-    private Thread createWatchdogThread() {
-        Thread watchdog = new Thread(() -> {
-            try {
-                Thread.sleep(this.connectTimeoutSeconds * 1000);
-                // Timeout occurred - interrupt the connect thread
-                Thread targetThread = this.connectThread;
-                if (targetThread != null) {
-                    this.timeoutOccurred = true;
-                    targetThread.interrupt();
-                }
-            } catch (InterruptedException e) {
-                // Watchdog was interrupted (connect succeeded), this is normal
-            }
-        }, "SocketConnectWatchdog");
-        watchdog.setDaemon(true);
-        watchdog.start();
-        return watchdog;
     }
 
 }
