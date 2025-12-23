@@ -231,8 +231,8 @@ public class HyperliquidSocketReader extends JSONWebSocketReader<MBP10Schema> im
     }
 
     private void prepareEncoder() {
-        this.schema.encoder.exchangeId(listing.exchangeId());
-        this.schema.encoder.securityId(listing.securityId());
+        this.schema.encoder.exchangeId(listing.exchange().exchangeId());
+        this.schema.encoder.securityId(listing.security().securityId());
         this.schema.encoder.timestampSent(MBP10Encoder.timestampSentNullValue()); // Hyperliquid only has event timestamps
         this.schema.encoder.timestampRecv(recvTimestamp);
     }

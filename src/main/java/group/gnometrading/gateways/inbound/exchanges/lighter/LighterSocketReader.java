@@ -190,8 +190,8 @@ public class LighterSocketReader extends JSONWebSocketReader<MBP10Schema> implem
     }
 
     private void prepareEncoder() {
-        this.schema.encoder.exchangeId(listing.exchangeId());
-        this.schema.encoder.securityId(listing.securityId());
+        this.schema.encoder.exchangeId(listing.exchange().exchangeId());
+        this.schema.encoder.securityId(listing.security().securityId());
         this.schema.encoder.timestampSent(MBP10Encoder.timestampSentNullValue());
         this.schema.encoder.timestampRecv(recvTimestamp);
     }

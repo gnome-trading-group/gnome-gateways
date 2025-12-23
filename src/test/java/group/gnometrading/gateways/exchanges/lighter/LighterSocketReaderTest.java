@@ -6,7 +6,9 @@ import group.gnometrading.codecs.json.JSONDecoder;
 import group.gnometrading.gateways.inbound.exchanges.lighter.LighterSocketReader;
 import group.gnometrading.logging.NullLogger;
 import group.gnometrading.schemas.*;
+import group.gnometrading.sm.Exchange;
 import group.gnometrading.sm.Listing;
+import group.gnometrading.sm.Security;
 import org.agrona.concurrent.EpochNanoClock;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -57,8 +59,8 @@ public class LighterSocketReaderTest {
         // Note: Listing constructor is (securityId, exchangeId, securityIndex, exchangeSecurityId, symbol)
         Listing listing = new Listing(
                 0,    // listingId
-                1,    // exchangeId
-                1,    // securityId
+                new Exchange(1, "test-exchange", "test-region", SchemaType.MBP_10),    // exchangeId
+                new Security(1, "test-security", 1),    // securityId
                 "0",  // exchangeSecurityId
                 "TEST" // symbol
         );
