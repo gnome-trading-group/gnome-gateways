@@ -77,6 +77,7 @@ public class MarketInboundGateway implements GnomeAgent {
 
         long nanosSinceLastRecv = this.socketReader.clock.nanoTime() - this.socketReader.recvTimestamp;
         if (this.socketReader.recvTimestamp > 0 && nanosSinceLastRecv > this.config.maxSilentInterval().toNanos()) {
+            this.logger.log(LogMessage.SOCKET_SILENCE_TIMED_OUT);
             this.reconnectSchedule.forceTrigger();
         }
 
