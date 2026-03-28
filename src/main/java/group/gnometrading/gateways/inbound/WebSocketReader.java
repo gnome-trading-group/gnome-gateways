@@ -6,10 +6,9 @@ import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.networking.websockets.enums.Opcode;
 import group.gnometrading.schemas.Schema;
 import group.gnometrading.sm.Listing;
-import org.agrona.concurrent.EpochNanoClock;
-
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import org.agrona.concurrent.EpochNanoClock;
 
 public abstract class WebSocketReader<T extends Schema> extends SocketReader<T> {
 
@@ -21,14 +20,13 @@ public abstract class WebSocketReader<T extends Schema> extends SocketReader<T> 
             EpochNanoClock clock,
             SocketWriter socketWriter,
             Listing listing,
-            WebSocketClient socketClient
-    ) {
+            WebSocketClient socketClient) {
         super(logger, outputBuffer, clock, socketWriter, listing);
         this.socketClient = socketClient;
     }
 
     @Override
-    protected ByteBuffer readSocket() throws IOException {
+    protected final ByteBuffer readSocket() throws IOException {
         final var result = this.socketClient.read();
 
         if (result.isSuccess() && (result.getOpcode() == Opcode.TEXT || result.getOpcode() == Opcode.BINARY)) {
@@ -49,7 +47,7 @@ public abstract class WebSocketReader<T extends Schema> extends SocketReader<T> 
     }
 
     @Override
-    protected void attachSocket() throws IOException {
+    protected final void attachSocket() throws IOException {
         this.socketClient.connect();
         this.socketClient.configureBlocking(true);
         this.socketClient.setTcpNoDelay(true);
@@ -58,7 +56,7 @@ public abstract class WebSocketReader<T extends Schema> extends SocketReader<T> 
     }
 
     @Override
-    public void disconnectSocket() throws Exception {
+    public final void disconnectSocket() throws Exception {
         this.socketClient.close();
     }
 

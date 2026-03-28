@@ -9,7 +9,7 @@ public interface SchemaFactory<T extends Schema> {
      * @param size the size of the array
      * @return the array of schemas
      */
-     T[] createSchemaArray(int size);
+    T[] createSchemaArray(int size);
 
     /**
      * Create a new schema object.

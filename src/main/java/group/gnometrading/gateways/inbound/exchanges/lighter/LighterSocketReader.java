@@ -1,57 +1,65 @@
 package group.gnometrading.gateways.inbound.exchanges.lighter;
 
 import com.lmax.disruptor.RingBuffer;
-import group.gnometrading.codecs.json.JSONDecoder;
-import group.gnometrading.codecs.json.JSONEncoder;
-import group.gnometrading.gateways.inbound.*;
-import group.gnometrading.gateways.inbound.mbp.buffer.MBPBufferBook;
-import group.gnometrading.gateways.inbound.mbp.buffer.MBPBufferSchemaFactory;
+import group.gnometrading.codecs.json.JsonDecoder;
+import group.gnometrading.codecs.json.JsonEncoder;
+import group.gnometrading.gateways.inbound.Book;
+import group.gnometrading.gateways.inbound.JsonWebSocketReader;
+import group.gnometrading.gateways.inbound.JsonWebSocketWriter;
+import group.gnometrading.gateways.inbound.SocketWriter;
+import group.gnometrading.gateways.inbound.WebSocketWriter;
+import group.gnometrading.gateways.inbound.mbp.buffer.MbpBufferBook;
+import group.gnometrading.gateways.inbound.mbp.buffer.MbpBufferSchemaFactory;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.websockets.WebSocketClient;
-import group.gnometrading.schemas.*;
+import group.gnometrading.schemas.Action;
+import group.gnometrading.schemas.Mbp10Encoder;
+import group.gnometrading.schemas.Mbp10Schema;
+import group.gnometrading.schemas.Side;
+import group.gnometrading.schemas.Statics;
 import group.gnometrading.sm.Listing;
+import java.io.IOException;
 import org.agrona.concurrent.EpochNanoClock;
 
-import java.io.IOException;
-
-public class LighterSocketReader extends JSONWebSocketReader<MBP10Schema> implements MBPBufferSchemaFactory {
+public final class LighterSocketReader extends JsonWebSocketReader<Mbp10Schema> implements MbpBufferSchemaFactory {
 
     private static final long NANOS_PER_MILLIS = 1_000_000L;
     private static final int MAX_LEVELS = 10;
 
-    private final MBPBufferBook book;
-    private final String orderBookChannel, tradeChannel;
-
-    private long lastTradePrice, lastTradeSize, lastSequenceNumber;
+    private final MbpBufferBook book;
+    private final String orderBookChannel;
+    private final String tradeChannel;
+    private long lastTradePrice;
+    private long lastTradeSize;
+    private long lastSequenceNumber;
 
     public LighterSocketReader(
             Logger logger,
-            RingBuffer<MBP10Schema> outputBuffer,
+            RingBuffer<Mbp10Schema> outputBuffer,
             EpochNanoClock clock,
             SocketWriter socketWriter,
             Listing listing,
             WebSocketClient socketClient,
-            JSONDecoder jsonDecoder
-    ) {
+            JsonDecoder jsonDecoder) {
         super(logger, outputBuffer, clock, socketWriter, listing, socketClient, jsonDecoder);
-        this.book = (MBPBufferBook) this.internalBook;
+        this.book = (MbpBufferBook) this.internalBook;
 
         this.orderBookChannel = "order_book/" + listing.exchangeSecurityId();
         this.tradeChannel = "trade/" + listing.exchangeSecurityId();
 
-        this.lastTradePrice = MBP10Encoder.priceNullValue();
-        this.lastTradeSize = MBP10Encoder.sizeNullValue();
-        this.lastSequenceNumber = MBP10Encoder.sequenceNullValue();
+        this.lastTradePrice = Mbp10Encoder.priceNullValue();
+        this.lastTradeSize = Mbp10Encoder.sizeNullValue();
+        this.lastSequenceNumber = Mbp10Encoder.sequenceNullValue();
     }
 
     @Override
-    protected void handleJSONMessage(JSONDecoder.JSONNode node) {
+    protected void handleJsonMessage(JsonDecoder.JsonNode node) {
         boolean shouldOffer = false;
-        long timestamp = MBP10Encoder.timestampEventNullValue();
+        long timestamp = Mbp10Encoder.timestampEventNullValue();
 
-        try (final var obj = node.asObject()) {
+        try (var obj = node.asObject()) {
             while (obj.hasNextKey()) {
-                try (final var key = obj.nextKey()) {
+                try (var key = obj.nextKey()) {
                     if (key.getName().equals("offset")) {
                         this.lastSequenceNumber = key.asLong();
                     } else if (key.getName().equals("order_book")) {
@@ -75,23 +83,24 @@ public class LighterSocketReader extends JSONWebSocketReader<MBP10Schema> implem
         }
     }
 
-    private void parseTrades(final JSONDecoder.JSONNode node) {
-        try (final var array = node.asArray()) {
+    private void parseTrades(final JsonDecoder.JsonNode node) {
+        try (var array = node.asArray()) {
             while (array.hasNextItem()) {
-                try (final var item = array.nextItem(); final var obj = item.asObject()) {
+                try (var item = array.nextItem();
+                        var obj = item.asObject()) {
                     parseTrade(obj);
                 }
             }
         }
     }
 
-    private void parseTrade(final JSONDecoder.JSONObject obj) {
+    private void parseTrade(final JsonDecoder.JsonObject obj) {
         prepareEncoder();
-        long timestamp = MBP10Encoder.timestampEventNullValue();
+        long timestamp = Mbp10Encoder.timestampEventNullValue();
         Side side = Side.None;
 
         while (obj.hasNextKey()) {
-            try (final var key = obj.nextKey()) {
+            try (var key = obj.nextKey()) {
                 if (key.getName().equals("price")) {
                     this.lastTradePrice = key.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR);
                 } else if (key.getName().equals("size")) {
@@ -112,7 +121,7 @@ public class LighterSocketReader extends JSONWebSocketReader<MBP10Schema> implem
         this.schema.encoder.size(this.lastTradeSize);
         this.schema.encoder.action(Action.Trade);
         this.schema.encoder.side(side);
-        this.schema.encoder.depth(MBP10Encoder.depthNullValue());
+        this.schema.encoder.depth(Mbp10Encoder.depthNullValue());
 
         this.schema.encoder.flags().clear();
         this.schema.encoder.flags().marketByPrice(true);
@@ -121,11 +130,11 @@ public class LighterSocketReader extends JSONWebSocketReader<MBP10Schema> implem
         offer();
     }
 
-    private boolean parseOrderBook(final JSONDecoder.JSONNode node) {
-        int depth = MBP10Encoder.depthNullValue();
-        try (final var obj = node.asObject()) {
+    private boolean parseOrderBook(final JsonDecoder.JsonNode node) {
+        int depth = Mbp10Encoder.depthNullValue();
+        try (var obj = node.asObject()) {
             while (obj.hasNextKey()) {
-                try (final var key = obj.nextKey()) {
+                try (var key = obj.nextKey()) {
                     if (key.getName().equals("asks")) {
                         depth = Math.min(depth, parseOrders(key, true));
                     } else if (key.getName().equals("bids")) {
@@ -136,13 +145,13 @@ public class LighterSocketReader extends JSONWebSocketReader<MBP10Schema> implem
                 }
             }
         }
-        if (depth == MBP10Encoder.depthNullValue() || depth >= MAX_LEVELS) {
+        if (depth == Mbp10Encoder.depthNullValue() || depth >= MAX_LEVELS) {
             return false;
         }
 
         prepareEncoder();
 
-        // Timestamp event will be set in handleJSONMessage
+        // Timestamp event will be set in handleJsonMessage
         this.schema.encoder.sequence(this.lastSequenceNumber);
         this.schema.encoder.price(this.lastTradePrice);
         this.schema.encoder.size(this.lastTradeSize);
@@ -157,11 +166,12 @@ public class LighterSocketReader extends JSONWebSocketReader<MBP10Schema> implem
         return true;
     }
 
-    private int parseOrders(final JSONDecoder.JSONNode node, final boolean isAsk) {
-        int depth = MBP10Encoder.depthNullValue();
-        try (final var array = node.asArray()) {
+    private int parseOrders(final JsonDecoder.JsonNode node, final boolean isAsk) {
+        int depth = Mbp10Encoder.depthNullValue();
+        try (var array = node.asArray()) {
             while (array.hasNextItem()) {
-                try (final var item = array.nextItem(); final var obj = item.asObject()) {
+                try (var item = array.nextItem();
+                        var obj = item.asObject()) {
                     depth = Math.min(depth, parseOrder(obj, isAsk));
                 }
             }
@@ -169,10 +179,11 @@ public class LighterSocketReader extends JSONWebSocketReader<MBP10Schema> implem
         return depth;
     }
 
-    private int parseOrder(final JSONDecoder.JSONObject obj, final boolean isAsk) {
-        long price = 0, size = 0;
+    private int parseOrder(final JsonDecoder.JsonObject obj, final boolean isAsk) {
+        long price = 0;
+        long size = 0;
         while (obj.hasNextKey()) {
-            try (final var key = obj.nextKey()) {
+            try (var key = obj.nextKey()) {
                 if (key.getName().equals("price")) {
                     price = key.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR);
                 } else if (key.getName().equals("size")) {
@@ -192,13 +203,13 @@ public class LighterSocketReader extends JSONWebSocketReader<MBP10Schema> implem
     private void prepareEncoder() {
         this.schema.encoder.exchangeId(listing.exchange().exchangeId());
         this.schema.encoder.securityId(listing.security().securityId());
-        this.schema.encoder.timestampSent(MBP10Encoder.timestampSentNullValue());
+        this.schema.encoder.timestampSent(Mbp10Encoder.timestampSentNullValue());
         this.schema.encoder.timestampRecv(recvTimestamp);
     }
 
     private void writeSubscription(final String channel) {
-        final JSONWebSocketWriter jsonWebSocketWriter = (JSONWebSocketWriter) this.socketWriter;
-        final JSONEncoder jsonEncoder = jsonWebSocketWriter.getJSONEncoder();
+        final JsonWebSocketWriter jsonWebSocketWriter = (JsonWebSocketWriter) this.socketWriter;
+        final JsonEncoder jsonEncoder = jsonWebSocketWriter.getJsonEncoder();
         jsonEncoder
                 .writeObjectStart()
                 .writeObjectEntry("type", "subscribe")
@@ -206,7 +217,7 @@ public class LighterSocketReader extends JSONWebSocketReader<MBP10Schema> implem
                 .writeObjectEntry("channel", channel)
                 .writeObjectEnd();
 
-        ((WebSocketWriter) this.socketWriter).writeText(jsonWebSocketWriter.getAndFlipJSONBodyBuffer(), false);
+        ((WebSocketWriter) this.socketWriter).writeText(jsonWebSocketWriter.getAndFlipJsonBodyBuffer(), false);
     }
 
     @Override
@@ -219,30 +230,30 @@ public class LighterSocketReader extends JSONWebSocketReader<MBP10Schema> implem
 
     private void sendPong() {
         // { "type": "pong" }
-        final JSONWebSocketWriter jsonWebSocketWriter = (JSONWebSocketWriter) this.socketWriter;
-        final JSONEncoder jsonEncoder = jsonWebSocketWriter.getJSONEncoder();
+        final JsonWebSocketWriter jsonWebSocketWriter = (JsonWebSocketWriter) this.socketWriter;
+        final JsonEncoder jsonEncoder = jsonWebSocketWriter.getJsonEncoder();
 
         jsonEncoder.writeObjectStart();
         jsonEncoder.writeObjectEntry("type", "pong");
         jsonEncoder.writeObjectEnd();
 
-        ((WebSocketWriter) this.socketWriter).writeText(jsonWebSocketWriter.getAndFlipJSONBodyBuffer(), true);
+        ((WebSocketWriter) this.socketWriter).writeText(jsonWebSocketWriter.getAndFlipJsonBodyBuffer(), true);
     }
 
     @Override
     protected void keepAlive() throws IOException {
         // { "type": "ping" }
-        final JSONWebSocketWriter jsonWebSocketWriter = (JSONWebSocketWriter) this.socketWriter;
-        final JSONEncoder jsonEncoder = jsonWebSocketWriter.getJSONEncoder();
+        final JsonWebSocketWriter jsonWebSocketWriter = (JsonWebSocketWriter) this.socketWriter;
+        final JsonEncoder jsonEncoder = jsonWebSocketWriter.getJsonEncoder();
         jsonEncoder.writeObjectStart();
         jsonEncoder.writeObjectEntry("type", "ping");
         jsonEncoder.writeObjectEnd();
 
-        ((WebSocketWriter) this.socketWriter).writeText(jsonWebSocketWriter.getAndFlipJSONBodyBuffer(), true);
+        ((WebSocketWriter) this.socketWriter).writeText(jsonWebSocketWriter.getAndFlipJsonBodyBuffer(), true);
     }
 
     @Override
-    public Book<MBP10Schema> fetchSnapshot() throws IOException {
+    public Book<Mbp10Schema> fetchSnapshot() throws IOException {
         return null;
     }
 }

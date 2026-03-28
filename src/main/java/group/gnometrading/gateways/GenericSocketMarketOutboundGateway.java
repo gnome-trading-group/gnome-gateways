@@ -2,7 +2,6 @@ package group.gnometrading.gateways;
 
 import group.gnometrading.networking.client.SocketClient;
 import group.gnometrading.schemas.OrderDecoder;
-
 import java.io.IOException;
 import java.nio.ByteBuffer;
 
@@ -11,27 +10,24 @@ public abstract class GenericSocketMarketOutboundGateway extends MarketOutboundG
     private final SocketClient socketClient;
     private final ByteBuffer writeBuffer;
 
-    public GenericSocketMarketOutboundGateway(
-            final SocketClient socketClient,
-            final int writeBufferSize
-    ) {
+    public GenericSocketMarketOutboundGateway(final SocketClient socketClient, final int writeBufferSize) {
         this.socketClient = socketClient;
         this.writeBuffer = ByteBuffer.allocate(writeBufferSize);
     }
 
     @Override
-    protected void send(OrderDecoder orderDecoder) throws IOException {
+    protected final void send(OrderDecoder orderDecoder) throws IOException {
         this.writeBuffer.clear();
-//        if (!this.encoder.encode(this.writeBuffer, orderDecoder)) {
-//            // TODO: We should exit early if we find this is the case
-//            return;
-//        }
+        //        if (!this.encoder.encode(this.writeBuffer, orderDecoder)) {
+        //            // TODO: We should exit early if we find this is the case
+        //            return;
+        //        }
 
         final int bytesToWrite = this.writeBuffer.remaining();
-//        final int bytes = socketClient.write(writeBuffer);
-//
-//        if (bytes != bytesToWrite) {
-//            throw new RuntimeException("Did not write all the bytes: " + bytes + " != " + bytesToWrite);
-//        }
+        //        final int bytes = socketClient.write(writeBuffer);
+        //
+        //        if (bytes != bytesToWrite) {
+        //            throw new RuntimeException("Did not write all the bytes: " + bytes + " != " + bytesToWrite);
+        //        }
     }
 }

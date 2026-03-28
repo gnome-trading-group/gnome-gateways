@@ -6,7 +6,7 @@ import group.gnometrading.logging.Logger;
 import group.gnometrading.utils.Schedule;
 import org.agrona.concurrent.EpochClock;
 
-public class MarketInboundGateway implements GnomeAgent {
+public final class MarketInboundGateway implements GnomeAgent {
 
     private final Logger logger;
     private final SocketReader<?> socketReader;
@@ -17,25 +17,21 @@ public class MarketInboundGateway implements GnomeAgent {
     private final SocketConnectController connectController;
 
     public MarketInboundGateway(
-            Logger logger,
-            MarketInboundGatewayConfig config,
-            SocketReader<?> socketReader,
-            EpochClock clock
-    ) {
+            Logger logger, MarketInboundGatewayConfig config, SocketReader<?> socketReader, EpochClock clock) {
         this.logger = logger;
         this.socketReader = socketReader;
         this.config = config;
 
         this.reconnectSchedule = new Schedule(clock, config.reconnectInterval().toMillis(), this::reconnect);
         this.keepAliveSchedule = new Schedule(clock, config.keepAliveInterval().toMillis(), this::keepAlive);
-        this.sanityCheckSchedule = new Schedule(clock, config.sanityCheckInterval().toMillis(), this::sanityCheck);
+        this.sanityCheckSchedule =
+                new Schedule(clock, config.sanityCheckInterval().toMillis(), this::sanityCheck);
         this.connectController = new SocketConnectController(
                 this.logger,
                 this.socketReader,
                 this.config.connectTimeout(),
                 this.config.maxReconnectAttempts(),
-                this.config.initialBackoff()
-        );
+                this.config.initialBackoff());
     }
 
     private void keepAlive() {
@@ -76,7 +72,8 @@ public class MarketInboundGateway implements GnomeAgent {
         this.sanityCheckSchedule.check();
 
         long nanosSinceLastRecv = this.socketReader.clock.nanoTime() - this.socketReader.recvTimestamp;
-        if (this.socketReader.recvTimestamp > 0 && nanosSinceLastRecv > this.config.maxSilentInterval().toNanos()) {
+        if (this.socketReader.recvTimestamp > 0
+                && nanosSinceLastRecv > this.config.maxSilentInterval().toNanos()) {
             this.logger.log(LogMessage.SOCKET_SILENCE_TIMED_OUT);
             this.reconnectSchedule.forceTrigger();
         }

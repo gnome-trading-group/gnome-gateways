@@ -7,10 +7,9 @@ import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.schemas.Schema;
 import group.gnometrading.sm.Listing;
-import org.agrona.concurrent.EpochNanoClock;
-
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import org.agrona.concurrent.EpochNanoClock;
 
 public abstract class SocketReader<T extends Schema> implements GnomeAgent, SchemaFactory<T> {
 
@@ -30,21 +29,23 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
     protected Book<T> internalBook;
     private Book<T> snapshot;
 
-    public volatile boolean pause, isPaused, buffer;
+    public volatile boolean pause;
+    public volatile boolean isPaused;
+    public volatile boolean buffer;
 
     public SocketReader(
             Logger logger,
             RingBuffer<T> outputBuffer,
             EpochNanoClock clock,
             SocketWriter socketWriter,
-            Listing listing
-    ) {
+            Listing listing) {
         this.logger = logger;
         this.ringBuffer = outputBuffer;
         this.clock = clock;
         this.socketWriter = socketWriter;
         this.listing = listing;
-        this.replayBuffer = new OneToOneRingBuffer<>(this::createSchemaArray, this::createSchema, DEFAULT_REPLAY_BUFFER_SIZE);
+        this.replayBuffer =
+                new OneToOneRingBuffer<>(this::createSchemaArray, this::createSchema, DEFAULT_REPLAY_BUFFER_SIZE);
         this.internalBook = createBook();
         this.snapshot = null;
 
@@ -65,7 +66,6 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
      */
     protected abstract ByteBuffer readSocket() throws IOException;
 
-
     /**
      * Handle a message from the gateway.
      * <p>
@@ -74,7 +74,7 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
      *
      * @param buffer the buffer containing the message
      */
-    protected abstract void handleGatewayMessage(final ByteBuffer buffer);
+    protected abstract void handleGatewayMessage(ByteBuffer buffer);
 
     protected abstract void keepAlive() throws IOException;
 
@@ -96,7 +96,7 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
      *
      * @throws IOException if there is an error connecting to the gateway
      */
-    public void connect() throws IOException {
+    public final void connect() throws IOException {
         this.buffer = true;
         this.pause = true;
         while (!this.isPaused) {
@@ -126,6 +126,7 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
     }
 
     protected abstract void attachSocket() throws IOException;
+
     protected abstract void disconnectSocket() throws Exception;
 
     private void consumeReplay(final T schema) {
@@ -139,7 +140,7 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
      *
      * @throws Exception if there is an error disconnecting from the gateway
      */
-    public void disconnect() throws Exception {
+    public final void disconnect() throws Exception {
         logger.log(LogMessage.SOCKET_DISCONNECTING);
         this.pause = true;
         this.buffer = true;
@@ -155,7 +156,7 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
     }
 
     @Override
-    public int doWork() throws Exception {
+    public final int doWork() throws Exception {
         if (this.pause) {
             this.isPaused = true;
             while (this.pause) {
@@ -172,12 +173,12 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
         return 0;
     }
 
-    protected void claim() {
+    protected final void claim() {
         this.sequence = this.ringBuffer.next();
         this.schema = this.ringBuffer.get(this.sequence);
     }
 
-    protected void offer() {
+    protected final void offer() {
         if (this.buffer) {
             final int index = this.replayBuffer.tryClaim();
             if (index < 0) {
@@ -191,7 +192,7 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
         }
     }
 
-    protected void onSocketClose() {
+    protected final void onSocketClose() {
         this.pause = true;
         logger.log(LogMessage.SOCKET_DISCONNECTED);
         throw new RuntimeException("Socket closed");

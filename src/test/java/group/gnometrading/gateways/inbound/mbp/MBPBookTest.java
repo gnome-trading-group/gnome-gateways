@@ -1,26 +1,26 @@
 package group.gnometrading.gateways.inbound.mbp;
 
-import group.gnometrading.schemas.MBP10Encoder;
-import group.gnometrading.schemas.MBP10Schema;
+import static org.junit.jupiter.api.Assertions.*;
+
+import group.gnometrading.schemas.Mbp10Encoder;
+import group.gnometrading.schemas.Mbp10Schema;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
-import static org.junit.jupiter.api.Assertions.*;
-
 /**
- * Comprehensive test suite for MBPBook covering edge cases and core functionality.
+ * Comprehensive test suite for MbpBook covering edge cases and core functionality.
  */
-class MBPBookTest {
+class MbpBookTest {
 
-    private MBPBook book;
-    private MBP10Schema schema;
+    private MbpBook book;
+    private Mbp10Schema schema;
 
     @BeforeEach
     void setUp() {
-        book = new MBPBook(10);
-        schema = new MBP10Schema();
+        book = new MbpBook(10);
+        schema = new Mbp10Schema();
     }
 
     // ========== Constructor Tests ==========
@@ -28,13 +28,13 @@ class MBPBookTest {
     @ParameterizedTest
     @ValueSource(ints = {1, 5, 10, 20, 50})
     void testConstructorWithValidDepth(int depth) {
-        MBPBook testBook = new MBPBook(depth);
+        MbpBook testBook = new MbpBook(depth);
         assertNotNull(testBook);
         assertNotNull(testBook.asks);
         assertNotNull(testBook.bids);
         assertEquals(depth, testBook.asks.length);
         assertEquals(depth, testBook.bids.length);
-        assertEquals(MBP10Encoder.sequenceNullValue(), testBook.sequenceNumber);
+        assertEquals(Mbp10Encoder.sequenceNullValue(), testBook.sequenceNumber);
     }
 
     @Test
@@ -42,12 +42,12 @@ class MBPBookTest {
         for (int i = 0; i < 10; i++) {
             assertNotNull(book.asks[i], "Ask level " + i + " should not be null");
             assertNotNull(book.bids[i], "Bid level " + i + " should not be null");
-            assertEquals(MBP10Encoder.askPrice0NullValue(), book.asks[i].price);
-            assertEquals(MBP10Encoder.askSize0NullValue(), book.asks[i].size);
-            assertEquals(MBP10Encoder.askCount0NullValue(), book.asks[i].count);
-            assertEquals(MBP10Encoder.askPrice0NullValue(), book.bids[i].price);
-            assertEquals(MBP10Encoder.askSize0NullValue(), book.bids[i].size);
-            assertEquals(MBP10Encoder.askCount0NullValue(), book.bids[i].count);
+            assertEquals(Mbp10Encoder.askPrice0NullValue(), book.asks[i].price);
+            assertEquals(Mbp10Encoder.askSize0NullValue(), book.asks[i].size);
+            assertEquals(Mbp10Encoder.askCount0NullValue(), book.asks[i].count);
+            assertEquals(Mbp10Encoder.askPrice0NullValue(), book.bids[i].price);
+            assertEquals(Mbp10Encoder.askSize0NullValue(), book.bids[i].size);
+            assertEquals(Mbp10Encoder.askCount0NullValue(), book.bids[i].count);
         }
     }
 
@@ -55,7 +55,7 @@ class MBPBookTest {
 
     @Test
     void testGetSequenceNumber() {
-        assertEquals(MBP10Encoder.sequenceNullValue(), book.getSequenceNumber());
+        assertEquals(Mbp10Encoder.sequenceNullValue(), book.getSequenceNumber());
 
         book.sequenceNumber = 12345L;
         assertEquals(12345L, book.getSequenceNumber());
@@ -81,16 +81,16 @@ class MBPBookTest {
 
         // Verify all bids are written with null values
         for (int i = 0; i < 10; i++) {
-            assertEquals(MBP10Encoder.askPrice0NullValue(), getBidPrice(schema, i));
-            assertEquals(MBP10Encoder.askSize0NullValue(), getBidSize(schema, i));
-            assertEquals(MBP10Encoder.askCount0NullValue(), getBidCount(schema, i));
+            assertEquals(Mbp10Encoder.askPrice0NullValue(), getBidPrice(schema, i));
+            assertEquals(Mbp10Encoder.askSize0NullValue(), getBidSize(schema, i));
+            assertEquals(Mbp10Encoder.askCount0NullValue(), getBidCount(schema, i));
         }
 
         // Verify all asks are written with null values
         for (int i = 0; i < 10; i++) {
-            assertEquals(MBP10Encoder.askPrice0NullValue(), getAskPrice(schema, i));
-            assertEquals(MBP10Encoder.askSize0NullValue(), getAskSize(schema, i));
-            assertEquals(MBP10Encoder.askCount0NullValue(), getAskCount(schema, i));
+            assertEquals(Mbp10Encoder.askPrice0NullValue(), getAskPrice(schema, i));
+            assertEquals(Mbp10Encoder.askSize0NullValue(), getAskSize(schema, i));
+            assertEquals(Mbp10Encoder.askCount0NullValue(), getAskCount(schema, i));
         }
     }
 
@@ -129,22 +129,24 @@ class MBPBookTest {
     @Test
     void testUpdateFromWithEmptySchema() {
         // Set schema to null values
-        setAllSchemaValues(schema, MBP10Encoder.askPrice0NullValue(),
-                          MBP10Encoder.askSize0NullValue(),
-                          MBP10Encoder.askCount0NullValue(),
-                          MBP10Encoder.sequenceNullValue());
+        setAllSchemaValues(
+                schema,
+                Mbp10Encoder.askPrice0NullValue(),
+                Mbp10Encoder.askSize0NullValue(),
+                Mbp10Encoder.askCount0NullValue(),
+                Mbp10Encoder.sequenceNullValue());
 
         book.updateFrom(schema);
 
         for (int i = 0; i < 10; i++) {
-            assertEquals(MBP10Encoder.askPrice0NullValue(), book.bids[i].price);
-            assertEquals(MBP10Encoder.askSize0NullValue(), book.bids[i].size);
-            assertEquals(MBP10Encoder.askCount0NullValue(), book.bids[i].count);
-            assertEquals(MBP10Encoder.askPrice0NullValue(), book.asks[i].price);
-            assertEquals(MBP10Encoder.askSize0NullValue(), book.asks[i].size);
-            assertEquals(MBP10Encoder.askCount0NullValue(), book.asks[i].count);
+            assertEquals(Mbp10Encoder.askPrice0NullValue(), book.bids[i].price);
+            assertEquals(Mbp10Encoder.askSize0NullValue(), book.bids[i].size);
+            assertEquals(Mbp10Encoder.askCount0NullValue(), book.bids[i].count);
+            assertEquals(Mbp10Encoder.askPrice0NullValue(), book.asks[i].price);
+            assertEquals(Mbp10Encoder.askSize0NullValue(), book.asks[i].size);
+            assertEquals(Mbp10Encoder.askCount0NullValue(), book.asks[i].count);
         }
-        assertEquals(MBP10Encoder.sequenceNullValue(), book.sequenceNumber);
+        assertEquals(Mbp10Encoder.sequenceNullValue(), book.sequenceNumber);
     }
 
     @Test
@@ -206,14 +208,14 @@ class MBPBookTest {
         book.reset();
 
         // Verify all data is reset to null values
-        assertEquals(MBP10Encoder.sequenceNullValue(), book.sequenceNumber);
+        assertEquals(Mbp10Encoder.sequenceNullValue(), book.sequenceNumber);
         for (int i = 0; i < 10; i++) {
-            assertEquals(MBP10Encoder.askPrice0NullValue(), book.bids[i].price);
-            assertEquals(MBP10Encoder.askSize0NullValue(), book.bids[i].size);
-            assertEquals(MBP10Encoder.askCount0NullValue(), book.bids[i].count);
-            assertEquals(MBP10Encoder.askPrice0NullValue(), book.asks[i].price);
-            assertEquals(MBP10Encoder.askSize0NullValue(), book.asks[i].size);
-            assertEquals(MBP10Encoder.askCount0NullValue(), book.asks[i].count);
+            assertEquals(Mbp10Encoder.askPrice0NullValue(), book.bids[i].price);
+            assertEquals(Mbp10Encoder.askSize0NullValue(), book.bids[i].size);
+            assertEquals(Mbp10Encoder.askCount0NullValue(), book.bids[i].count);
+            assertEquals(Mbp10Encoder.askPrice0NullValue(), book.asks[i].price);
+            assertEquals(Mbp10Encoder.askSize0NullValue(), book.asks[i].size);
+            assertEquals(Mbp10Encoder.askCount0NullValue(), book.asks[i].count);
         }
     }
 
@@ -222,10 +224,10 @@ class MBPBookTest {
         book.reset();
 
         // Should remain in null state
-        assertEquals(MBP10Encoder.sequenceNullValue(), book.sequenceNumber);
+        assertEquals(Mbp10Encoder.sequenceNullValue(), book.sequenceNumber);
         for (int i = 0; i < 10; i++) {
-            assertEquals(MBP10Encoder.askPrice0NullValue(), book.bids[i].price);
-            assertEquals(MBP10Encoder.askPrice0NullValue(), book.asks[i].price);
+            assertEquals(Mbp10Encoder.askPrice0NullValue(), book.bids[i].price);
+            assertEquals(Mbp10Encoder.askPrice0NullValue(), book.asks[i].price);
         }
     }
 
@@ -233,7 +235,7 @@ class MBPBookTest {
 
     @Test
     void testCopyFromEmptyBook() {
-        MBPBook source = new MBPBook(10);
+        MbpBook source = new MbpBook(10);
         book.copyFrom(source);
 
         assertEquals(source.sequenceNumber, book.sequenceNumber);
@@ -249,7 +251,7 @@ class MBPBookTest {
 
     @Test
     void testCopyFromPopulatedBook() {
-        MBPBook source = new MBPBook(10);
+        MbpBook source = new MbpBook(10);
         source.sequenceNumber = 54321L;
         for (int i = 0; i < 10; i++) {
             source.bids[i].price = 3000L + i;
@@ -275,7 +277,7 @@ class MBPBookTest {
 
     @Test
     void testCopyFromDoesNotShareReferences() {
-        MBPBook source = new MBPBook(10);
+        MbpBook source = new MbpBook(10);
         source.bids[0].price = 1000L;
         source.asks[0].price = 2000L;
 
@@ -294,7 +296,7 @@ class MBPBookTest {
 
     @Test
     void testCompareToWithEqualSequence() {
-        MBPBook other = new MBPBook(10);
+        MbpBook other = new MbpBook(10);
         book.sequenceNumber = 100L;
         other.sequenceNumber = 100L;
 
@@ -303,7 +305,7 @@ class MBPBookTest {
 
     @Test
     void testCompareToWithLowerSequence() {
-        MBPBook other = new MBPBook(10);
+        MbpBook other = new MbpBook(10);
         book.sequenceNumber = 50L;
         other.sequenceNumber = 100L;
 
@@ -312,7 +314,7 @@ class MBPBookTest {
 
     @Test
     void testCompareToWithHigherSequence() {
-        MBPBook other = new MBPBook(10);
+        MbpBook other = new MbpBook(10);
         book.sequenceNumber = 200L;
         other.sequenceNumber = 100L;
 
@@ -321,16 +323,16 @@ class MBPBookTest {
 
     @Test
     void testCompareToWithNullSequences() {
-        MBPBook other = new MBPBook(10);
-        book.sequenceNumber = MBP10Encoder.sequenceNullValue();
-        other.sequenceNumber = MBP10Encoder.sequenceNullValue();
+        MbpBook other = new MbpBook(10);
+        book.sequenceNumber = Mbp10Encoder.sequenceNullValue();
+        other.sequenceNumber = Mbp10Encoder.sequenceNullValue();
 
         assertEquals(0, book.compareTo(other));
     }
 
     @Test
     void testCompareToWithExtremeValues() {
-        MBPBook other = new MBPBook(10);
+        MbpBook other = new MbpBook(10);
 
         book.sequenceNumber = Long.MIN_VALUE;
         other.sequenceNumber = Long.MAX_VALUE;
@@ -360,13 +362,13 @@ class MBPBookTest {
 
     @Test
     void testEqualsWithEmptyBooks() {
-        MBPBook other = new MBPBook(10);
+        MbpBook other = new MbpBook(10);
         assertEquals(book, other);
     }
 
     @Test
     void testEqualsWithIdenticalBooks() {
-        MBPBook other = new MBPBook(10);
+        MbpBook other = new MbpBook(10);
         book.sequenceNumber = 123L;
         other.sequenceNumber = 123L;
 
@@ -391,7 +393,7 @@ class MBPBookTest {
 
     @Test
     void testEqualsWithDifferentSequence() {
-        MBPBook other = new MBPBook(10);
+        MbpBook other = new MbpBook(10);
         book.sequenceNumber = 100L;
         other.sequenceNumber = 200L;
 
@@ -400,7 +402,7 @@ class MBPBookTest {
 
     @Test
     void testEqualsWithDifferentBidPrice() {
-        MBPBook other = new MBPBook(10);
+        MbpBook other = new MbpBook(10);
         book.sequenceNumber = 100L;
         other.sequenceNumber = 100L;
 
@@ -412,7 +414,7 @@ class MBPBookTest {
 
     @Test
     void testEqualsWithDifferentAskSize() {
-        MBPBook other = new MBPBook(10);
+        MbpBook other = new MbpBook(10);
         book.sequenceNumber = 100L;
         other.sequenceNumber = 100L;
 
@@ -424,7 +426,7 @@ class MBPBookTest {
 
     @Test
     void testEqualsWithDifferentBidCount() {
-        MBPBook other = new MBPBook(10);
+        MbpBook other = new MbpBook(10);
         book.sequenceNumber = 100L;
         other.sequenceNumber = 100L;
 
@@ -434,31 +436,30 @@ class MBPBookTest {
         assertNotEquals(book, other);
     }
 
-
     // ========== PriceLevel Tests ==========
 
     @Test
     void testPriceLevelReset() {
-        MBPBook.PriceLevel level = new MBPBook.PriceLevel();
+        MbpBook.PriceLevel level = new MbpBook.PriceLevel();
         level.price = 1000L;
         level.size = 100L;
         level.count = 10L;
 
         level.reset();
 
-        assertEquals(MBP10Encoder.askPrice0NullValue(), level.price);
-        assertEquals(MBP10Encoder.askSize0NullValue(), level.size);
-        assertEquals(MBP10Encoder.askCount0NullValue(), level.count);
+        assertEquals(Mbp10Encoder.askPrice0NullValue(), level.price);
+        assertEquals(Mbp10Encoder.askSize0NullValue(), level.size);
+        assertEquals(Mbp10Encoder.askCount0NullValue(), level.count);
     }
 
     @Test
     void testPriceLevelCopyFrom() {
-        MBPBook.PriceLevel source = new MBPBook.PriceLevel();
+        MbpBook.PriceLevel source = new MbpBook.PriceLevel();
         source.price = 5000L;
         source.size = 500L;
         source.count = 50L;
 
-        MBPBook.PriceLevel target = new MBPBook.PriceLevel();
+        MbpBook.PriceLevel target = new MbpBook.PriceLevel();
         target.copyFrom(source);
 
         assertEquals(5000L, target.price);
@@ -468,8 +469,8 @@ class MBPBookTest {
 
     @Test
     void testPriceLevelEquals() {
-        MBPBook.PriceLevel level1 = new MBPBook.PriceLevel();
-        MBPBook.PriceLevel level2 = new MBPBook.PriceLevel();
+        MbpBook.PriceLevel level1 = new MbpBook.PriceLevel();
+        MbpBook.PriceLevel level2 = new MbpBook.PriceLevel();
 
         assertEquals(level1, level2);
 
@@ -488,7 +489,7 @@ class MBPBookTest {
 
     @Test
     void testPriceLevelUpdateReturnsTrue() {
-        MBPBook.PriceLevel level = new MBPBook.PriceLevel();
+        MbpBook.PriceLevel level = new MbpBook.PriceLevel();
 
         assertTrue(level.update(1000L, 100L, 10L));
         assertEquals(1000L, level.price);
@@ -498,7 +499,7 @@ class MBPBookTest {
 
     @Test
     void testPriceLevelUpdateReturnsFalseWhenNoChange() {
-        MBPBook.PriceLevel level = new MBPBook.PriceLevel();
+        MbpBook.PriceLevel level = new MbpBook.PriceLevel();
         level.price = 1000L;
         level.size = 100L;
         level.count = 10L;
@@ -508,7 +509,7 @@ class MBPBookTest {
 
     @Test
     void testPriceLevelUpdatePartialChange() {
-        MBPBook.PriceLevel level = new MBPBook.PriceLevel();
+        MbpBook.PriceLevel level = new MbpBook.PriceLevel();
         level.price = 1000L;
         level.size = 100L;
         level.count = 10L;
@@ -545,7 +546,7 @@ class MBPBookTest {
         book.writeTo(schema);
 
         // Create new book and update from schema
-        MBPBook newBook = new MBPBook(10);
+        MbpBook newBook = new MbpBook(10);
         schema.encoder.sequence(777L);
         newBook.updateFrom(schema);
 
@@ -578,20 +579,20 @@ class MBPBookTest {
         populateSchema(schema);
         book.updateFrom(schema);
 
-        assertNotEquals(MBP10Encoder.sequenceNullValue(), book.sequenceNumber);
+        assertNotEquals(Mbp10Encoder.sequenceNullValue(), book.sequenceNumber);
 
         book.reset();
 
-        assertEquals(MBP10Encoder.sequenceNullValue(), book.sequenceNumber);
+        assertEquals(Mbp10Encoder.sequenceNullValue(), book.sequenceNumber);
         for (int i = 0; i < 10; i++) {
-            assertEquals(MBP10Encoder.askPrice0NullValue(), book.bids[i].price);
-            assertEquals(MBP10Encoder.askPrice0NullValue(), book.asks[i].price);
+            assertEquals(Mbp10Encoder.askPrice0NullValue(), book.bids[i].price);
+            assertEquals(Mbp10Encoder.askPrice0NullValue(), book.asks[i].price);
         }
     }
 
     // ========== Helper Methods ==========
 
-    private void populateSchema(MBP10Schema schema) {
+    private void populateSchema(Mbp10Schema schema) {
         schema.encoder.sequence(99999L);
         for (int i = 0; i < 10; i++) {
             setBidLevel(schema, i, 5000L - i * 50L, 500L + i * 5L, 3L + i);
@@ -599,7 +600,7 @@ class MBPBookTest {
         }
     }
 
-    private void setAllSchemaValues(MBP10Schema schema, long price, long size, long count, long sequence) {
+    private void setAllSchemaValues(Mbp10Schema schema, long price, long size, long count, long sequence) {
         schema.encoder.sequence(sequence);
         for (int i = 0; i < 10; i++) {
             setBidLevel(schema, i, price, size, count);
@@ -607,37 +608,117 @@ class MBPBookTest {
         }
     }
 
-    private void setBidLevel(MBP10Schema schema, int level, long price, long size, long count) {
+    private void setBidLevel(Mbp10Schema schema, int level, long price, long size, long count) {
         switch (level) {
-            case 0: schema.encoder.bidPrice0(price); schema.encoder.bidSize0(size); schema.encoder.bidCount0(count); break;
-            case 1: schema.encoder.bidPrice1(price); schema.encoder.bidSize1(size); schema.encoder.bidCount1(count); break;
-            case 2: schema.encoder.bidPrice2(price); schema.encoder.bidSize2(size); schema.encoder.bidCount2(count); break;
-            case 3: schema.encoder.bidPrice3(price); schema.encoder.bidSize3(size); schema.encoder.bidCount3(count); break;
-            case 4: schema.encoder.bidPrice4(price); schema.encoder.bidSize4(size); schema.encoder.bidCount4(count); break;
-            case 5: schema.encoder.bidPrice5(price); schema.encoder.bidSize5(size); schema.encoder.bidCount5(count); break;
-            case 6: schema.encoder.bidPrice6(price); schema.encoder.bidSize6(size); schema.encoder.bidCount6(count); break;
-            case 7: schema.encoder.bidPrice7(price); schema.encoder.bidSize7(size); schema.encoder.bidCount7(count); break;
-            case 8: schema.encoder.bidPrice8(price); schema.encoder.bidSize8(size); schema.encoder.bidCount8(count); break;
-            case 9: schema.encoder.bidPrice9(price); schema.encoder.bidSize9(size); schema.encoder.bidCount9(count); break;
+            case 0:
+                schema.encoder.bidPrice0(price);
+                schema.encoder.bidSize0(size);
+                schema.encoder.bidCount0(count);
+                break;
+            case 1:
+                schema.encoder.bidPrice1(price);
+                schema.encoder.bidSize1(size);
+                schema.encoder.bidCount1(count);
+                break;
+            case 2:
+                schema.encoder.bidPrice2(price);
+                schema.encoder.bidSize2(size);
+                schema.encoder.bidCount2(count);
+                break;
+            case 3:
+                schema.encoder.bidPrice3(price);
+                schema.encoder.bidSize3(size);
+                schema.encoder.bidCount3(count);
+                break;
+            case 4:
+                schema.encoder.bidPrice4(price);
+                schema.encoder.bidSize4(size);
+                schema.encoder.bidCount4(count);
+                break;
+            case 5:
+                schema.encoder.bidPrice5(price);
+                schema.encoder.bidSize5(size);
+                schema.encoder.bidCount5(count);
+                break;
+            case 6:
+                schema.encoder.bidPrice6(price);
+                schema.encoder.bidSize6(size);
+                schema.encoder.bidCount6(count);
+                break;
+            case 7:
+                schema.encoder.bidPrice7(price);
+                schema.encoder.bidSize7(size);
+                schema.encoder.bidCount7(count);
+                break;
+            case 8:
+                schema.encoder.bidPrice8(price);
+                schema.encoder.bidSize8(size);
+                schema.encoder.bidCount8(count);
+                break;
+            case 9:
+                schema.encoder.bidPrice9(price);
+                schema.encoder.bidSize9(size);
+                schema.encoder.bidCount9(count);
+                break;
         }
     }
 
-    private void setAskLevel(MBP10Schema schema, int level, long price, long size, long count) {
+    private void setAskLevel(Mbp10Schema schema, int level, long price, long size, long count) {
         switch (level) {
-            case 0: schema.encoder.askPrice0(price); schema.encoder.askSize0(size); schema.encoder.askCount0(count); break;
-            case 1: schema.encoder.askPrice1(price); schema.encoder.askSize1(size); schema.encoder.askCount1(count); break;
-            case 2: schema.encoder.askPrice2(price); schema.encoder.askSize2(size); schema.encoder.askCount2(count); break;
-            case 3: schema.encoder.askPrice3(price); schema.encoder.askSize3(size); schema.encoder.askCount3(count); break;
-            case 4: schema.encoder.askPrice4(price); schema.encoder.askSize4(size); schema.encoder.askCount4(count); break;
-            case 5: schema.encoder.askPrice5(price); schema.encoder.askSize5(size); schema.encoder.askCount5(count); break;
-            case 6: schema.encoder.askPrice6(price); schema.encoder.askSize6(size); schema.encoder.askCount6(count); break;
-            case 7: schema.encoder.askPrice7(price); schema.encoder.askSize7(size); schema.encoder.askCount7(count); break;
-            case 8: schema.encoder.askPrice8(price); schema.encoder.askSize8(size); schema.encoder.askCount8(count); break;
-            case 9: schema.encoder.askPrice9(price); schema.encoder.askSize9(size); schema.encoder.askCount9(count); break;
+            case 0:
+                schema.encoder.askPrice0(price);
+                schema.encoder.askSize0(size);
+                schema.encoder.askCount0(count);
+                break;
+            case 1:
+                schema.encoder.askPrice1(price);
+                schema.encoder.askSize1(size);
+                schema.encoder.askCount1(count);
+                break;
+            case 2:
+                schema.encoder.askPrice2(price);
+                schema.encoder.askSize2(size);
+                schema.encoder.askCount2(count);
+                break;
+            case 3:
+                schema.encoder.askPrice3(price);
+                schema.encoder.askSize3(size);
+                schema.encoder.askCount3(count);
+                break;
+            case 4:
+                schema.encoder.askPrice4(price);
+                schema.encoder.askSize4(size);
+                schema.encoder.askCount4(count);
+                break;
+            case 5:
+                schema.encoder.askPrice5(price);
+                schema.encoder.askSize5(size);
+                schema.encoder.askCount5(count);
+                break;
+            case 6:
+                schema.encoder.askPrice6(price);
+                schema.encoder.askSize6(size);
+                schema.encoder.askCount6(count);
+                break;
+            case 7:
+                schema.encoder.askPrice7(price);
+                schema.encoder.askSize7(size);
+                schema.encoder.askCount7(count);
+                break;
+            case 8:
+                schema.encoder.askPrice8(price);
+                schema.encoder.askSize8(size);
+                schema.encoder.askCount8(count);
+                break;
+            case 9:
+                schema.encoder.askPrice9(price);
+                schema.encoder.askSize9(size);
+                schema.encoder.askCount9(count);
+                break;
         }
     }
 
-    private long getBidPrice(MBP10Schema schema, int level) {
+    private long getBidPrice(Mbp10Schema schema, int level) {
         return switch (level) {
             case 0 -> schema.decoder.bidPrice0();
             case 1 -> schema.decoder.bidPrice1();
@@ -653,7 +734,7 @@ class MBPBookTest {
         };
     }
 
-    private long getBidSize(MBP10Schema schema, int level) {
+    private long getBidSize(Mbp10Schema schema, int level) {
         return switch (level) {
             case 0 -> schema.decoder.bidSize0();
             case 1 -> schema.decoder.bidSize1();
@@ -669,7 +750,7 @@ class MBPBookTest {
         };
     }
 
-    private long getBidCount(MBP10Schema schema, int level) {
+    private long getBidCount(Mbp10Schema schema, int level) {
         return switch (level) {
             case 0 -> schema.decoder.bidCount0();
             case 1 -> schema.decoder.bidCount1();
@@ -685,7 +766,7 @@ class MBPBookTest {
         };
     }
 
-    private long getAskPrice(MBP10Schema schema, int level) {
+    private long getAskPrice(Mbp10Schema schema, int level) {
         return switch (level) {
             case 0 -> schema.decoder.askPrice0();
             case 1 -> schema.decoder.askPrice1();
@@ -701,7 +782,7 @@ class MBPBookTest {
         };
     }
 
-    private long getAskSize(MBP10Schema schema, int level) {
+    private long getAskSize(Mbp10Schema schema, int level) {
         return switch (level) {
             case 0 -> schema.decoder.askSize0();
             case 1 -> schema.decoder.askSize1();
@@ -717,7 +798,7 @@ class MBPBookTest {
         };
     }
 
-    private long getAskCount(MBP10Schema schema, int level) {
+    private long getAskCount(Mbp10Schema schema, int level) {
         return switch (level) {
             case 0 -> schema.decoder.askCount0();
             case 1 -> schema.decoder.askCount1();
@@ -733,4 +814,3 @@ class MBPBookTest {
         };
     }
 }
-

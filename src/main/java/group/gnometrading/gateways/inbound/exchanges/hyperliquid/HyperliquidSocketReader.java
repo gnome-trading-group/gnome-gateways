@@ -1,20 +1,27 @@
 package group.gnometrading.gateways.inbound.exchanges.hyperliquid;
 
 import com.lmax.disruptor.RingBuffer;
-import group.gnometrading.codecs.json.JSONDecoder;
-import group.gnometrading.codecs.json.JSONEncoder;
-import group.gnometrading.gateways.inbound.*;
-import group.gnometrading.gateways.inbound.mbp.MBP10Book;
-import group.gnometrading.gateways.inbound.mbp.MBP10SchemaFactory;
+import group.gnometrading.codecs.json.JsonDecoder;
+import group.gnometrading.codecs.json.JsonEncoder;
+import group.gnometrading.gateways.inbound.Book;
+import group.gnometrading.gateways.inbound.JsonWebSocketReader;
+import group.gnometrading.gateways.inbound.JsonWebSocketWriter;
+import group.gnometrading.gateways.inbound.SocketWriter;
+import group.gnometrading.gateways.inbound.WebSocketWriter;
+import group.gnometrading.gateways.inbound.mbp.Mbp10Book;
+import group.gnometrading.gateways.inbound.mbp.Mbp10SchemaFactory;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.websockets.WebSocketClient;
-import group.gnometrading.schemas.*;
+import group.gnometrading.schemas.Action;
+import group.gnometrading.schemas.Mbp10Encoder;
+import group.gnometrading.schemas.Mbp10Schema;
+import group.gnometrading.schemas.Side;
+import group.gnometrading.schemas.Statics;
 import group.gnometrading.sm.Listing;
+import java.io.IOException;
 import org.agrona.concurrent.EpochNanoClock;
 
-import java.io.IOException;
-
-public class HyperliquidSocketReader extends JSONWebSocketReader<MBP10Schema> implements MBP10SchemaFactory {
+public final class HyperliquidSocketReader extends JsonWebSocketReader<Mbp10Schema> implements Mbp10SchemaFactory {
 
     private static final int MAX_LEVEL_DEPTH = 10;
     private static final long NANOS_PER_MILLI = 1_000_000L;
@@ -25,49 +32,49 @@ public class HyperliquidSocketReader extends JSONWebSocketReader<MBP10Schema> im
         ADMIN
     }
 
-    private final MBP10Book book;
-    private long lastTradePrice, lastTradeSize;
+    private final Mbp10Book book;
+    private long lastTradePrice;
+    private long lastTradeSize;
 
     public HyperliquidSocketReader(
             Logger logger,
-            RingBuffer<MBP10Schema> outputBuffer,
+            RingBuffer<Mbp10Schema> outputBuffer,
             EpochNanoClock clock,
             SocketWriter socketWriter,
             Listing listing,
             WebSocketClient socketClient,
-            JSONDecoder jsonDecoder
-    ) {
+            JsonDecoder jsonDecoder) {
         super(logger, outputBuffer, clock, socketWriter, listing, socketClient, jsonDecoder);
-        this.book = (MBP10Book) this.internalBook;
+        this.book = (Mbp10Book) this.internalBook;
 
-        this.lastTradePrice = MBP10Encoder.priceNullValue();
-        this.lastTradeSize = MBP10Encoder.sizeNullValue();
+        this.lastTradePrice = Mbp10Encoder.priceNullValue();
+        this.lastTradeSize = Mbp10Encoder.sizeNullValue();
     }
 
     @Override
     protected void keepAlive() throws IOException {
         // { "method": "ping" }
-        final JSONWebSocketWriter jsonWebSocketWriter = (JSONWebSocketWriter) this.socketWriter;
-        final JSONEncoder jsonEncoder = jsonWebSocketWriter.getJSONEncoder();
+        final JsonWebSocketWriter jsonWebSocketWriter = (JsonWebSocketWriter) this.socketWriter;
+        final JsonEncoder jsonEncoder = jsonWebSocketWriter.getJsonEncoder();
         jsonEncoder.writeObjectStart();
         jsonEncoder.writeObjectEntry("method", "ping");
         jsonEncoder.writeObjectEnd();
 
-        ((WebSocketWriter) this.socketWriter).writeText(jsonWebSocketWriter.getAndFlipJSONBodyBuffer(), true);
+        ((WebSocketWriter) this.socketWriter).writeText(jsonWebSocketWriter.getAndFlipJsonBodyBuffer(), true);
     }
 
     @Override
-    public Book<MBP10Schema> fetchSnapshot() throws IOException {
+    public Book<Mbp10Schema> fetchSnapshot() throws IOException {
         // Hyperliquid does not support snapshots
         return null;
     }
 
     @Override
-    protected void handleJSONMessage(final JSONDecoder.JSONNode node) {
-        try (final var obj = node.asObject()) {
+    protected void handleJsonMessage(JsonDecoder.JsonNode node) {
+        try (var obj = node.asObject()) {
             Channel channel = null;
             while (obj.hasNextKey()) {
-                try (final var key = obj.nextKey()) {
+                try (var key = obj.nextKey()) {
                     if (key.getName().equals("channel")) {
                         final var channelName = key.asString();
                         if (channelName.equals("l2Book")) {
@@ -91,14 +98,36 @@ public class HyperliquidSocketReader extends JSONWebSocketReader<MBP10Schema> im
         }
     }
 
-    private boolean parseLevel(final JSONDecoder.JSONArray levels, final MBP10Book.PriceLevel existingLevel) {
-        long price = MBP10Encoder.askPrice0NullValue();
-        long size = MBP10Encoder.askSize0NullValue();
-        long orderCount = MBP10Encoder.askCount0NullValue();
+    private void parseL2BookKey(final JsonDecoder.JsonObject object) {
+        try (var key = object.nextKey()) {
+            if (key.getName().equals("coin")) {
+                // NO-OP: Maybe check if it's correct in the future?
+            } else if (key.getName().equals("time")) {
+                // Hyperliquid is in epoch millis
+                long timestamp = key.asLong() * NANOS_PER_MILLI;
+                this.schema.encoder.timestampEvent(timestamp);
+                this.schema.encoder.sequence(timestamp);
+            } else if (key.getName().equals("levels")) {
+                parseLevelsKey(key);
+            }
+        }
+    }
 
-        try (final var levelNode = levels.nextItem(); final var level = levelNode.asObject()) {
+    private void parseLevelsKey(final JsonDecoder.JsonNode key) {
+        try (var array = key.asArray()) {
+            this.schema.encoder.depth(parseLevels(array));
+        }
+    }
+
+    private boolean parseLevel(final JsonDecoder.JsonArray levels, final Mbp10Book.PriceLevel existingLevel) {
+        long price = Mbp10Encoder.askPrice0NullValue();
+        long size = Mbp10Encoder.askSize0NullValue();
+        long orderCount = Mbp10Encoder.askCount0NullValue();
+
+        try (var levelNode = levels.nextItem();
+                var level = levelNode.asObject()) {
             while (level.hasNextKey()) {
-                try (final var key = level.nextKey()) {
+                try (var key = level.nextKey()) {
                     if (key.getName().equals("px")) {
                         price = key.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR);
                     } else if (key.getName().equals("sz")) {
@@ -113,9 +142,19 @@ public class HyperliquidSocketReader extends JSONWebSocketReader<MBP10Schema> im
         return existingLevel.update(price, size, orderCount);
     }
 
-    private short parseLevels(final JSONDecoder.JSONArray array) {
-        int depth = MBP10Encoder.depthNullValue();
-        try (final var bidsNode = array.nextItem(); final var bids = bidsNode.asArray()) {
+    private void consumeRemainingItems(final JsonDecoder.JsonArray array) {
+        while (array.hasNextItem()) {
+            try (var levelNode = array.nextItem();
+                    var level = levelNode.asObject()) {
+                // Consume remaining items beyond MAX_LEVEL_DEPTH
+            }
+        }
+    }
+
+    private short parseLevels(final JsonDecoder.JsonArray array) {
+        int depth = Mbp10Encoder.depthNullValue();
+        try (var bidsNode = array.nextItem();
+                var bids = bidsNode.asArray()) {
             for (int i = 0; i < MAX_LEVEL_DEPTH; i++) {
                 if (bids.hasNextItem()) {
                     depth = parseLevel(bids, book.bids[i]) ? Math.min(depth, i) : depth;
@@ -123,13 +162,11 @@ public class HyperliquidSocketReader extends JSONWebSocketReader<MBP10Schema> im
                     book.bids[i].reset();
                 }
             }
-
-            while (bids.hasNextItem()) {
-                try (final var levelNode = bids.nextItem(); final var level = levelNode.asObject()) {}
-            }
+            consumeRemainingItems(bids);
         }
 
-        try (final var asksNode = array.nextItem(); final var asks = asksNode.asArray()) {
+        try (var asksNode = array.nextItem();
+                var asks = asksNode.asArray()) {
             for (int i = 0; i < MAX_LEVEL_DEPTH; i++) {
                 if (asks.hasNextItem()) {
                     depth = parseLevel(asks, book.asks[i]) ? Math.min(depth, i) : depth;
@@ -137,44 +174,28 @@ public class HyperliquidSocketReader extends JSONWebSocketReader<MBP10Schema> im
                     book.asks[i].reset();
                 }
             }
-
-            while (asks.hasNextItem()) {
-                try (final var levelNode = asks.nextItem(); final var level = levelNode.asObject()) {}
-            }
+            consumeRemainingItems(asks);
         }
         return (short) depth;
     }
 
-    private void parseL2Book(final JSONDecoder.JSONNode node) {
+    private void parseL2Book(final JsonDecoder.JsonNode node) {
         prepareEncoder();
 
-        this.schema.encoder.timestampEvent(MBP10Encoder.timestampEventNullValue());
-        this.schema.encoder.sequence(MBP10Encoder.sequenceNullValue());
+        this.schema.encoder.timestampEvent(Mbp10Encoder.timestampEventNullValue());
+        this.schema.encoder.sequence(Mbp10Encoder.sequenceNullValue());
         this.schema.encoder.price(this.lastTradePrice);
         this.schema.encoder.size(this.lastTradeSize);
         this.schema.encoder.action(Action.Modify);
         this.schema.encoder.side(Side.None);
-        this.schema.encoder.depth(MBP10Encoder.depthNullValue());
+        this.schema.encoder.depth(Mbp10Encoder.depthNullValue());
 
         this.schema.encoder.flags().clear();
         this.schema.encoder.flags().marketByPrice(true);
 
-        try (final var object = node.asObject()) {
+        try (var object = node.asObject()) {
             while (object.hasNextKey()) {
-                try (final var key = object.nextKey()) {
-                    if (key.getName().equals("coin")) {
-                        // NO-OP: Maybe check if it's correct in the future?
-                    } else if (key.getName().equals("time")) {
-                        // Hyperliquid is in epoch millis
-                        long timestamp = key.asLong() * NANOS_PER_MILLI;
-                        this.schema.encoder.timestampEvent(timestamp);
-                        this.schema.encoder.sequence(timestamp);
-                    } else if (key.getName().equals("levels")) {
-                        try (final var array = key.asArray()) {
-                            this.schema.encoder.depth(parseLevels(array));
-                        }
-                    }
-                }
+                parseL2BookKey(object);
             }
         }
 
@@ -182,14 +203,14 @@ public class HyperliquidSocketReader extends JSONWebSocketReader<MBP10Schema> im
         offer();
     }
 
-    private void parseTrade(final JSONDecoder.JSONObject trade) {
+    private void parseTrade(final JsonDecoder.JsonObject trade) {
         prepareEncoder();
 
         Side side = Side.None;
-        long timestampEvent = MBP10Encoder.timestampEventNullValue();
+        long timestampEvent = Mbp10Encoder.timestampEventNullValue();
 
         while (trade.hasNextKey()) {
-            try (final var key = trade.nextKey()) {
+            try (var key = trade.nextKey()) {
                 if (key.getName().equals("side")) {
                     if (key.asString().equals("A")) {
                         side = Side.Ask;
@@ -214,16 +235,18 @@ public class HyperliquidSocketReader extends JSONWebSocketReader<MBP10Schema> im
         this.schema.encoder.side(side);
         this.schema.encoder.flags().clear();
         this.schema.encoder.flags().marketByPrice(true);
-        this.schema.encoder.depth(MBP10Encoder.depthNullValue()); // TODO: Do we want to send the correct depth? Is it worth?
+        this.schema.encoder.depth(
+                Mbp10Encoder.depthNullValue()); // TODO: Do we want to send the correct depth? Is it worth?
         this.book.writeTo(this.schema);
 
         offer();
     }
 
-    private void parseTrades(final JSONDecoder.JSONNode node) {
-        try (final var trades = node.asArray()) {
+    private void parseTrades(final JsonDecoder.JsonNode node) {
+        try (var trades = node.asArray()) {
             while (trades.hasNextItem()) {
-                try (final var tradeNode = trades.nextItem(); final var trade = tradeNode.asObject()) {
+                try (var tradeNode = trades.nextItem();
+                        var trade = tradeNode.asObject()) {
                     parseTrade(trade);
                 }
             }
@@ -233,14 +256,15 @@ public class HyperliquidSocketReader extends JSONWebSocketReader<MBP10Schema> im
     private void prepareEncoder() {
         this.schema.encoder.exchangeId(listing.exchange().exchangeId());
         this.schema.encoder.securityId(listing.security().securityId());
-        this.schema.encoder.timestampSent(MBP10Encoder.timestampSentNullValue()); // Hyperliquid only has event timestamps
+        this.schema.encoder.timestampSent(
+                Mbp10Encoder.timestampSentNullValue()); // Hyperliquid only has event timestamps
         this.schema.encoder.timestampRecv(recvTimestamp);
     }
 
     private void writeSubscription(final String channel) {
         // { "method": "subscribe", "subscription": { "type": "<channel>", "coin": "<coin_symbol>" } }
-        final JSONWebSocketWriter jsonWebSocketWriter = (JSONWebSocketWriter) this.socketWriter;
-        final JSONEncoder jsonEncoder = jsonWebSocketWriter.getJSONEncoder();
+        final JsonWebSocketWriter jsonWebSocketWriter = (JsonWebSocketWriter) this.socketWriter;
+        final JsonEncoder jsonEncoder = jsonWebSocketWriter.getJsonEncoder();
 
         jsonEncoder.writeObjectStart();
         jsonEncoder.writeObjectEntry("method", "subscribe");
@@ -257,7 +281,7 @@ public class HyperliquidSocketReader extends JSONWebSocketReader<MBP10Schema> im
 
         jsonEncoder.writeObjectEnd();
 
-        ((WebSocketWriter) this.socketWriter).writeText(jsonWebSocketWriter.getAndFlipJSONBodyBuffer(), false);
+        ((WebSocketWriter) this.socketWriter).writeText(jsonWebSocketWriter.getAndFlipJsonBodyBuffer(), false);
     }
 
     @Override
@@ -265,5 +289,4 @@ public class HyperliquidSocketReader extends JSONWebSocketReader<MBP10Schema> im
         this.writeSubscription("l2Book");
         this.writeSubscription("trades");
     }
-
 }

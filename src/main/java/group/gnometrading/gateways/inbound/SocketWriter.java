@@ -3,7 +3,6 @@ package group.gnometrading.gateways.inbound;
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
 import group.gnometrading.collections.buffer.RingBuffer;
 import group.gnometrading.concurrent.GnomeAgent;
-
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
@@ -24,7 +23,8 @@ public abstract class SocketWriter implements GnomeAgent {
     public SocketWriter(int writeBufferSize, int messageBusCapacity) {
         this.writeBufferSize = writeBufferSize;
         this.writeBuffer = new ManyToOneRingBuffer<>(ByteBuffer[]::new, this::createWriteBuffer, messageBusCapacity);
-        this.controlWriteBuffer = new ManyToOneRingBuffer<>(ByteBuffer[]::new, this::createWriteBuffer, messageBusCapacity);
+        this.controlWriteBuffer =
+                new ManyToOneRingBuffer<>(ByteBuffer[]::new, this::createWriteBuffer, messageBusCapacity);
     }
 
     private ByteBuffer createWriteBuffer() {
@@ -34,7 +34,7 @@ public abstract class SocketWriter implements GnomeAgent {
     protected abstract void write(ByteBuffer buffer) throws IOException;
 
     @Override
-    public int doWork() {
+    public final int doWork() {
         this.writeBuffer.read(this::handleWrite);
         this.controlWriteBuffer.read(this::handleWrite);
         return 0;
@@ -50,11 +50,11 @@ public abstract class SocketWriter implements GnomeAgent {
         buffer.clear();
     }
 
-    public void publishWriteBuffer(int writeSequence) {
+    public final void publishWriteBuffer(int writeSequence) {
         this.writeBuffer.commit(writeSequence);
     }
 
-    public int claimWriteBuffer() {
+    public final int claimWriteBuffer() {
         int writeSequence = this.writeBuffer.tryClaim();
         if (writeSequence < 0) {
             throw new RuntimeException("Write buffer is full");
@@ -62,15 +62,15 @@ public abstract class SocketWriter implements GnomeAgent {
         return writeSequence;
     }
 
-    public ByteBuffer getWriteBuffer(int writeSequence) {
+    public final ByteBuffer getWriteBuffer(int writeSequence) {
         return this.writeBuffer.indexAt(writeSequence);
     }
 
-    public void publishControlWriteBuffer(int controlWriteSequence) {
+    public final void publishControlWriteBuffer(int controlWriteSequence) {
         this.controlWriteBuffer.commit(controlWriteSequence);
     }
 
-    public int claimControlWriteBuffer() {
+    public final int claimControlWriteBuffer() {
         int controlWriteSequence = this.controlWriteBuffer.tryClaim();
         if (controlWriteSequence < 0) {
             throw new RuntimeException("Control write buffer is full");
@@ -78,7 +78,7 @@ public abstract class SocketWriter implements GnomeAgent {
         return controlWriteSequence;
     }
 
-    public ByteBuffer getControlWriteBuffer(int controlWriteSequence) {
+    public final ByteBuffer getControlWriteBuffer(int controlWriteSequence) {
         return this.controlWriteBuffer.indexAt(controlWriteSequence);
     }
 }

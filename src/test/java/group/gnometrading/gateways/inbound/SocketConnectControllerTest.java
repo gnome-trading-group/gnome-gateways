@@ -1,21 +1,19 @@
 package group.gnometrading.gateways.inbound;
 
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
+
 import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.Logger;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
-import org.mockito.ArgumentCaptor;
-
 import java.io.IOException;
 import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.Mockito.*;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * Tests for SocketConnectController focusing on:
@@ -73,9 +71,10 @@ class SocketConnectControllerTest {
 
         // Fail twice, then succeed
         doThrow(new IOException("Fail 1"))
-            .doThrow(new IOException("Fail 2"))
-            .doNothing()
-            .when(socketReader).connect();
+                .doThrow(new IOException("Fail 2"))
+                .doNothing()
+                .when(socketReader)
+                .connect();
 
         controller.connect();
 
@@ -88,13 +87,16 @@ class SocketConnectControllerTest {
     @Test
     @Timeout(10)
     void testConnectionTimeout() throws IOException {
-        controller = new SocketConnectController(logger, socketReader, Duration.ofMillis(100), 0, Duration.ofMillis(10));
+        controller =
+                new SocketConnectController(logger, socketReader, Duration.ofMillis(100), 0, Duration.ofMillis(10));
 
         // Simulate a long-running connect that will timeout
         doAnswer(invocation -> {
-            Thread.sleep(1000);
-            return null;
-        }).when(socketReader).connect();
+                    Thread.sleep(1000);
+                    return null;
+                })
+                .when(socketReader)
+                .connect();
 
         assertThrows(RuntimeException.class, () -> controller.connect());
 
@@ -104,13 +106,16 @@ class SocketConnectControllerTest {
     @Test
     @Timeout(10)
     void testTimeoutWithRetries() throws IOException {
-        controller = new SocketConnectController(logger, socketReader, Duration.ofMillis(100), 2, Duration.ofMillis(10));
+        controller =
+                new SocketConnectController(logger, socketReader, Duration.ofMillis(100), 2, Duration.ofMillis(10));
 
         // Always timeout
         doAnswer(invocation -> {
-            Thread.sleep(2000);
-            return null;
-        }).when(socketReader).connect();
+                    Thread.sleep(2000);
+                    return null;
+                })
+                .when(socketReader)
+                .connect();
 
         assertThrows(RuntimeException.class, () -> controller.connect());
 
@@ -121,16 +126,19 @@ class SocketConnectControllerTest {
     @Test
     @Timeout(10)
     void testTimeoutThenSuccess() throws IOException {
-        controller = new SocketConnectController(logger, socketReader, Duration.ofMillis(100), 3, Duration.ofMillis(10));
+        controller =
+                new SocketConnectController(logger, socketReader, Duration.ofMillis(100), 3, Duration.ofMillis(10));
 
         // Timeout on first attempt, succeed on second
         AtomicInteger attempts = new AtomicInteger(0);
         doAnswer(invocation -> {
-            if (attempts.getAndIncrement() == 0) {
-                Thread.sleep(1000); // Timeout
-            }
-            return null;
-        }).when(socketReader).connect();
+                    if (attempts.getAndIncrement() == 0) {
+                        Thread.sleep(1000); // Timeout
+                    }
+                    return null;
+                })
+                .when(socketReader)
+                .connect();
 
         controller.connect();
 
@@ -159,7 +167,7 @@ class SocketConnectControllerTest {
     @Timeout(10)
     void testMaxReconnectAttempts() throws IOException {
         controller = new SocketConnectController(logger, socketReader, Duration.ofSeconds(5), 5, Duration.ofMillis(10));
-        
+
         doThrow(new IOException("Always fail")).when(socketReader).connect();
 
         assertThrows(RuntimeException.class, () -> controller.connect());
@@ -173,14 +181,16 @@ class SocketConnectControllerTest {
     @Test
     @Timeout(15)
     void testExponentialBackoff() throws IOException {
-        controller = new SocketConnectController(logger, socketReader, Duration.ofMillis(100), 3, Duration.ofMillis(100));
+        controller =
+                new SocketConnectController(logger, socketReader, Duration.ofMillis(100), 3, Duration.ofMillis(100));
 
         // Fail 3 times, then succeed
         doThrow(new IOException("Fail 1"))
-            .doThrow(new IOException("Fail 2"))
-            .doThrow(new IOException("Fail 3"))
-            .doNothing()
-            .when(socketReader).connect();
+                .doThrow(new IOException("Fail 2"))
+                .doThrow(new IOException("Fail 3"))
+                .doNothing()
+                .when(socketReader)
+                .connect();
 
         long startTime = System.currentTimeMillis();
         controller.connect();
@@ -196,22 +206,25 @@ class SocketConnectControllerTest {
     @Test
     @Timeout(10)
     void testWatchdogThreadInterruptsConnectThread() throws Exception {
-        controller = new SocketConnectController(logger, socketReader, Duration.ofMillis(100), 0, Duration.ofMillis(10));
-        
+        controller =
+                new SocketConnectController(logger, socketReader, Duration.ofMillis(100), 0, Duration.ofMillis(10));
+
         CountDownLatch connectStarted = new CountDownLatch(1);
         doAnswer(invocation -> {
-            connectStarted.countDown();
-            Thread.sleep(10000); // Long delay to trigger timeout
-            return null;
-        }).when(socketReader).connect();
+                    connectStarted.countDown();
+                    Thread.sleep(10000); // Long delay to trigger timeout
+                    return null;
+                })
+                .when(socketReader)
+                .connect();
 
         AtomicBoolean interrupted = new AtomicBoolean(false);
         Thread connectThread = new Thread(() -> {
             try {
                 controller.connect();
             } catch (RuntimeException e) {
-                if (e.getMessage().contains("timed out") || 
-                    Thread.currentThread().isInterrupted()) {
+                if (e.getMessage().contains("timed out")
+                        || Thread.currentThread().isInterrupted()) {
                     interrupted.set(true);
                 }
             }
@@ -244,9 +257,11 @@ class SocketConnectControllerTest {
         controller = new SocketConnectController(logger, socketReader, Duration.ofMillis(10), 0, Duration.ofSeconds(1));
 
         doAnswer(invocation -> {
-            Thread.sleep(100);
-            return null;
-        }).when(socketReader).connect();
+                    Thread.sleep(100);
+                    return null;
+                })
+                .when(socketReader)
+                .connect();
 
         assertThrows(RuntimeException.class, () -> controller.connect());
         verify(logger).log(LogMessage.SOCKET_CONNECT_TIMED_OUT);
@@ -258,20 +273,20 @@ class SocketConnectControllerTest {
     @Timeout(5)
     void testInterruptDuringBackoff() throws Exception {
         controller = new SocketConnectController(logger, socketReader, Duration.ofSeconds(5), 5, Duration.ofSeconds(2));
-        
+
         doThrow(new IOException("Fail")).when(socketReader).connect();
 
         CountDownLatch backoffStarted = new CountDownLatch(1);
         AtomicBoolean caughtInterrupt = new AtomicBoolean(false);
-        
+
         Thread connectThread = new Thread(() -> {
             try {
                 // First attempt will fail, then backoff starts
                 controller.connect();
             } catch (RuntimeException e) {
                 backoffStarted.countDown();
-                if (e.getCause() instanceof InterruptedException || 
-                    Thread.currentThread().isInterrupted()) {
+                if (e.getCause() instanceof InterruptedException
+                        || Thread.currentThread().isInterrupted()) {
                     caughtInterrupt.set(true);
                 }
             }
@@ -310,9 +325,11 @@ class SocketConnectControllerTest {
 
         // Connect completes just before timeout (tight race window)
         doAnswer(invocation -> {
-            Thread.sleep(25); // Just before 50ms timeout
-            return null;
-        }).when(socketReader).connect();
+                    Thread.sleep(25); // Just before 50ms timeout
+                    return null;
+                })
+                .when(socketReader)
+                .connect();
 
         // Run multiple times - should NEVER see wrong logs
         for (int i = 0; i < 100; i++) {
@@ -352,11 +369,13 @@ class SocketConnectControllerTest {
 
         // Simulate external interrupt (e.g., shutdown signal) during connect
         doAnswer(invocation -> {
-            // External interrupt happens during connect
-            Thread.currentThread().interrupt();
-            // But connect still succeeds
-            return null;
-        }).when(socketReader).connect();
+                    // External interrupt happens during connect
+                    Thread.currentThread().interrupt();
+                    // But connect still succeeds
+                    return null;
+                })
+                .when(socketReader)
+                .connect();
 
         Thread supervisorThread = new Thread(() -> {
             controller.connect();
@@ -373,8 +392,9 @@ class SocketConnectControllerTest {
 
         // Verify the fix
         assertTrue(connectSucceeded.get(), "Connect should have succeeded");
-        assertTrue(interruptWasPreserved.get(),
-            "✅ FIX CONFIRMED: Interrupt flag was preserved, allowing graceful shutdown!");
+        assertTrue(
+                interruptWasPreserved.get(),
+                "✅ FIX CONFIRMED: Interrupt flag was preserved, allowing graceful shutdown!");
     }
 
     /**
@@ -383,13 +403,16 @@ class SocketConnectControllerTest {
     @Test
     @Timeout(5)
     void testTimeoutMechanismWithScheduledExecutor() throws Exception {
-        controller = new SocketConnectController(logger, socketReader, Duration.ofMillis(100), 0, Duration.ofSeconds(1));
+        controller =
+                new SocketConnectController(logger, socketReader, Duration.ofMillis(100), 0, Duration.ofSeconds(1));
 
         // Connect takes longer than timeout
         doAnswer(invocation -> {
-            Thread.sleep(500);
-            return null;
-        }).when(socketReader).connect();
+                    Thread.sleep(500);
+                    return null;
+                })
+                .when(socketReader)
+                .connect();
 
         assertThrows(RuntimeException.class, () -> controller.connect());
 
@@ -434,4 +457,3 @@ class SocketConnectControllerTest {
         verify(logger).log(LogMessage.SOCKET_CONNECT_FAILED);
     }
 }
-

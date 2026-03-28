@@ -9,16 +9,15 @@ public record MarketInboundGatewayConfig(
         int maxReconnectAttempts,
         Duration maxSilentInterval,
         Duration initialBackoff,
-        Duration connectTimeout
-) {
+        Duration connectTimeout) {
 
-    static Duration DEFAULT_RECONNECT_INTERVAL = Duration.ofHours(12);
-    static Duration DEFAULT_KEEP_ALIVE_INTERVAL = Duration.ofSeconds(30);
-    static Duration DEFAULT_SANITY_CHECK_INTERVAL = Duration.ofHours(1);
-    static int DEFAULT_MAX_RECONNECT_ATTEMPTS = 5;
-    static Duration DEFAULT_MAX_SILENT_INTERVAL = Duration.ofSeconds(30);
-    static Duration DEFAULT_INITIAL_BACKOFF = Duration.ofSeconds(1);
-    static Duration DEFAULT_CONNECT_TIMEOUT = Duration.ofSeconds(10);
+    static final Duration DEFAULT_RECONNECT_INTERVAL = Duration.ofHours(12);
+    static final Duration DEFAULT_KEEP_ALIVE_INTERVAL = Duration.ofSeconds(30);
+    static final Duration DEFAULT_SANITY_CHECK_INTERVAL = Duration.ofHours(1);
+    static final int DEFAULT_MAX_RECONNECT_ATTEMPTS = 5;
+    static final Duration DEFAULT_MAX_SILENT_INTERVAL = Duration.ofSeconds(30);
+    static final Duration DEFAULT_INITIAL_BACKOFF = Duration.ofSeconds(1);
+    static final Duration DEFAULT_CONNECT_TIMEOUT = Duration.ofSeconds(10);
 
     public static final class Builder implements group.gnometrading.utils.Builder<MarketInboundGatewayConfig> {
 
@@ -74,10 +73,7 @@ public record MarketInboundGatewayConfig(
                     this.maxReconnectAttempts,
                     this.maxSilentInterval,
                     this.initialBackoff,
-                    this.connectTimeout
-            );
+                    this.connectTimeout);
         }
-
     }
-
 }
