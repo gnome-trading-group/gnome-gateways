@@ -73,11 +73,13 @@ public final class SocketConnectController {
                         this.backoff = this.initialBackoff;
                         return;
                     } else {
+                        Thread.interrupted(); // Clear interrupt set by our timeout task
                         this.logger.log(LogMessage.SOCKET_CONNECT_TIMED_OUT);
                     }
 
                 } catch (Exception e) {
                     timeoutTask.cancel(false);
+                    Thread.interrupted(); // Clear any interrupt from our timeout task before backoff sleep
 
                     if (timedOut.get()) {
                         this.logger.log(LogMessage.SOCKET_CONNECT_TIMED_OUT);

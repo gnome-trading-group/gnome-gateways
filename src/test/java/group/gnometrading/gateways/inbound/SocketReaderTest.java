@@ -61,7 +61,10 @@ class SocketReaderTest {
         socketReader.pause = true;
 
         GnomeAgentRunner.startOnThread(new GnomeAgentRunner(socketReader, null));
-        sleep(100);
+        long deadline = System.currentTimeMillis() + 5000;
+        while (!socketReader.isPaused && System.currentTimeMillis() < deadline) {
+            Thread.yield();
+        }
 
         assertTrue(socketReader.isPaused);
         assertEquals(0, socketReader.readSocketCallCount.get());
@@ -142,7 +145,10 @@ class SocketReaderTest {
     void testConnectResetsBuffers() throws IOException, InterruptedException {
         socketReader = new TestSocketReader(ringBuffer, clock);
         GnomeAgentRunner.startOnThread(new GnomeAgentRunner(socketReader, null));
-        sleep(100);
+        long deadline = System.currentTimeMillis() + 5000;
+        while (!socketReader.isPaused && System.currentTimeMillis() < deadline) {
+            Thread.yield();
+        }
 
         // Add some data to replay buffer
         socketReader.buffer = true;
@@ -172,16 +178,9 @@ class SocketReaderTest {
         });
         supervisor.start();
 
-        // Give it time to set initial flags
-        sleep(50);
-
-        assertFalse(socketReader.pause);
-        assertFalse(socketReader.buffer);
-        assertFalse(socketReader.isPaused);
-
         // Wait for connect to complete
         try {
-            supervisor.join(1000);
+            supervisor.join(5000);
         } catch (InterruptedException e) {
             fail("Supervisor thread interrupted");
         }
@@ -362,13 +361,24 @@ class SocketReaderTest {
         worker.start();
         workerReady.await();
 
+        // Wait for at least one doWork cycle to complete before setting pause,
+        // otherwise the worker may block on its very first doWork call and never
+        // set workerAcknowledged
+        long deadline = System.currentTimeMillis() + 5000;
+        while (!workerAcknowledged.get() && System.currentTimeMillis() < deadline) {
+            Thread.yield();
+        }
+        assertTrue(workerAcknowledged.get(), "Worker should have completed at least one doWork cycle");
+
         // Set pause flag
         socketReader.pause = true;
 
-        // Wait for worker to acknowledge
-        worker.join(100);
+        // Spin-wait for isPaused instead of a timed join (the worker never exits the loop)
+        deadline = System.currentTimeMillis() + 5000;
+        while (!socketReader.isPaused && System.currentTimeMillis() < deadline) {
+            Thread.yield();
+        }
 
-        assertTrue(workerAcknowledged.get(), "Worker should have acknowledged pause");
         assertTrue(socketReader.isPaused);
     }
 

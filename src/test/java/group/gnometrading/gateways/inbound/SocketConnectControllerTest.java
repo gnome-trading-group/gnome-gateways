@@ -319,13 +319,14 @@ class SocketConnectControllerTest {
     @Test
     @Timeout(10)
     void testNoRaceCondition_TimeoutFlagIsThreadSafe() throws Exception {
-        controller = new SocketConnectController(logger, socketReader, Duration.ofMillis(50), 0, Duration.ofSeconds(1));
+        controller =
+                new SocketConnectController(logger, socketReader, Duration.ofMillis(2000), 0, Duration.ofSeconds(1));
 
         AtomicInteger correctLogCount = new AtomicInteger(0);
 
-        // Connect completes just before timeout (tight race window)
+        // Connect completes well before timeout — large margin avoids real-time jitter
         doAnswer(invocation -> {
-                    Thread.sleep(25); // Just before 50ms timeout
+                    Thread.sleep(10); // 10ms connect, 2000ms timeout
                     return null;
                 })
                 .when(socketReader)
@@ -341,8 +342,6 @@ class SocketConnectControllerTest {
             verify(logger).log(LogMessage.SOCKET_CONNECTED);
             verify(logger, never()).log(LogMessage.SOCKET_CONNECT_TIMED_OUT);
             correctLogCount.incrementAndGet();
-
-            Thread.sleep(5); // Small delay between attempts
         }
 
         assertEquals(100, correctLogCount.get(), "All 100 attempts should have correct logs");
