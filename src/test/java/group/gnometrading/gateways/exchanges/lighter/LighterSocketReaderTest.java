@@ -4,10 +4,6 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
-import com.lmax.disruptor.RingBuffer;
-import com.lmax.disruptor.SleepingWaitStrategy;
-import com.lmax.disruptor.dsl.Disruptor;
-import com.lmax.disruptor.dsl.ProducerType;
 import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.gateways.inbound.exchanges.lighter.LighterSocketReader;
 import group.gnometrading.logging.NullLogger;
@@ -15,6 +11,8 @@ import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.networking.websockets.WebSocketResponse;
 import group.gnometrading.networking.websockets.enums.Opcode;
 import group.gnometrading.schemas.*;
+import group.gnometrading.sequencer.GlobalSequence;
+import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Exchange;
 import group.gnometrading.sm.Listing;
 import group.gnometrading.sm.Security;
@@ -26,6 +24,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ThreadFactory;
 import org.agrona.concurrent.EpochNanoClock;
 import org.junit.jupiter.api.AfterEach;
@@ -40,8 +39,7 @@ import org.junit.jupiter.api.Test;
  */
 public class LighterSocketReaderTest {
 
-    private Disruptor<Mbp10Schema> disruptor;
-    private RingBuffer<Mbp10Schema> ringBuffer;
+    private SequencedRingBuffer<Mbp10Schema> sequencedRingBuffer;
     private LighterSocketReader socketReader;
     private WebSocketClient mockClient;
     private WebSocketResponse mockResponse;
@@ -51,14 +49,17 @@ public class LighterSocketReaderTest {
 
     @BeforeEach
     void setUp() {
-        // Create disruptor for output
-        disruptor = new Disruptor<>(
-                Mbp10Schema::new, 1024, new DaemonThreadFactory(), ProducerType.SINGLE, new SleepingWaitStrategy());
-        disruptor.start();
-        ringBuffer = disruptor.getRingBuffer();
+        capturedSchemas = new CopyOnWriteArrayList<>();
+        sequencedRingBuffer = new SequencedRingBuffer<>(Mbp10Schema::new, new GlobalSequence());
+        sequencedRingBuffer.handleEventsWith((gSeq, templateId, buffer, length) -> {
+            Mbp10Schema captured = new Mbp10Schema();
+            captured.buffer.putBytes(0, buffer, 0, length);
+            captured.wrap(captured.buffer);
+            capturedSchemas.add(captured);
+        });
+        sequencedRingBuffer.start();
         clock = System::nanoTime;
         jsonDecoder = new JsonDecoder();
-        capturedSchemas = new ArrayList<>();
 
         mockClient = mock(WebSocketClient.class);
         mockResponse = mock(WebSocketResponse.class);
@@ -75,16 +76,16 @@ public class LighterSocketReaderTest {
                 "TEST" // symbol
                 );
 
-        socketReader =
-                new LighterSocketReader(new NullLogger(), ringBuffer, clock, null, listing, mockClient, jsonDecoder);
+        socketReader = new LighterSocketReader(
+                new NullLogger(), sequencedRingBuffer, clock, null, listing, mockClient, jsonDecoder);
         socketReader.buffer = false;
         socketReader.pause = false;
     }
 
     @AfterEach
     void tearDown() {
-        if (disruptor != null) {
-            disruptor.shutdown();
+        if (sequencedRingBuffer != null) {
+            sequencedRingBuffer.shutdown();
         }
     }
 
@@ -202,13 +203,13 @@ public class LighterSocketReaderTest {
     // ========== Helper Methods ==========
 
     private void processMessage(String message) throws Exception {
+        int before = capturedSchemas.size();
         when(mockClient.read()).thenReturn(mockResponse);
         when(mockResponse.getBody()).thenReturn(ByteBuffer.wrap(message.getBytes(StandardCharsets.UTF_8)));
-        long before = ringBuffer.getCursor();
         socketReader.doWork();
-        long after = ringBuffer.getCursor();
-        for (long seq = before + 1; seq <= after; seq++) {
-            capturedSchemas.add(ringBuffer.get(seq));
+        long deadline = System.currentTimeMillis() + 1000;
+        while (capturedSchemas.size() == before && System.currentTimeMillis() < deadline) {
+            Thread.yield();
         }
     }
 

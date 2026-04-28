@@ -1,6 +1,5 @@
 package group.gnometrading.gateways.inbound.exchanges.lighter;
 
-import com.lmax.disruptor.RingBuffer;
 import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.codecs.json.JsonEncoder;
 import group.gnometrading.gateways.inbound.Book;
@@ -17,6 +16,7 @@ import group.gnometrading.schemas.Mbp10Encoder;
 import group.gnometrading.schemas.Mbp10Schema;
 import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
+import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Listing;
 import java.io.IOException;
 import org.agrona.concurrent.EpochNanoClock;
@@ -35,7 +35,7 @@ public final class LighterSocketReader extends JsonWebSocketReader<Mbp10Schema> 
 
     public LighterSocketReader(
             Logger logger,
-            RingBuffer<Mbp10Schema> outputBuffer,
+            SequencedRingBuffer<Mbp10Schema> outputBuffer,
             EpochNanoClock clock,
             SocketWriter socketWriter,
             Listing listing,

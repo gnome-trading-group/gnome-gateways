@@ -1,6 +1,5 @@
 package group.gnometrading.gateways.inbound.exchanges.hyperliquid;
 
-import com.lmax.disruptor.RingBuffer;
 import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.codecs.json.JsonEncoder;
 import group.gnometrading.gateways.inbound.Book;
@@ -17,6 +16,7 @@ import group.gnometrading.schemas.Mbp10Encoder;
 import group.gnometrading.schemas.Mbp10Schema;
 import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
+import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Listing;
 import java.io.IOException;
 import org.agrona.concurrent.EpochNanoClock;
@@ -35,10 +35,11 @@ public final class HyperliquidSocketReader extends JsonWebSocketReader<Mbp10Sche
     private final Mbp10Book book;
     private long lastTradePrice;
     private long lastTradeSize;
+    private boolean initialTradesBatchReceived;
 
     public HyperliquidSocketReader(
             Logger logger,
-            RingBuffer<Mbp10Schema> outputBuffer,
+            SequencedRingBuffer<Mbp10Schema> outputBuffer,
             EpochNanoClock clock,
             SocketWriter socketWriter,
             Listing listing,
@@ -203,9 +204,7 @@ public final class HyperliquidSocketReader extends JsonWebSocketReader<Mbp10Sche
         offer();
     }
 
-    private void parseTrade(final JsonDecoder.JsonObject trade) {
-        prepareEncoder();
-
+    private void parseTrade(final JsonDecoder.JsonObject trade, boolean emit) {
         Side side = Side.None;
         long timestampEvent = Mbp10Encoder.timestampEventNullValue();
 
@@ -227,6 +226,11 @@ public final class HyperliquidSocketReader extends JsonWebSocketReader<Mbp10Sche
             }
         }
 
+        if (!emit) {
+            return;
+        }
+
+        prepareEncoder();
         this.schema.encoder.timestampEvent(timestampEvent);
         this.schema.encoder.sequence(timestampEvent);
         this.schema.encoder.price(this.lastTradePrice);
@@ -243,11 +247,13 @@ public final class HyperliquidSocketReader extends JsonWebSocketReader<Mbp10Sche
     }
 
     private void parseTrades(final JsonDecoder.JsonNode node) {
+        boolean emit = this.initialTradesBatchReceived;
+        this.initialTradesBatchReceived = true;
         try (var trades = node.asArray()) {
             while (trades.hasNextItem()) {
                 try (var tradeNode = trades.nextItem();
                         var trade = tradeNode.asObject()) {
-                    parseTrade(trade);
+                    parseTrade(trade, emit);
                 }
             }
         }
@@ -286,6 +292,7 @@ public final class HyperliquidSocketReader extends JsonWebSocketReader<Mbp10Sche
 
     @Override
     protected void subscribe() throws IOException {
+        this.initialTradesBatchReceived = false;
         this.writeSubscription("l2Book");
         this.writeSubscription("trades");
     }

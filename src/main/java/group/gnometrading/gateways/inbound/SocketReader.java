@@ -1,11 +1,11 @@
 package group.gnometrading.gateways.inbound;
 
-import com.lmax.disruptor.RingBuffer;
 import group.gnometrading.collections.buffer.OneToOneRingBuffer;
 import group.gnometrading.concurrent.GnomeAgent;
 import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.schemas.Schema;
+import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Listing;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -17,12 +17,11 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
     private static final int DEFAULT_REPLAY_BUFFER_SIZE = 1 << 11; // 2048 slots
 
     private final Logger logger;
-    private final RingBuffer<T> ringBuffer;
+    private final SequencedRingBuffer<T> sequencedRingBuffer;
     public final EpochNanoClock clock;
     protected final SocketWriter socketWriter;
     protected final Listing listing;
     private final OneToOneRingBuffer<T> replayBuffer;
-    private long sequence;
 
     public volatile long recvTimestamp = 0L;
     protected T schema;
@@ -35,12 +34,12 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
 
     public SocketReader(
             Logger logger,
-            RingBuffer<T> outputBuffer,
+            SequencedRingBuffer<T> outputBuffer,
             EpochNanoClock clock,
             SocketWriter socketWriter,
             Listing listing) {
         this.logger = logger;
-        this.ringBuffer = outputBuffer;
+        this.sequencedRingBuffer = outputBuffer;
         this.clock = clock;
         this.socketWriter = socketWriter;
         this.listing = listing;
@@ -174,8 +173,7 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
     }
 
     protected final void claim() {
-        this.sequence = this.ringBuffer.next();
-        this.schema = this.ringBuffer.get(this.sequence);
+        this.schema = this.sequencedRingBuffer.claim();
     }
 
     protected final void offer() {
@@ -187,7 +185,7 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
             this.replayBuffer.indexAt(index).copyFrom(this.schema);
             this.replayBuffer.commit(index);
         } else {
-            this.ringBuffer.publish(this.sequence);
+            this.sequencedRingBuffer.publish();
             this.claim();
         }
     }

@@ -2,14 +2,13 @@ package group.gnometrading.gateways.inbound;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import com.lmax.disruptor.RingBuffer;
-import com.lmax.disruptor.dsl.Disruptor;
-import com.lmax.disruptor.util.DaemonThreadFactory;
 import group.gnometrading.concurrent.GnomeAgentRunner;
 import group.gnometrading.gateways.inbound.mbp.Mbp10Book;
 import group.gnometrading.gateways.inbound.mbp.Mbp10SchemaFactory;
 import group.gnometrading.logging.NullLogger;
 import group.gnometrading.schemas.Mbp10Schema;
+import group.gnometrading.sequencer.GlobalSequence;
+import group.gnometrading.sequencer.SequencedRingBuffer;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
@@ -33,23 +32,21 @@ import org.junit.jupiter.api.Timeout;
  */
 class SocketReaderTest {
 
-    private Disruptor<Mbp10Schema> disruptor;
-    private RingBuffer<Mbp10Schema> ringBuffer;
+    private SequencedRingBuffer<Mbp10Schema> sequencedRingBuffer;
     private TestSocketReader socketReader;
     private EpochNanoClock clock;
 
     @BeforeEach
     void setUp() {
-        disruptor = new Disruptor<>(Mbp10Schema::new, 1024, DaemonThreadFactory.INSTANCE);
-        disruptor.start();
-        ringBuffer = disruptor.getRingBuffer();
+        sequencedRingBuffer = new SequencedRingBuffer<>(Mbp10Schema::new, new GlobalSequence());
+        sequencedRingBuffer.start();
         clock = System::nanoTime;
     }
 
     @AfterEach
     void tearDown() {
-        if (disruptor != null) {
-            disruptor.shutdown();
+        if (sequencedRingBuffer != null) {
+            sequencedRingBuffer.shutdown();
         }
     }
 
@@ -57,7 +54,7 @@ class SocketReaderTest {
 
     @Test
     void testDoWorkWhenPaused() throws Exception {
-        socketReader = new TestSocketReader(ringBuffer, clock);
+        socketReader = new TestSocketReader(sequencedRingBuffer, clock);
         socketReader.pause = true;
 
         GnomeAgentRunner.startOnThread(new GnomeAgentRunner(socketReader, null));
@@ -72,7 +69,7 @@ class SocketReaderTest {
 
     @Test
     void testDoWorkWhenNotPaused() throws Exception {
-        socketReader = new TestSocketReader(ringBuffer, clock);
+        socketReader = new TestSocketReader(sequencedRingBuffer, clock);
         socketReader.pause = false;
         socketReader.addNextReadResult(ByteBuffer.wrap("test".getBytes()));
 
@@ -85,7 +82,7 @@ class SocketReaderTest {
 
     @Test
     void testDoWorkWithNullBuffer() throws Exception {
-        socketReader = new TestSocketReader(ringBuffer, clock);
+        socketReader = new TestSocketReader(sequencedRingBuffer, clock);
         socketReader.pause = false;
 
         int result = socketReader.doWork();
@@ -97,7 +94,7 @@ class SocketReaderTest {
 
     @Test
     void testDoWorkWithEmptyBuffer() throws Exception {
-        socketReader = new TestSocketReader(ringBuffer, clock);
+        socketReader = new TestSocketReader(sequencedRingBuffer, clock);
         socketReader.pause = false;
         ByteBuffer emptyBuffer = ByteBuffer.allocate(0);
         socketReader.addNextReadResult(emptyBuffer);
@@ -111,7 +108,7 @@ class SocketReaderTest {
 
     @Test
     void testDoWorkProcessesMultipleMessages() throws Exception {
-        socketReader = new TestSocketReader(ringBuffer, clock);
+        socketReader = new TestSocketReader(sequencedRingBuffer, clock);
         socketReader.pause = false;
 
         // Create buffer with multiple "messages" (each byte is a message in our test)
@@ -127,7 +124,7 @@ class SocketReaderTest {
 
     @Test
     void testDoWorkSetsRecvTimestamp() throws Exception {
-        socketReader = new TestSocketReader(ringBuffer, clock);
+        socketReader = new TestSocketReader(sequencedRingBuffer, clock);
         socketReader.pause = false;
         socketReader.addNextReadResult(ByteBuffer.wrap("test".getBytes()));
 
@@ -143,7 +140,7 @@ class SocketReaderTest {
 
     @Test
     void testConnectResetsBuffers() throws IOException, InterruptedException {
-        socketReader = new TestSocketReader(ringBuffer, clock);
+        socketReader = new TestSocketReader(sequencedRingBuffer, clock);
         GnomeAgentRunner.startOnThread(new GnomeAgentRunner(socketReader, null));
         long deadline = System.currentTimeMillis() + 5000;
         while (!socketReader.isPaused && System.currentTimeMillis() < deadline) {
@@ -163,7 +160,7 @@ class SocketReaderTest {
 
     @Test
     void testConnectSetsCorrectFlags() throws IOException {
-        socketReader = new TestSocketReader(ringBuffer, clock);
+        socketReader = new TestSocketReader(sequencedRingBuffer, clock);
         socketReader.pause = true;
         socketReader.buffer = false;
         GnomeAgentRunner.startOnThread(new GnomeAgentRunner(socketReader, null));
@@ -187,12 +184,18 @@ class SocketReaderTest {
 
         assertFalse(supervisor.isAlive());
         assertFalse(socketReader.pause);
+
+        // Worker thread clears isPaused after observing pause=false — spin-wait for it
+        long deadline = System.currentTimeMillis() + 1000;
+        while (socketReader.isPaused && System.currentTimeMillis() < deadline) {
+            Thread.yield();
+        }
         assertFalse(socketReader.isPaused);
     }
 
     @Test
     void testConnectWithSnapshot() throws IOException {
-        socketReader = new TestSocketReader(ringBuffer, clock, true);
+        socketReader = new TestSocketReader(sequencedRingBuffer, clock, true);
         GnomeAgentRunner.startOnThread(new GnomeAgentRunner(socketReader, null));
 
         // Set up snapshot
@@ -217,7 +220,7 @@ class SocketReaderTest {
 
     @Test
     void testConnectWithoutSnapshot() throws IOException {
-        socketReader = new TestSocketReader(ringBuffer, clock);
+        socketReader = new TestSocketReader(sequencedRingBuffer, clock);
         socketReader.setSnapshot(null);
         GnomeAgentRunner.startOnThread(new GnomeAgentRunner(socketReader, null));
 
@@ -231,7 +234,7 @@ class SocketReaderTest {
     @Test
     @Timeout(10)
     void testDoWorkAndConnectConcurrency() throws Exception {
-        socketReader = new TestSocketReader(ringBuffer, clock);
+        socketReader = new TestSocketReader(sequencedRingBuffer, clock);
         socketReader.pause = false;
 
         AtomicBoolean workerRunning = new AtomicBoolean(true);
@@ -294,7 +297,7 @@ class SocketReaderTest {
     @Test
     @Timeout(10)
     void testMultipleConnectCalls() throws Exception {
-        socketReader = new TestSocketReader(ringBuffer, clock);
+        socketReader = new TestSocketReader(sequencedRingBuffer, clock);
 
         AtomicBoolean workerRunning = new AtomicBoolean(true);
         CountDownLatch workerStarted = new CountDownLatch(1);
@@ -338,7 +341,7 @@ class SocketReaderTest {
     @Test
     @Timeout(10)
     void testPauseLatchSynchronization() throws Exception {
-        socketReader = new TestSocketReader(ringBuffer, clock);
+        socketReader = new TestSocketReader(sequencedRingBuffer, clock);
         socketReader.pause = false;
 
         CountDownLatch workerReady = new CountDownLatch(1);
@@ -387,7 +390,7 @@ class SocketReaderTest {
     @Test
     @Timeout(10)
     void testConnectWhileDoWorkIsProcessingMessages() throws Exception {
-        socketReader = new TestSocketReader(ringBuffer, clock);
+        socketReader = new TestSocketReader(sequencedRingBuffer, clock);
         socketReader.pause = false;
 
         AtomicBoolean workerRunning = new AtomicBoolean(true);
@@ -450,7 +453,7 @@ class SocketReaderTest {
     @Test
     @Timeout(10)
     void testRapidConnectDisconnectCycles() throws Exception {
-        socketReader = new TestSocketReader(ringBuffer, clock);
+        socketReader = new TestSocketReader(sequencedRingBuffer, clock);
 
         AtomicBoolean workerRunning = new AtomicBoolean(true);
         CountDownLatch workerStarted = new CountDownLatch(1);
@@ -495,7 +498,7 @@ class SocketReaderTest {
     @Test
     @Timeout(10)
     void testOfferBufferLatchBehavior() throws Exception {
-        socketReader = new TestSocketReader(ringBuffer, clock);
+        socketReader = new TestSocketReader(sequencedRingBuffer, clock);
 
         // When buffering
         socketReader.buffer = true;
@@ -510,7 +513,7 @@ class SocketReaderTest {
     @Test
     @Timeout(10)
     void testReplayBufferDuringConnect() throws Exception {
-        socketReader = new TestSocketReader(ringBuffer, clock, true);
+        socketReader = new TestSocketReader(sequencedRingBuffer, clock, true);
         GnomeAgentRunner.startOnThread(new GnomeAgentRunner(socketReader, null));
 
         // Add messages to replay buffer
@@ -534,7 +537,7 @@ class SocketReaderTest {
     @Test
     @Timeout(10)
     void testVolatileFlagVisibility() throws Exception {
-        socketReader = new TestSocketReader(ringBuffer, clock);
+        socketReader = new TestSocketReader(sequencedRingBuffer, clock);
         socketReader.pause = false;
 
         AtomicBoolean workerSawPause = new AtomicBoolean(false);
@@ -571,7 +574,7 @@ class SocketReaderTest {
     @Test
     @Timeout(10)
     void testStressTestDoWorkAndConnect() throws Exception {
-        socketReader = new TestSocketReader(ringBuffer, clock);
+        socketReader = new TestSocketReader(sequencedRingBuffer, clock);
         socketReader.pause = false;
 
         AtomicBoolean workerRunning = new AtomicBoolean(true);
@@ -652,11 +655,12 @@ class SocketReaderTest {
         private Book<Mbp10Schema> snapshot;
         private final boolean shouldOfferBuffer;
 
-        public TestSocketReader(RingBuffer<Mbp10Schema> outputBuffer, EpochNanoClock clock) {
+        public TestSocketReader(SequencedRingBuffer<Mbp10Schema> outputBuffer, EpochNanoClock clock) {
             this(outputBuffer, clock, false);
         }
 
-        public TestSocketReader(RingBuffer<Mbp10Schema> outputBuffer, EpochNanoClock clock, boolean shouldOfferBuffer) {
+        public TestSocketReader(
+                SequencedRingBuffer<Mbp10Schema> outputBuffer, EpochNanoClock clock, boolean shouldOfferBuffer) {
             super(new NullLogger(), outputBuffer, clock, null, null);
             this.shouldOfferBuffer = shouldOfferBuffer;
         }
