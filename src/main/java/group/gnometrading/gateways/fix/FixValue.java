@@ -208,6 +208,28 @@ public final class FixValue {
      * @return the value as a decimal
      * @see <a href="https://www.exploringbinary.com/fast-path-decimal-to-floating-point-conversion/">Fast Path Decimal to Floating-Point Conversion</a>
      */
+    public long toFixedPointLong(final long scale) {
+        int idx = offset;
+        long significand = 0;
+        int decimalPlaces = 0;
+        boolean seenDecimal = false;
+
+        while (idx < offset + length) {
+            final byte byteVal = this.parent.get(idx++);
+            if (byteVal == '.') {
+                seenDecimal = true;
+            } else {
+                significand = 10 * significand + byteVal - '0';
+                if (seenDecimal) {
+                    decimalPlaces++;
+                }
+            }
+        }
+
+        final long divisor = AsciiEncoding.LONG_POW_10[decimalPlaces];
+        return significand * scale / divisor;
+    }
+
     public double asDecimal() {
         boolean negative = false;
         int idx = offset;

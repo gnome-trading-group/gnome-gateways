@@ -14,6 +14,10 @@ public final class FixMessage implements Resettable {
     private final Pool<FixValue> valuePool;
     private int tagCount;
     private final int[] tagMap;
+
+    @SuppressWarnings("unchecked")
+    private final PoolNode<FixValue>[] valueMap;
+
     private final FixConfig config;
     private final ByteBuffer writeHeaderBuffer;
     private final ByteBuffer writeBodyBuffer;
@@ -25,6 +29,8 @@ public final class FixMessage implements Resettable {
         this.config = config;
         this.tags = new IntHashMap<>();
         this.tagMap = new int[config.maxTagCapacity()];
+        //noinspection unchecked
+        this.valueMap = (PoolNode<FixValue>[]) new PoolNode[config.maxTagCapacity()];
         this.valuePool = new SingleThreadedObjectPool<>(this::createFixValue);
         this.writeBodyBuffer = ByteBuffer.allocate(config.writeBufferCapacity());
         this.writeHeaderBuffer = ByteBuffer.allocate(config.writeBufferCapacity());
@@ -117,9 +123,8 @@ public final class FixMessage implements Resettable {
     public int writeToBuffer(final ByteBuffer output) {
         this.writeBodyBuffer.clear();
         for (int i = 0; i < this.tagCount; i++) {
-            final int tag = this.tagMap[i];
-            this.putFixInt(this.writeBodyBuffer, tag);
-            this.tags.get(tag).getItem().writeToBuffer(this.writeBodyBuffer);
+            this.putFixInt(this.writeBodyBuffer, this.tagMap[i]);
+            this.valueMap[i].getItem().writeToBuffer(this.writeBodyBuffer);
         }
 
         this.writeHeaderBuffer.position(this.bodyLengthOffset);
@@ -147,9 +152,23 @@ public final class FixMessage implements Resettable {
         }
 
         final var node = this.valuePool.acquire();
-        this.tagMap[this.tagCount++] = tag;
+        this.tagMap[this.tagCount] = tag;
+        this.valueMap[this.tagCount] = node;
+        this.tagCount++;
         this.tags.put(tag, node);
         return node.getItem();
+    }
+
+    public int getTagCount() {
+        return this.tagCount;
+    }
+
+    public int getTagAt(final int index) {
+        return this.tagMap[index];
+    }
+
+    public FixValue getValueAt(final int index) {
+        return this.valueMap[index].getItem();
     }
 
     public FixValue getTag(final int tag) {
@@ -168,7 +187,7 @@ public final class FixMessage implements Resettable {
     @Override
     public void reset() {
         for (int i = 0; i < tagCount; i++) {
-            this.valuePool.release(this.tags.get(this.tagMap[i]));
+            this.valuePool.release(this.valueMap[i]);
         }
 
         this.tags.clear();

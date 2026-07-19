@@ -62,6 +62,10 @@ public final class MbpBufferBook implements Book<Mbp10Schema> {
         return 0;
     }
 
+    public void setSequenceNumber(long sequenceNumber) {
+        this.sequenceNumber = sequenceNumber;
+    }
+
     public int updateAsk(final long price, final long size, final long count) {
         return this.asks.update(price, size, count);
     }

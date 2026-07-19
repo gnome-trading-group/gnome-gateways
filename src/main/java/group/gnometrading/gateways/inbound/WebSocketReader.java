@@ -48,12 +48,15 @@ public abstract class WebSocketReader<T extends Schema> extends SocketReader<T> 
 
     @Override
     protected final void attachSocket() throws IOException {
+        beforeConnect();
         this.socketClient.connect();
         this.socketClient.configureBlocking(true);
         this.socketClient.setTcpNoDelay(true);
         this.socketClient.setKeepAlive(true);
         this.subscribe();
     }
+
+    protected void beforeConnect() throws IOException {}
 
     @Override
     public final void disconnectSocket() throws Exception {

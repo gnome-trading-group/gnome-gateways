@@ -282,7 +282,7 @@ public final class HyperliquidSocketReader extends JsonWebSocketReader<Mbp10Sche
         jsonEncoder.writeObjectStart();
         jsonEncoder.writeObjectEntry("type", channel);
         jsonEncoder.writeComma();
-        jsonEncoder.writeObjectEntry("coin", this.listing.exchangeSecuritySymbol());
+        jsonEncoder.writeObjectEntry("coin", this.listing.exchangeSecurityId());
         jsonEncoder.writeObjectEnd();
 
         jsonEncoder.writeObjectEnd();
