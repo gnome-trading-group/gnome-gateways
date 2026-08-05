@@ -27,8 +27,31 @@ public abstract class JsonWebSocketReader<T extends Schema> extends WebSocketRea
 
     @Override
     protected final void handleGatewayMessage(final ByteBuffer buffer) {
+        skipWhitespace(buffer);
+        if (!buffer.hasRemaining()) {
+            return;
+        }
+        if (handleNonJsonMessage(buffer.asReadOnlyBuffer())) {
+            buffer.position(buffer.limit());
+            return;
+        }
         try (var node = jsonDecoder.wrap(buffer)) {
             handleJsonMessage(node);
+        }
+    }
+
+    /** Allows venue readers to consume application-level text frames such as {@code PONG}. */
+    protected boolean handleNonJsonMessage(ByteBuffer buffer) {
+        return false;
+    }
+
+    private static void skipWhitespace(final ByteBuffer buffer) {
+        while (buffer.hasRemaining()) {
+            final byte next = buffer.get(buffer.position());
+            if (next != ' ' && next != '\n' && next != '\r' && next != '\t') {
+                return;
+            }
+            buffer.get();
         }
     }
 
