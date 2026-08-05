@@ -7,8 +7,8 @@ import group.gnometrading.gateways.inbound.JsonWebSocketReader;
 import group.gnometrading.gateways.inbound.JsonWebSocketWriter;
 import group.gnometrading.gateways.inbound.SocketWriter;
 import group.gnometrading.gateways.inbound.WebSocketWriter;
-import group.gnometrading.gateways.inbound.mbp.Mbp10Book;
-import group.gnometrading.gateways.inbound.mbp.Mbp10SchemaFactory;
+import group.gnometrading.gateways.inbound.mbp.buffer.MbpBufferBook;
+import group.gnometrading.gateways.inbound.mbp.buffer.MbpBufferSchemaFactory;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.schemas.Action;
@@ -22,31 +22,40 @@ import group.gnometrading.strings.GnomeString;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.util.Comparator;
-import java.util.NavigableMap;
-import java.util.TreeMap;
 import org.agrona.concurrent.EpochNanoClock;
 
-public final class PolymarketSocketReader extends JsonWebSocketReader<Mbp10Schema> implements Mbp10SchemaFactory {
+public final class PolymarketSocketReader extends JsonWebSocketReader<Mbp10Schema> implements MbpBufferSchemaFactory {
 
-    private static final int MAX_LEVEL_DEPTH = 10;
+    private static final int MAX_BOOK_LEVELS = 1 << 10;
     private static final long NANOS_PER_MILLI = 1_000_000L;
     private static final byte[] PING = "PING".getBytes(StandardCharsets.US_ASCII);
+    private static final byte EVENT_TYPE_UNKNOWN = 0;
+    private static final byte EVENT_TYPE_BOOK = 1;
+    private static final byte EVENT_TYPE_PRICE_CHANGE = 2;
+    private static final byte EVENT_TYPE_LAST_TRADE = 3;
 
     private static final class ParsedEvent {
-        private String type;
-        private long timestamp = Mbp10Encoder.timestampEventNullValue();
-        private long price = Mbp10Encoder.priceNullValue();
-        private long size = Mbp10Encoder.sizeNullValue();
-        private Side side = Side.None;
+        private byte type;
+        private long timestamp;
+        private long price;
+        private long size;
+        private Side side;
         private boolean snapshotInitialized;
+
+        private void reset() {
+            this.type = EVENT_TYPE_UNKNOWN;
+            this.timestamp = Mbp10Encoder.timestampEventNullValue();
+            this.price = Mbp10Encoder.priceNullValue();
+            this.size = Mbp10Encoder.sizeNullValue();
+            this.side = Side.None;
+            this.snapshotInitialized = false;
+        }
     }
 
-    private final Mbp10Book book;
-    private final JsonDecoder jsonDecoder;
+    private final MbpBufferBook book;
+    private final ParsedEvent parsedEvent;
+    private final ByteBuffer pingBuffer;
     private final String tokenId;
-    private final NavigableMap<Long, Long> bids;
-    private final NavigableMap<Long, Long> asks;
     private long lastTradePrice;
     private long lastTradeSize;
 
@@ -59,22 +68,27 @@ public final class PolymarketSocketReader extends JsonWebSocketReader<Mbp10Schem
             WebSocketClient socketClient,
             JsonDecoder jsonDecoder) {
         super(logger, outputBuffer, clock, socketWriter, listing, socketClient, jsonDecoder);
-        this.book = (Mbp10Book) this.internalBook;
-        this.jsonDecoder = jsonDecoder;
+        this.book = (MbpBufferBook) this.internalBook;
+        this.parsedEvent = new ParsedEvent();
+        this.pingBuffer = ByteBuffer.wrap(PING);
         // exchangeSecurityId is "{condition_id}:{token_id}"
         final String exchangeSecurityId = listing.exchangeSecurityId();
         final int colonIndex = exchangeSecurityId.indexOf(':');
         this.tokenId = colonIndex >= 0 ? exchangeSecurityId.substring(colonIndex + 1) : exchangeSecurityId;
-        this.bids = new TreeMap<>(Comparator.reverseOrder());
-        this.asks = new TreeMap<>();
 
         this.lastTradePrice = Mbp10Encoder.priceNullValue();
         this.lastTradeSize = Mbp10Encoder.sizeNullValue();
     }
 
     @Override
+    public MbpBufferBook createBook() {
+        return new MbpBufferBook(MAX_BOOK_LEVELS);
+    }
+
+    @Override
     protected void keepAlive() throws IOException {
-        ((WebSocketWriter) this.socketWriter).writeText(ByteBuffer.wrap(PING), true);
+        this.pingBuffer.rewind();
+        ((WebSocketWriter) this.socketWriter).writeText(this.pingBuffer, true);
     }
 
     @Override
@@ -84,7 +98,6 @@ public final class PolymarketSocketReader extends JsonWebSocketReader<Mbp10Schem
                 && buffer.get(buffer.position() + 1) == 'O'
                 && buffer.get(buffer.position() + 2) == 'N'
                 && buffer.get(buffer.position() + 3) == 'G') {
-            buffer.position(buffer.limit());
             return true;
         }
         if (buffer.hasRemaining() && buffer.get(buffer.position()) == '[') {
@@ -121,7 +134,8 @@ public final class PolymarketSocketReader extends JsonWebSocketReader<Mbp10Schem
     }
 
     private void parseEventObject(final JsonDecoder.JsonObject obj) {
-        final ParsedEvent event = new ParsedEvent();
+        final ParsedEvent event = this.parsedEvent;
+        event.reset();
 
         while (obj.hasNextKey()) {
             try (var key = obj.nextKey()) {
@@ -133,13 +147,13 @@ public final class PolymarketSocketReader extends JsonWebSocketReader<Mbp10Schem
 
     private void parseEventKey(final GnomeString name, final JsonDecoder.JsonNode key, final ParsedEvent event) {
         if (name.equals("event_type")) {
-            event.type = key.asString().toString();
+            event.type = parseEventType(key.asString());
         } else if (name.equals("timestamp")) {
             event.timestamp = parseTimestamp(key);
         } else if (name.equals("bids")) {
-            parseSnapshotEventSide(key, this.bids, event);
+            parseSnapshotEventSide(key, true, event);
         } else if (name.equals("asks")) {
-            parseSnapshotEventSide(key, this.asks, event);
+            parseSnapshotEventSide(key, false, event);
         } else if (isEventPrice(name)) {
             event.price = key.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR);
         } else if (name.equals("price_changes")) {
@@ -151,44 +165,46 @@ public final class PolymarketSocketReader extends JsonWebSocketReader<Mbp10Schem
         }
     }
 
+    private byte parseEventType(final GnomeString value) {
+        if (value.equals("book")) {
+            return EVENT_TYPE_BOOK;
+        } else if (value.equals("price_change")) {
+            return EVENT_TYPE_PRICE_CHANGE;
+        } else if (value.equals("last_trade_price")) {
+            return EVENT_TYPE_LAST_TRADE;
+        }
+        return EVENT_TYPE_UNKNOWN;
+    }
+
     private boolean isEventPrice(final GnomeString name) {
         return name.equals("last_trade_price") || name.equals("price");
     }
 
-    private void parseSnapshotEventSide(
-            final JsonDecoder.JsonNode key, final NavigableMap<Long, Long> levels, final ParsedEvent event) {
+    private void parseSnapshotEventSide(final JsonDecoder.JsonNode key, final boolean isBid, final ParsedEvent event) {
         if (!event.snapshotInitialized) {
-            this.bids.clear();
-            this.asks.clear();
+            this.book.reset();
             event.snapshotInitialized = true;
         }
-        parseSnapshotSide(key, levels);
+        parseSnapshotSide(key, isBid);
     }
 
     private void emitParsedEvent(final ParsedEvent event) {
-        if (event.type == null) {
-            return;
-        }
         switch (event.type) {
-            case "book" -> {
+            case EVENT_TYPE_BOOK -> {
                 if (event.price != Mbp10Encoder.priceNullValue()) {
                     this.lastTradePrice = event.price;
                 }
-                refreshBook();
                 emit(event.timestamp, Action.Modify, Side.None, this.lastTradePrice, this.lastTradeSize);
             }
-            case "price_change" -> {
-                refreshBook();
-                emit(event.timestamp, Action.Modify, Side.None, this.lastTradePrice, this.lastTradeSize);
-            }
-            case "last_trade_price" -> {
+            case EVENT_TYPE_PRICE_CHANGE -> emit(
+                    event.timestamp, Action.Modify, Side.None, this.lastTradePrice, this.lastTradeSize);
+            case EVENT_TYPE_LAST_TRADE -> {
                 if (event.price != Mbp10Encoder.priceNullValue()) {
                     this.lastTradePrice = event.price;
                 }
                 if (event.size != Mbp10Encoder.sizeNullValue()) {
                     this.lastTradeSize = event.size;
                 }
-                refreshBook();
                 emit(event.timestamp, Action.Trade, event.side, event.price, event.size);
             }
             default -> {
@@ -198,7 +214,7 @@ public final class PolymarketSocketReader extends JsonWebSocketReader<Mbp10Schem
     }
 
     private long parseTimestamp(final JsonDecoder.JsonNode node) {
-        return Long.parseLong(node.asString().toString()) * NANOS_PER_MILLI;
+        return node.asString().toFixedPointLong(1L) * NANOS_PER_MILLI;
     }
 
     private void emit(long timestampEvent, Action action, Side side, long price, long size) {
@@ -217,15 +233,15 @@ public final class PolymarketSocketReader extends JsonWebSocketReader<Mbp10Schem
         offer();
     }
 
-    private void parseSnapshotSide(final JsonDecoder.JsonNode node, final NavigableMap<Long, Long> levels) {
+    private void parseSnapshotSide(final JsonDecoder.JsonNode node, final boolean isBid) {
         try (var array = node.asArray()) {
             while (array.hasNextItem()) {
-                parseLevel(array, levels);
+                parseLevel(array, isBid);
             }
         }
     }
 
-    private void parseLevel(final JsonDecoder.JsonArray array, final NavigableMap<Long, Long> levels) {
+    private void parseLevel(final JsonDecoder.JsonArray array, final boolean isBid) {
         long price = Mbp10Encoder.askPrice0NullValue();
         long size = Mbp10Encoder.askSize0NullValue();
 
@@ -242,7 +258,7 @@ public final class PolymarketSocketReader extends JsonWebSocketReader<Mbp10Schem
             }
         }
 
-        updateLevel(levels, price, size);
+        updateLevel(isBid, price, size);
     }
 
     private void parsePriceChanges(final JsonDecoder.JsonNode node) {
@@ -257,7 +273,7 @@ public final class PolymarketSocketReader extends JsonWebSocketReader<Mbp10Schem
     }
 
     private void parsePriceChange(final JsonDecoder.JsonObject change) {
-        String assetId = null;
+        boolean matchesToken = false;
         long price = Mbp10Encoder.askPrice0NullValue();
         long size = Mbp10Encoder.askSize0NullValue();
         boolean isBid = false;
@@ -267,52 +283,33 @@ public final class PolymarketSocketReader extends JsonWebSocketReader<Mbp10Schem
             try (var key = change.nextKey()) {
                 final GnomeString name = key.getName();
                 if (name.equals("asset_id")) {
-                    assetId = key.asString().toString();
+                    matchesToken = key.asString().equals(this.tokenId);
                 } else if (name.equals("price")) {
                     price = key.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR);
                 } else if (name.equals("size")) {
                     size = key.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR);
                 } else if (name.equals("side")) {
-                    isBid = key.asString().equals("BUY");
-                    sideParsed = true;
+                    final GnomeString side = key.asString();
+                    isBid = side.equals("BUY");
+                    sideParsed = isBid || side.equals("SELL");
                 }
             }
         }
 
-        if (!this.tokenId.equals(assetId) || !sideParsed) {
+        if (!matchesToken || !sideParsed) {
             return;
         }
-        updateLevel(isBid ? this.bids : this.asks, price, size);
+        updateLevel(isBid, price, size);
     }
 
-    private void updateLevel(final NavigableMap<Long, Long> levels, final long price, final long size) {
+    private void updateLevel(final boolean isBid, final long price, final long size) {
         if (price == Mbp10Encoder.askPrice0NullValue() || size == Mbp10Encoder.askSize0NullValue()) {
             return;
         }
-        if (size == 0L) {
-            levels.remove(price);
+        if (isBid) {
+            this.book.updateBid(price, size, 1L);
         } else {
-            levels.put(price, size);
-        }
-    }
-
-    private void refreshBook() {
-        copyTopLevels(this.bids, this.book.bids);
-        copyTopLevels(this.asks, this.book.asks);
-    }
-
-    private void copyTopLevels(final NavigableMap<Long, Long> source, final Mbp10Book.PriceLevel[] destination) {
-        int idx = 0;
-        for (var level : source.entrySet()) {
-            if (idx >= MAX_LEVEL_DEPTH) {
-                break;
-            }
-            // Polymarket exposes price-level size, not order count; use 1 as a sentinel.
-            destination[idx].update(level.getKey(), level.getValue(), 1L);
-            idx++;
-        }
-        for (; idx < MAX_LEVEL_DEPTH; idx++) {
-            destination[idx].reset();
+            this.book.updateAsk(price, size, 1L);
         }
     }
 

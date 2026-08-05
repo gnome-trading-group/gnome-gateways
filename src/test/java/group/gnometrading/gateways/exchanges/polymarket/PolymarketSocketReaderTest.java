@@ -143,6 +143,30 @@ class PolymarketSocketReaderTest {
     }
 
     @Test
+    void removingBestPricePromotesLevelBeyondPublishedDepth() throws Exception {
+        process(
+                """
+                {"event_type":"book","timestamp":"1782753357257",\
+                "bids":[{"price":"0.20","size":"1"},{"price":"0.19","size":"1"},\
+                {"price":"0.18","size":"1"},{"price":"0.17","size":"1"},\
+                {"price":"0.16","size":"1"},{"price":"0.15","size":"1"},\
+                {"price":"0.14","size":"1"},{"price":"0.13","size":"1"},\
+                {"price":"0.12","size":"1"},{"price":"0.11","size":"1"},\
+                {"price":"0.10","size":"1"}],\
+                "asks":[{"price":"0.21","size":"1"}]}
+                """);
+        process(
+                """
+                {"price_changes":[{"asset_id":"token-yes","price":"0.20","size":"0","side":"BUY"}],\
+                "timestamp":"1782753358257","event_type":"price_change"}
+                """);
+
+        Mbp10Schema schema = captured.get(1);
+        assertEquals(price("0.19"), schema.decoder.bidPrice0());
+        assertEquals(price("0.10"), schema.decoder.bidPrice9());
+    }
+
+    @Test
     void pongIsConsumedWithoutJsonDecoding() throws Exception {
         process("PONG");
         assertEquals(0, captured.size());

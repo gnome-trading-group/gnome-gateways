@@ -31,7 +31,7 @@ public abstract class JsonWebSocketReader<T extends Schema> extends WebSocketRea
         if (!buffer.hasRemaining()) {
             return;
         }
-        if (handleNonJsonMessage(buffer.asReadOnlyBuffer())) {
+        if (handleNonJsonMessage(buffer)) {
             buffer.position(buffer.limit());
             return;
         }
@@ -40,7 +40,10 @@ public abstract class JsonWebSocketReader<T extends Schema> extends WebSocketRea
         }
     }
 
-    /** Allows venue readers to consume application-level text frames such as {@code PONG}. */
+    /**
+     * Allows venue readers to consume application-level text frames such as {@code PONG}.
+     * Implementations must not advance the buffer when returning {@code false}.
+     */
     protected boolean handleNonJsonMessage(ByteBuffer buffer) {
         return false;
     }
