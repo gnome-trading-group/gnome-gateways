@@ -90,7 +90,9 @@ class PolymarketSocketReaderTest {
         assertEquals(price("0.10"), schema.decoder.askPrice0());
         assertEquals(size("6"), schema.decoder.askSize0());
         assertEquals(1_782_753_357_257_000_000L, schema.decoder.timestampEvent());
+        assertEquals(9_000_000_000L, schema.decoder.timestampRecv());
         assertEquals(Mbp10Encoder.sequenceNullValue(), schema.decoder.sequence());
+        assertEquals(Mbp10Encoder.depthNullValue(), schema.decoder.depth());
         assertEquals(Action.Modify, schema.decoder.action());
     }
 

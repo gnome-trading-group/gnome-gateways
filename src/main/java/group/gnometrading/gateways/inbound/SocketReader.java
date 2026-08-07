@@ -1,5 +1,6 @@
 package group.gnometrading.gateways.inbound;
 
+import group.gnometrading.collections.buffer.MessageConsumer;
 import group.gnometrading.collections.buffer.OneToOneRingBuffer;
 import group.gnometrading.concurrent.GnomeAgent;
 import group.gnometrading.logging.LogMessage;
@@ -22,6 +23,8 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
     protected final SocketWriter socketWriter;
     protected final Listing listing;
     private final OneToOneRingBuffer<T> replayBuffer;
+    private final MessageConsumer<T> replayConsumer;
+    private RawMessageHandler rawMessageHandler;
 
     public volatile long recvTimestamp = 0L;
     protected T schema;
@@ -45,6 +48,8 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
         this.listing = listing;
         this.replayBuffer =
                 new OneToOneRingBuffer<>(this::createSchemaArray, this::createSchema, DEFAULT_REPLAY_BUFFER_SIZE);
+        this.replayConsumer = this::consumeReplay;
+        this.rawMessageHandler = RawMessageHandler.NO_OP;
         this.internalBook = createBook();
         this.snapshot = null;
 
@@ -118,7 +123,7 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
             Thread.yield();
         }
 
-        this.replayBuffer.read(this::consumeReplay);
+        this.replayBuffer.read(this.replayConsumer);
 
         this.buffer = false;
         this.pause = false;
@@ -128,9 +133,12 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
 
     protected abstract void disconnectSocket() throws Exception;
 
-    private void consumeReplay(final T schema) {
-        if (snapshot == null || schema.getSequenceNumber() >= snapshot.getSequenceNumber()) {
-            this.internalBook.updateFrom(schema);
+    private void consumeReplay(final T replayedSchema) {
+        if (snapshot == null || replayedSchema.getSequenceNumber() >= snapshot.getSequenceNumber()) {
+            this.internalBook.updateFrom(replayedSchema);
+            this.schema.copyFrom(replayedSchema);
+            this.sequencedRingBuffer.publish();
+            this.claim();
         }
     }
 
@@ -165,11 +173,19 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
         }
 
         final ByteBuffer buffer = readSocket();
-        while (buffer != null && buffer.hasRemaining()) {
+        if (buffer != null && buffer.hasRemaining()) {
             this.recvTimestamp = clock.nanoTime();
+            this.rawMessageHandler.onMessage(buffer, buffer.position(), buffer.remaining(), this.recvTimestamp);
+        }
+        while (buffer != null && buffer.hasRemaining()) {
             handleGatewayMessage(buffer);
         }
         return 0;
+    }
+
+    /** Installs a lossless raw-message observer. The default handler discards raw messages. */
+    public final void setRawMessageHandler(RawMessageHandler rawMessageHandler) {
+        this.rawMessageHandler = rawMessageHandler == null ? RawMessageHandler.NO_OP : rawMessageHandler;
     }
 
     protected final void claim() {

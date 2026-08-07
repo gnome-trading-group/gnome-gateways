@@ -19,6 +19,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import org.agrona.concurrent.EpochNanoClock;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.AfterEach;
@@ -134,6 +135,28 @@ class SocketReaderTest {
 
         assertTrue(socketReader.recvTimestamp >= beforeTime);
         assertTrue(socketReader.recvTimestamp <= afterTime);
+    }
+
+    @Test
+    void testDoWorkCapturesEachSocketReadOnceBeforeParsing() throws Exception {
+        socketReader = new TestSocketReader(sequencedRingBuffer, () -> 123L);
+        socketReader.pause = false;
+        socketReader.addNextReadResult(ByteBuffer.wrap(new byte[] {1, 2, 3}));
+        List<byte[]> rawMessages = new ArrayList<>();
+        List<Long> receiveTimestamps = new ArrayList<>();
+        socketReader.setRawMessageHandler((message, offset, length, timestamp) -> {
+            byte[] copy = new byte[length];
+            message.get(offset, copy);
+            rawMessages.add(copy);
+            receiveTimestamps.add(timestamp);
+        });
+
+        socketReader.doWork();
+
+        assertEquals(1, rawMessages.size());
+        assertArrayEquals(new byte[] {1, 2, 3}, rawMessages.get(0));
+        assertEquals(List.of(123L), receiveTimestamps);
+        assertEquals(3, socketReader.handleMessageByteCount.get());
     }
 
     // ========== connect Tests ==========
@@ -536,6 +559,38 @@ class SocketReaderTest {
 
     @Test
     @Timeout(10)
+    void testConnectPublishesBufferedMessageToSequencer() throws Exception {
+        SequencedRingBuffer<Mbp10Schema> output = new SequencedRingBuffer<>(Mbp10Schema::new, new GlobalSequence());
+        AtomicLong receivedSequence = new AtomicLong(Long.MIN_VALUE);
+        CountDownLatch received = new CountDownLatch(1);
+        output.handleEventsWith((globalSequence, templateId, buffer, length) -> {
+            Mbp10Schema copy = new Mbp10Schema();
+            copy.buffer.putBytes(0, buffer, 0, length);
+            copy.wrap(copy.buffer);
+            receivedSequence.set(copy.getSequenceNumber());
+            received.countDown();
+        });
+        output.start();
+
+        try {
+            TestSocketReader reconnectingReader = new TestSocketReader(output, clock, true);
+            reconnectingReader.isPaused = true;
+            reconnectingReader.setFetchSnapshotHook(() -> {
+                reconnectingReader.schema.encoder.sequence(42L);
+                reconnectingReader.offer();
+            });
+
+            reconnectingReader.connect();
+
+            assertTrue(received.await(5, TimeUnit.SECONDS), "Buffered message was not published");
+            assertEquals(42L, receivedSequence.get());
+        } finally {
+            output.shutdown();
+        }
+    }
+
+    @Test
+    @Timeout(10)
     void testVolatileFlagVisibility() throws Exception {
         socketReader = new TestSocketReader(sequencedRingBuffer, clock);
         socketReader.pause = false;
@@ -654,6 +709,7 @@ class SocketReaderTest {
         private final Deque<ByteBuffer> readResults = new ArrayDeque<>();
         private Book<Mbp10Schema> snapshot;
         private final boolean shouldOfferBuffer;
+        private Runnable fetchSnapshotHook = () -> {};
 
         public TestSocketReader(SequencedRingBuffer<Mbp10Schema> outputBuffer, EpochNanoClock clock) {
             this(outputBuffer, clock, false);
@@ -679,6 +735,10 @@ class SocketReaderTest {
 
         public void setSnapshot(Book<Mbp10Schema> snapshot) {
             this.snapshot = snapshot;
+        }
+
+        public void setFetchSnapshotHook(Runnable fetchSnapshotHook) {
+            this.fetchSnapshotHook = fetchSnapshotHook;
         }
 
         @Override
@@ -716,6 +776,7 @@ class SocketReaderTest {
         @Override
         public Book<Mbp10Schema> fetchSnapshot() throws IOException {
             fetchSnapshotCalled.set(true);
+            fetchSnapshotHook.run();
             while (pendingReads.get()) {
                 Thread.yield();
             }
