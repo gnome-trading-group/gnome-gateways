@@ -129,7 +129,11 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
     protected abstract void disconnectSocket() throws Exception;
 
     private void consumeReplay(final T schema) {
-        if (snapshot == null || schema.getSequenceNumber() >= snapshot.getSequenceNumber()) {
+        if (snapshot == null) {
+            this.schema.copyFrom(schema);
+            this.sequencedRingBuffer.publish();
+            this.claim();
+        } else if (schema.getSequenceNumber() >= snapshot.getSequenceNumber()) {
             this.internalBook.updateFrom(schema);
         }
     }
