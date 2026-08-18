@@ -18,54 +18,75 @@ import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Listing;
+import group.gnometrading.strings.GnomeString;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.PrivateKey;
 import java.security.Signature;
 import java.security.spec.MGF1ParameterSpec;
 import java.security.spec.PSSParameterSpec;
+import java.util.Arrays;
 import java.util.Base64;
 import org.agrona.concurrent.EpochNanoClock;
 
 /**
  * Inbound gateway for Kalshi prediction market data.
  *
- * <p>Connects to the Kalshi WebSocket API and subscribes to the {@code orderbook_delta} channel
- * for a single market ticker. Maintains a full-depth YES and NO orderbook internally and extracts
- * top-10 levels into Mbp10Schema on each update.
+ * <p>Connects to the Kalshi WebSocket API and subscribes to the {@code orderbook_delta} and
+ * {@code trade} channels for a single market ticker. Maintains a full-depth YES and NO orderbook
+ * internally (indexed by integer cent price 1–99) and extracts top-10 levels into Mbp10Schema on
+ * each book update.
  *
  * <p>YES levels map to bids. NO levels map to asks: a NO bid at price P implies a YES ask at price
  * (100 - P) cents.
  *
- * <p>Authentication uses RSA-PSS (SHA-256, MGF1-SHA-256, salt=32) signatures computed fresh on
- * every connect so that the timestamp header is never stale after a reconnect.
+ * <p>Prices arrive as dollar strings (e.g., {@code "0.0800"} for 8 cents) and quantities as
+ * fixed-point strings (e.g., {@code "300.00"} for 300 contracts). Deltas may be negative.
+ * Both are parsed using {@code GnomeString.toFixedPointLong}.
  *
- * <p>Assumes Kalshi sends {@code "type"} before {@code "msg"} within each WebSocket message, which
- * is consistent with observed API behavior. Verify format against current API docs before shipping.
+ * <p>Authentication uses RSA-PSS (SHA-256, MGF1-SHA-256, salt=32). The timestamp header is epoch
+ * milliseconds; signatures are computed fresh on every connect so the timestamp is never stale
+ * after a reconnect.
+ *
+ * <p>For binary markets, the listing's {@code exchangeSecurityId} may carry a {@code :yes} or
+ * {@code :no} suffix (e.g., {@code "KXELONMARS-99:yes"}). This suffix is stripped before
+ * subscribing because a single WebSocket subscription covers both YES and NO order sides.
+ *
+ * <p>Assumes Kalshi sends {@code "type"} and {@code "seq"} before {@code "msg"} within each
+ * WebSocket message, consistent with observed API behavior.
  */
 public final class KalshiSocketReader extends JsonWebSocketReader<Mbp10Schema> implements Mbp10SchemaFactory {
 
     private static final int MAX_LEVEL_DEPTH = 10;
-    // Kalshi prices: integer cents 1–99. Index 0 unused, index 100 unused.
+    // Kalshi prices: integer cents 1–99. Index 0 and 100 unused.
     private static final int PRICE_ARRAY_SIZE = 100;
     // Converts integer cents to internal fixed-point price: cents * (PRICE_SCALING_FACTOR / 100)
     private static final long CENTS_TO_PRICE_SCALE = Statics.PRICE_SCALING_FACTOR / 100L;
-    private static final long NANOS_PER_SECOND = 1_000_000_000L;
+    // Kalshi qty strings have 2 decimal places (cent-dollar precision). We store qty arrays
+    // in cent-dollars (multiply by 100 on parse) so $0.01 orders are preserved. Divide by 100
+    // when writing to the size field to keep the same schema scale as other exchanges.
+    private static final long CENT_DOLLAR_TO_SIZE = Statics.SIZE_SCALING_FACTOR / 100L;
+    private static final long NANOS_PER_MILLI = 1_000_000L;
     private static final String WEBSOCKET_PATH = "/trade-api/ws/v2";
 
     private enum MsgType {
         UNKNOWN,
         SNAPSHOT,
-        DELTA
+        DELTA,
+        TRADE
     }
 
     private final Mbp10Book book;
     private final String apiKey;
     private final PrivateKey privateKey;
+    private final String marketTicker;
 
     // Full-depth internal book indexed by price in cents (1–99). Zero means no orders at that level.
     private final long[] yesQty = new long[PRICE_ARRAY_SIZE];
     private final long[] noQty = new long[PRICE_ARRAY_SIZE];
+
+    private long lastSeq;
+    private long lastTimestampNanos;
 
     public KalshiSocketReader(
             Logger logger,
@@ -81,12 +102,16 @@ public final class KalshiSocketReader extends JsonWebSocketReader<Mbp10Schema> i
         this.book = (Mbp10Book) this.internalBook;
         this.apiKey = apiKey;
         this.privateKey = privateKey;
+        final String rawId = listing.exchangeSecurityId();
+        final int colonIdx = rawId.indexOf(':');
+        this.marketTicker = (colonIdx > 0) ? rawId.substring(0, colonIdx) : rawId;
+        this.lastTimestampNanos = Mbp10Encoder.timestampEventNullValue();
     }
 
     @Override
     protected void beforeConnect() throws IOException {
-        long timestampSeconds = clock.nanoTime() / NANOS_PER_SECOND;
-        String timestamp = Long.toString(timestampSeconds);
+        long timestampMillis = clock.nanoTime() / NANOS_PER_MILLI;
+        String timestamp = Long.toString(timestampMillis);
         String payload = timestamp + "GET" + WEBSOCKET_PATH;
 
         try {
@@ -106,7 +131,8 @@ public final class KalshiSocketReader extends JsonWebSocketReader<Mbp10Schema> i
 
     @Override
     protected void subscribe() throws IOException {
-        // {"id": 1, "cmd": "subscribe", "params": {"channels": ["orderbook_delta"], "market_tickers": ["<ticker>"]}}
+        // {"id": 1, "cmd": "subscribe", "params": {"channels": ["orderbook_delta", "trade"], "market_tickers":
+        // ["<ticker>"]}}
         final JsonWebSocketWriter jsonWebSocketWriter = (JsonWebSocketWriter) this.socketWriter;
         final JsonEncoder jsonEncoder = jsonWebSocketWriter.getJsonEncoder();
 
@@ -122,12 +148,14 @@ public final class KalshiSocketReader extends JsonWebSocketReader<Mbp10Schema> i
         jsonEncoder.writeColon();
         jsonEncoder.writeArrayStart();
         jsonEncoder.writeString("orderbook_delta");
+        jsonEncoder.writeComma();
+        jsonEncoder.writeString("trade");
         jsonEncoder.writeArrayEnd();
         jsonEncoder.writeComma();
         jsonEncoder.writeString("market_tickers");
         jsonEncoder.writeColon();
         jsonEncoder.writeArrayStart();
-        jsonEncoder.writeString(listing.exchangeSecurityId());
+        jsonEncoder.writeString(marketTicker);
         jsonEncoder.writeArrayEnd();
         jsonEncoder.writeObjectEnd();
         jsonEncoder.writeObjectEnd();
@@ -137,7 +165,7 @@ public final class KalshiSocketReader extends JsonWebSocketReader<Mbp10Schema> i
 
     @Override
     protected void keepAlive() throws IOException {
-        // Kalshi server sends heartbeats; no client-side keepalive required
+        // Kalshi server sends WebSocket ping frames every 10 seconds; no application-level keepalive required
     }
 
     @Override
@@ -153,39 +181,50 @@ public final class KalshiSocketReader extends JsonWebSocketReader<Mbp10Schema> i
             while (obj.hasNextKey()) {
                 try (var key = obj.nextKey()) {
                     if (key.getName().equals("type")) {
-                        final var typeStr = key.asString();
-                        if (typeStr.equals("orderbook_snapshot")) {
-                            type = MsgType.SNAPSHOT;
-                        } else if (typeStr.equals("orderbook_delta")) {
-                            type = MsgType.DELTA;
-                        }
+                        type = parseMsgType(key.asString());
+                    } else if (key.getName().equals("seq")) {
+                        lastSeq = key.asLong();
                     } else if (key.getName().equals("msg")) {
                         if (type == MsgType.SNAPSHOT) {
                             parseSnapshot(key);
                         } else if (type == MsgType.DELTA) {
                             parseDelta(key);
+                        } else if (type == MsgType.TRADE) {
+                            parseTrade(key);
                         }
                         // else: auto-consumed on close
                     }
-                    // id and other fields: auto-consumed on close
+                    // id, sid, and other fields: auto-consumed on close
                 }
             }
         }
     }
 
+    private MsgType parseMsgType(final GnomeString typeStr) {
+        if (typeStr.equals("orderbook_snapshot")) {
+            return MsgType.SNAPSHOT;
+        } else if (typeStr.equals("orderbook_delta")) {
+            return MsgType.DELTA;
+        } else if (typeStr.equals("trade")) {
+            return MsgType.TRADE;
+        }
+        return MsgType.UNKNOWN;
+    }
+
     private void parseSnapshot(final JsonDecoder.JsonNode msgNode) {
-        java.util.Arrays.fill(yesQty, 0L);
-        java.util.Arrays.fill(noQty, 0L);
+        Arrays.fill(yesQty, 0L);
+        Arrays.fill(noQty, 0L);
+        lastTimestampNanos = Mbp10Encoder.timestampEventNullValue();
 
         try (var msg = msgNode.asObject()) {
             while (msg.hasNextKey()) {
                 try (var key = msg.nextKey()) {
-                    if (key.getName().equals("yes")) {
+                    if (key.getName().equals("yes_dollars_fp")) {
                         parseLevelPairs(key, yesQty);
-                    } else if (key.getName().equals("no")) {
+                    } else if (key.getName().equals("no_dollars_fp")) {
                         parseLevelPairs(key, noQty);
                     }
-                    // market_ticker: auto-consumed on close
+                    // market_ticker, market_id: auto-consumed on close
                 }
             }
         }
@@ -206,20 +245,20 @@ public final class KalshiSocketReader extends JsonWebSocketReader<Mbp10Schema> i
     }
 
     private void parsePair(final JsonDecoder.JsonArray pair, final long[] qtyArray) {
-        long priceCents = 0;
+        int priceCents = 0;
         long qty = 0;
         if (pair.hasNextItem()) {
             try (var priceNode = pair.nextItem()) {
-                priceCents = priceNode.asLong();
+                priceCents = (int) priceNode.asString().toFixedPointLong(100);
             }
         }
         if (pair.hasNextItem()) {
             try (var qtyNode = pair.nextItem()) {
-                qty = qtyNode.asLong();
+                qty = qtyNode.asString().toFixedPointLong(100);
             }
         }
         if (priceCents > 0 && priceCents < PRICE_ARRAY_SIZE) {
-            qtyArray[(int) priceCents] = qty;
+            qtyArray[priceCents] = qty;
         }
     }
 
@@ -232,15 +271,17 @@ public final class KalshiSocketReader extends JsonWebSocketReader<Mbp10Schema> i
         try (var msg = msgNode.asObject()) {
             while (msg.hasNextKey()) {
                 try (var key = msg.nextKey()) {
-                    if (key.getName().equals("price")) {
-                        priceCents = (int) key.asLong();
-                    } else if (key.getName().equals("delta")) {
-                        delta = key.asLong();
+                    if (key.getName().equals("price_dollars")) {
+                        priceCents = (int) key.asString().toFixedPointLong(100);
+                    } else if (key.getName().equals("delta_fp")) {
+                        delta = key.asString().toFixedPointLong(100);
                     } else if (key.getName().equals("side")) {
                         isYes = key.asString().equals("yes");
                         sideParsed = true;
+                    } else if (key.getName().equals("ts_ms")) {
+                        lastTimestampNanos = key.asLong() * NANOS_PER_MILLI;
                     }
-                    // market_ticker: auto-consumed on close
+                    // market_ticker, market_id, client_order_id, subaccount: auto-consumed
                 }
             }
         }
@@ -256,12 +297,49 @@ public final class KalshiSocketReader extends JsonWebSocketReader<Mbp10Schema> i
         emitBookUpdate();
     }
 
+    private void parseTrade(final JsonDecoder.JsonNode msgNode) {
+        long tradePrice = 0;
+        long tradeSize = 0;
+        boolean takerIsBid = false;
+        long tsMs = 0;
+
+        try (var msg = msgNode.asObject()) {
+            while (msg.hasNextKey()) {
+                try (var key = msg.nextKey()) {
+                    if (key.getName().equals("yes_price_dollars")) {
+                        tradePrice = key.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR);
+                    } else if (key.getName().equals("count_fp")) {
+                        tradeSize = key.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR);
+                    } else if (key.getName().equals("taker_book_side")) {
+                        takerIsBid = key.asString().equals("bid");
+                    } else if (key.getName().equals("ts_ms")) {
+                        tsMs = key.asLong();
+                    }
+                    // trade_id, market_ticker, no_price_dollars, taker_side, is_block_trade: auto-consumed
+                }
+            }
+        }
+
+        prepareEncoder();
+        schema.encoder.timestampEvent(tsMs * NANOS_PER_MILLI);
+        schema.encoder.sequence(lastSeq);
+        schema.encoder.price(tradePrice);
+        schema.encoder.size(tradeSize);
+        schema.encoder.action(Action.Trade);
+        schema.encoder.side(takerIsBid ? Side.Bid : Side.Ask);
+        schema.encoder.depth(Mbp10Encoder.depthNullValue());
+        schema.encoder.flags().clear();
+        schema.encoder.flags().marketByPrice(true);
+        book.writeTo(schema);
+        offer();
+    }
+
     private void refreshMbp10Book() {
         // Bids: YES levels, descending by price (highest = best bid first)
         int bidIdx = 0;
         for (int p = PRICE_ARRAY_SIZE - 1; p >= 1 && bidIdx < MAX_LEVEL_DEPTH; p--) {
             if (yesQty[p] > 0) {
-                book.bids[bidIdx].update((long) p * CENTS_TO_PRICE_SCALE, yesQty[p] * Statics.SIZE_SCALING_FACTOR, 1L);
+                book.bids[bidIdx].update((long) p * CENTS_TO_PRICE_SCALE, yesQty[p] * CENT_DOLLAR_TO_SIZE, 1L);
                 bidIdx++;
             }
         }
@@ -275,8 +353,7 @@ public final class KalshiSocketReader extends JsonWebSocketReader<Mbp10Schema> i
         for (int p = PRICE_ARRAY_SIZE - 1; p >= 1 && askIdx < MAX_LEVEL_DEPTH; p--) {
             if (noQty[p] > 0) {
                 long askPriceCents = PRICE_ARRAY_SIZE - p;
-                book.asks[askIdx].update(
-                        askPriceCents * CENTS_TO_PRICE_SCALE, noQty[p] * Statics.SIZE_SCALING_FACTOR, 1L);
+                book.asks[askIdx].update(askPriceCents * CENTS_TO_PRICE_SCALE, noQty[p] * CENT_DOLLAR_TO_SIZE, 1L);
                 askIdx++;
             }
         }
@@ -287,8 +364,8 @@ public final class KalshiSocketReader extends JsonWebSocketReader<Mbp10Schema> i
 
     private void emitBookUpdate() {
         prepareEncoder();
-        schema.encoder.timestampEvent(Mbp10Encoder.timestampEventNullValue());
-        schema.encoder.sequence(Mbp10Encoder.sequenceNullValue());
+        schema.encoder.timestampEvent(lastTimestampNanos);
+        schema.encoder.sequence(lastSeq);
         schema.encoder.price(Mbp10Encoder.priceNullValue());
         schema.encoder.size(Mbp10Encoder.sizeNullValue());
         schema.encoder.action(Action.Modify);
