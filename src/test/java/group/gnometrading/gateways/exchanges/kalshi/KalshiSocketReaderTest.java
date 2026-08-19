@@ -121,7 +121,7 @@ class KalshiSocketReaderTest {
         assertEquals(size("50"), schema.decoder.askSize1());
         assertEquals(Action.Modify, schema.decoder.action());
         assertEquals(Side.None, schema.decoder.side());
-        assertEquals(2L, schema.decoder.sequence());
+        assertEquals(Mbp10Encoder.sequenceNullValue(), schema.decoder.sequence());
         assertEquals(1700000000000L * 1_000_000L, schema.decoder.timestampEvent());
         assertEquals(Mbp10Encoder.priceNullValue(), schema.decoder.price());
         assertEquals(Mbp10Encoder.sizeNullValue(), schema.decoder.size());
@@ -140,7 +140,7 @@ class KalshiSocketReaderTest {
         // 55 cents YES: 100 + 50 = 150
         assertEquals(price("0.55"), schema.decoder.bidPrice0());
         assertEquals(size("150"), schema.decoder.bidSize0());
-        assertEquals(2L, schema.decoder.sequence());
+        assertEquals(Mbp10Encoder.sequenceNullValue(), schema.decoder.sequence());
         assertEquals(1700000000000L * 1_000_000L, schema.decoder.timestampEvent());
     }
 
@@ -253,7 +253,7 @@ class KalshiSocketReaderTest {
     }
 
     @Test
-    void sequenceNumberTracked() throws Exception {
+    void sequenceNumberIsNull() throws Exception {
         processSnapshot();
         process(
                 """
@@ -261,7 +261,7 @@ class KalshiSocketReaderTest {
                 "price_dollars":"0.550","delta_fp":"10.00","side":"yes"}}
                 """);
 
-        assertEquals(42L, captured.get(0).decoder.sequence());
+        assertEquals(Mbp10Encoder.sequenceNullValue(), captured.get(0).decoder.sequence());
     }
 
     @Test

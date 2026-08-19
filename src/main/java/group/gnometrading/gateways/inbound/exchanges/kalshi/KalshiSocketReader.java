@@ -52,8 +52,8 @@ import org.agrona.concurrent.EpochNanoClock;
  * {@code :no} suffix (e.g., {@code "KXELONMARS-99:yes"}). This suffix is stripped before
  * subscribing because a single WebSocket subscription covers both YES and NO order sides.
  *
- * <p>Assumes Kalshi sends {@code "type"} and {@code "seq"} before {@code "msg"} within each
- * WebSocket message, consistent with observed API behavior.
+ * <p>Assumes Kalshi sends {@code "type"} before {@code "msg"} within each WebSocket message,
+ * consistent with observed API behavior.
  */
 public final class KalshiSocketReader extends JsonWebSocketReader<Mbp10Schema> implements Mbp10SchemaFactory {
 
@@ -85,7 +85,6 @@ public final class KalshiSocketReader extends JsonWebSocketReader<Mbp10Schema> i
     private final long[] yesQty = new long[PRICE_ARRAY_SIZE];
     private final long[] noQty = new long[PRICE_ARRAY_SIZE];
 
-    private long lastSeq;
     private long lastTimestampNanos;
 
     public KalshiSocketReader(
@@ -182,8 +181,6 @@ public final class KalshiSocketReader extends JsonWebSocketReader<Mbp10Schema> i
                 try (var key = obj.nextKey()) {
                     if (key.getName().equals("type")) {
                         type = parseMsgType(key.asString());
-                    } else if (key.getName().equals("seq")) {
-                        lastSeq = key.asLong();
                     } else if (key.getName().equals("msg")) {
                         if (type == MsgType.SNAPSHOT) {
                             parseSnapshot(key);
@@ -194,7 +191,7 @@ public final class KalshiSocketReader extends JsonWebSocketReader<Mbp10Schema> i
                         }
                         // else: auto-consumed on close
                     }
-                    // id, sid, and other fields: auto-consumed on close
+                    // id, sid, seq, and other fields: auto-consumed on close
                 }
             }
         }
@@ -321,7 +318,7 @@ public final class KalshiSocketReader extends JsonWebSocketReader<Mbp10Schema> i
 
         prepareEncoder();
         schema.encoder.timestampEvent(tsMs * NANOS_PER_MILLI);
-        schema.encoder.sequence(lastSeq);
+        schema.encoder.sequence(Mbp10Encoder.sequenceNullValue());
         schema.encoder.price(tradePrice);
         schema.encoder.size(tradeSize);
         schema.encoder.action(Action.Trade);
@@ -364,7 +361,7 @@ public final class KalshiSocketReader extends JsonWebSocketReader<Mbp10Schema> i
     private void emitBookUpdate() {
         prepareEncoder();
         schema.encoder.timestampEvent(lastTimestampNanos);
-        schema.encoder.sequence(lastSeq);
+        schema.encoder.sequence(Mbp10Encoder.sequenceNullValue());
         schema.encoder.price(Mbp10Encoder.priceNullValue());
         schema.encoder.size(Mbp10Encoder.sizeNullValue());
         schema.encoder.action(Action.Modify);
