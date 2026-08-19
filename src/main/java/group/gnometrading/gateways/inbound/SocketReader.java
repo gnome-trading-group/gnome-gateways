@@ -24,6 +24,7 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
     private final OneToOneRingBuffer<T> replayBuffer;
 
     public volatile long recvTimestamp = 0L;
+    private RawDataSink rawDataSink = RawDataSink.NO_OP;
     protected T schema;
     protected Book<T> internalBook;
     private Book<T> snapshot;
@@ -158,6 +159,10 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
         logger.log(LogMessage.SOCKET_DISCONNECTED);
     }
 
+    public final void setRawDataSink(RawDataSink sink) {
+        this.rawDataSink = sink;
+    }
+
     @Override
     public final int doWork() throws Exception {
         if (this.pause) {
@@ -171,6 +176,7 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
         final ByteBuffer buffer = readSocket();
         while (buffer != null && buffer.hasRemaining()) {
             this.recvTimestamp = clock.nanoTime();
+            this.rawDataSink.capture(this.recvTimestamp, buffer);
             handleGatewayMessage(buffer);
         }
         return 0;
