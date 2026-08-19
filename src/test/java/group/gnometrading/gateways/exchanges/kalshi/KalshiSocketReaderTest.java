@@ -95,17 +95,20 @@ class KalshiSocketReaderTest {
     }
 
     @Test
-    void snapshotPopulatesBookAndEmitsModify() throws Exception {
+    void snapshotDoesNotEmitAndBookPopulatedViaFirstDelta() throws Exception {
+        processSnapshot();
+        assertEquals(0, captured.size());
+
+        // First delta should carry real timestamp and include snapshot levels
         process(
                 """
-                {"type":"orderbook_snapshot","sid":1,"seq":1,"msg":{"market_ticker":"TEST-TICKER",\
-                "yes_dollars_fp":[["0.5500","100.00"],["0.5000","200.00"]],\
-                "no_dollars_fp":[["0.4600","50.00"],["0.5000","75.00"]]}}
+                {"type":"orderbook_delta","sid":1,"seq":2,"msg":{"market_ticker":"TEST-TICKER",\
+                "price_dollars":"0.550","delta_fp":"0.00","side":"yes","ts_ms":1700000000000}}
                 """);
 
         assertEquals(1, captured.size());
         Mbp10Schema schema = captured.get(0);
-        // Best bid: highest YES price (55 cents)
+        // Best bid: highest YES price (55 cents), qty unchanged (delta_fp = 0)
         assertEquals(price("0.55"), schema.decoder.bidPrice0());
         assertEquals(size("100"), schema.decoder.bidSize0());
         // Second bid: 50 cents YES
@@ -118,8 +121,8 @@ class KalshiSocketReaderTest {
         assertEquals(size("50"), schema.decoder.askSize1());
         assertEquals(Action.Modify, schema.decoder.action());
         assertEquals(Side.None, schema.decoder.side());
-        assertEquals(1L, schema.decoder.sequence());
-        assertEquals(Mbp10Encoder.timestampEventNullValue(), schema.decoder.timestampEvent());
+        assertEquals(2L, schema.decoder.sequence());
+        assertEquals(1700000000000L * 1_000_000L, schema.decoder.timestampEvent());
         assertEquals(Mbp10Encoder.priceNullValue(), schema.decoder.price());
         assertEquals(Mbp10Encoder.sizeNullValue(), schema.decoder.size());
     }
@@ -133,7 +136,7 @@ class KalshiSocketReaderTest {
                 "price_dollars":"0.550","delta_fp":"50.00","side":"yes","ts_ms":1700000000000}}
                 """);
 
-        Mbp10Schema schema = captured.get(1);
+        Mbp10Schema schema = captured.get(0);
         // 55 cents YES: 100 + 50 = 150
         assertEquals(price("0.55"), schema.decoder.bidPrice0());
         assertEquals(size("150"), schema.decoder.bidSize0());
@@ -151,7 +154,7 @@ class KalshiSocketReaderTest {
                 "price_dollars":"0.550","delta_fp":"-100.00","side":"yes","ts_ms":1700000000000}}
                 """);
 
-        Mbp10Schema schema = captured.get(1);
+        Mbp10Schema schema = captured.get(0);
         // 55 cents removed; 50 cents becomes best bid
         assertEquals(price("0.50"), schema.decoder.bidPrice0());
 
@@ -162,7 +165,7 @@ class KalshiSocketReaderTest {
                 "price_dollars":"0.500","delta_fp":"-999.00","side":"yes","ts_ms":1700000000001}}
                 """);
 
-        Mbp10Schema schema2 = captured.get(2);
+        Mbp10Schema schema2 = captured.get(1);
         // No YES levels remain
         assertEquals(Mbp10Encoder.bidPrice0NullValue(), schema2.decoder.bidPrice0());
     }
@@ -177,7 +180,7 @@ class KalshiSocketReaderTest {
                 "taker_side":"yes","taker_book_side":"bid","ts_ms":1700000000000}}
                 """);
 
-        Mbp10Schema schema = captured.get(1);
+        Mbp10Schema schema = captured.get(0);
         assertEquals(Action.Trade, schema.decoder.action());
         assertEquals(Side.Bid, schema.decoder.side());
         assertEquals(price("0.55"), schema.decoder.price());
@@ -197,7 +200,7 @@ class KalshiSocketReaderTest {
                 "taker_side":"no","taker_book_side":"ask","ts_ms":1700000000000}}
                 """);
 
-        Mbp10Schema schema = captured.get(1);
+        Mbp10Schema schema = captured.get(0);
         assertEquals(Action.Trade, schema.decoder.action());
         assertEquals(Side.Ask, schema.decoder.side());
         assertEquals(size("5"), schema.decoder.size());
@@ -205,11 +208,16 @@ class KalshiSocketReaderTest {
 
     @Test
     void yesLevelsMapsToDescendingBids() throws Exception {
-        process(
+        processNoEmit(
                 """
                 {"type":"orderbook_snapshot","sid":1,"seq":1,"msg":{"market_ticker":"TEST-TICKER",\
                 "yes_dollars_fp":[["0.1000","10.00"],["0.2000","20.00"],["0.3000","30.00"]],\
                 "no_dollars_fp":[]}}
+                """);
+        process(
+                """
+                {"type":"orderbook_delta","sid":1,"seq":2,"msg":{"market_ticker":"TEST-TICKER",\
+                "price_dollars":"0.100","delta_fp":"0.00","side":"yes","ts_ms":1700000000000}}
                 """);
 
         Mbp10Schema schema = captured.get(0);
@@ -222,11 +230,16 @@ class KalshiSocketReaderTest {
 
     @Test
     void noLevelsMapsToAscendingYesAsks() throws Exception {
-        process(
+        processNoEmit(
                 """
                 {"type":"orderbook_snapshot","sid":1,"seq":1,"msg":{"market_ticker":"TEST-TICKER",\
                 "yes_dollars_fp":[],\
                 "no_dollars_fp":[["0.4000","40.00"],["0.5000","50.00"],["0.6000","60.00"]]}}
+                """);
+        process(
+                """
+                {"type":"orderbook_delta","sid":1,"seq":2,"msg":{"market_ticker":"TEST-TICKER",\
+                "price_dollars":"0.400","delta_fp":"0.00","side":"no","ts_ms":1700000000000}}
                 """);
 
         Mbp10Schema schema = captured.get(0);
@@ -248,7 +261,7 @@ class KalshiSocketReaderTest {
                 "price_dollars":"0.550","delta_fp":"10.00","side":"yes"}}
                 """);
 
-        assertEquals(42L, captured.get(1).decoder.sequence());
+        assertEquals(42L, captured.get(0).decoder.sequence());
     }
 
     @Test
@@ -267,26 +280,42 @@ class KalshiSocketReaderTest {
     }
 
     @Test
-    void emptySnapshotProducesNullLevels() throws Exception {
-        process(
+    void emptySnapshotDoesNotEmit() throws Exception {
+        processNoEmit(
                 """
                 {"type":"orderbook_snapshot","sid":1,"seq":1,"msg":{"market_ticker":"TEST-TICKER",\
                 "yes_dollars_fp":[],"no_dollars_fp":[]}}
                 """);
+        assertEquals(0, captured.size());
+
+        // After a delta, the book should have no levels except the one added
+        process(
+                """
+                {"type":"orderbook_delta","sid":1,"seq":2,"msg":{"market_ticker":"TEST-TICKER",\
+                "price_dollars":"0.550","delta_fp":"100.00","side":"yes","ts_ms":1700000000000}}
+                """);
 
         Mbp10Schema schema = captured.get(0);
-        assertEquals(Mbp10Encoder.bidPrice0NullValue(), schema.decoder.bidPrice0());
+        assertEquals(price("0.55"), schema.decoder.bidPrice0());
+        assertEquals(Mbp10Encoder.bidPrice1NullValue(), schema.decoder.bidPrice1());
         assertEquals(Mbp10Encoder.askPrice0NullValue(), schema.decoder.askPrice0());
         assertEquals(Action.Modify, schema.decoder.action());
     }
 
     private void processSnapshot() throws Exception {
-        process(
+        processNoEmit(
                 """
                 {"type":"orderbook_snapshot","sid":1,"seq":1,"msg":{"market_ticker":"TEST-TICKER",\
                 "yes_dollars_fp":[["0.5500","100.00"],["0.5000","200.00"]],\
                 "no_dollars_fp":[["0.4600","50.00"],["0.5000","75.00"]]}}
                 """);
+    }
+
+    private void processNoEmit(String message) throws Exception {
+        when(client.read()).thenReturn(response);
+        when(response.getBody()).thenReturn(ByteBuffer.wrap(message.getBytes(StandardCharsets.UTF_8)));
+        reader.doWork();
+        Thread.sleep(50);
     }
 
     private void process(String message) throws Exception {

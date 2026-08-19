@@ -230,7 +230,6 @@ public final class KalshiSocketReader extends JsonWebSocketReader<Mbp10Schema> i
         }
 
         refreshMbp10Book();
-        emitBookUpdate();
     }
 
     private void parseLevelPairs(final JsonDecoder.JsonNode node, final long[] qtyArray) {
