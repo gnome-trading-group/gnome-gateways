@@ -5,7 +5,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import group.gnometrading.codecs.json.JsonDecoder;
-import group.gnometrading.gateways.inbound.exchanges.kalshi.KalshiSocketReader;
+import group.gnometrading.gateways.inbound.exchanges.kalshi.KalshiInboundReader;
 import group.gnometrading.logging.NullLogger;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.networking.websockets.WebSocketResponse;
@@ -31,7 +31,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-class KalshiSocketReaderTest {
+class KalshiInboundReaderTest {
 
     private static final String MARKET_TICKER = "TEST-TICKER";
     private static final PrivateKey TEST_PRIVATE_KEY;
@@ -46,7 +46,7 @@ class KalshiSocketReaderTest {
     }
 
     private SequencedRingBuffer<Mbp10Schema> ringBuffer;
-    private KalshiSocketReader reader;
+    private KalshiInboundReader reader;
     private WebSocketClient client;
     private WebSocketResponse response;
     private List<Mbp10Schema> captured;
@@ -75,7 +75,7 @@ class KalshiSocketReaderTest {
                 new Security(3, "TEST", 3),
                 MARKET_TICKER + ":yes",
                 "TEST-YES");
-        reader = new KalshiSocketReader(
+        reader = new KalshiInboundReader(
                 new NullLogger(),
                 ringBuffer,
                 () -> 9_000_000_000L,

@@ -10,8 +10,8 @@ import group.gnometrading.gateways.fix.FixSocketMessageClient;
 import group.gnometrading.gateways.fix.FixTimestampPrecision;
 import group.gnometrading.gateways.fix.FixVersion;
 import group.gnometrading.gateways.fix.fix50sp2.Fix50Sp2Tags;
-import group.gnometrading.gateways.inbound.exchanges.binance.BinanceFixSocketReader;
 import group.gnometrading.gateways.inbound.exchanges.binance.BinanceFixTags;
+import group.gnometrading.gateways.inbound.exchanges.binance.BinanceInboundReader;
 import group.gnometrading.logging.NullLogger;
 import group.gnometrading.schemas.Action;
 import group.gnometrading.schemas.Mbp10Encoder;
@@ -33,7 +33,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-public class BinanceFixSocketReaderTest {
+public class BinanceInboundReaderTest {
 
     private static final String SENDER_COMP_ID = "TEST";
     private static final String TARGET_COMP_ID = "SPOT";
@@ -41,7 +41,7 @@ public class BinanceFixSocketReaderTest {
     private static final long SIZE_SCALE = Statics.SIZE_SCALING_FACTOR;
 
     private SequencedRingBuffer<Mbp10Schema> sequencedRingBuffer;
-    private BinanceFixSocketReader reader;
+    private BinanceInboundReader reader;
     private FixSocketMessageClient mockFixClient;
     private List<Mbp10Schema> capturedSchemas;
     private FixConfig builderConfig;
@@ -98,7 +98,7 @@ public class BinanceFixSocketReaderTest {
                 "1",
                 "BTCUSDT");
 
-        reader = new BinanceFixSocketReader(
+        reader = new BinanceInboundReader(
                 new NullLogger(), sequencedRingBuffer, clock, mockFixClient, listing, config, null, "TEST_API_KEY");
 
         reader.buffer = false;

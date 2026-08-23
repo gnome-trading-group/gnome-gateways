@@ -24,7 +24,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import org.agrona.concurrent.EpochNanoClock;
 
-public final class PolymarketSocketReader extends JsonWebSocketReader<Mbp10Schema> implements MbpBufferSchemaFactory {
+public final class PolymarketInboundReader extends JsonWebSocketReader<Mbp10Schema> implements MbpBufferSchemaFactory {
 
     private static final int MAX_BOOK_LEVELS = 1 << 10;
     private static final long NANOS_PER_MILLI = 1_000_000L;
@@ -59,7 +59,7 @@ public final class PolymarketSocketReader extends JsonWebSocketReader<Mbp10Schem
     private long lastTradePrice;
     private long lastTradeSize;
 
-    public PolymarketSocketReader(
+    public PolymarketInboundReader(
             Logger logger,
             SequencedRingBuffer<Mbp10Schema> outputBuffer,
             EpochNanoClock clock,

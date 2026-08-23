@@ -21,7 +21,7 @@ import group.gnometrading.sm.Listing;
 import java.io.IOException;
 import org.agrona.concurrent.EpochNanoClock;
 
-public final class HyperliquidSocketReader extends JsonWebSocketReader<Mbp10Schema> implements Mbp10SchemaFactory {
+public final class HyperliquidInboundReader extends JsonWebSocketReader<Mbp10Schema> implements Mbp10SchemaFactory {
 
     private static final int MAX_LEVEL_DEPTH = 10;
     private static final long NANOS_PER_MILLI = 1_000_000L;
@@ -37,7 +37,7 @@ public final class HyperliquidSocketReader extends JsonWebSocketReader<Mbp10Sche
     private long lastTradeSize;
     private boolean initialTradesBatchReceived;
 
-    public HyperliquidSocketReader(
+    public HyperliquidInboundReader(
             Logger logger,
             SequencedRingBuffer<Mbp10Schema> outputBuffer,
             EpochNanoClock clock,

@@ -1,8 +1,8 @@
-package group.gnometrading.gateways.inbound;
+package group.gnometrading.gateways;
 
 import java.time.Duration;
 
-public record MarketInboundGatewayConfig(
+public record GatewayConfig(
         Duration reconnectInterval,
         Duration keepAliveInterval,
         Duration sanityCheckInterval,
@@ -19,7 +19,7 @@ public record MarketInboundGatewayConfig(
     static final Duration DEFAULT_INITIAL_BACKOFF = Duration.ofSeconds(1);
     static final Duration DEFAULT_CONNECT_TIMEOUT = Duration.ofSeconds(10);
 
-    public static final class Builder implements group.gnometrading.utils.Builder<MarketInboundGatewayConfig> {
+    public static final class Builder implements group.gnometrading.utils.Builder<GatewayConfig> {
 
         private Duration reconnectInterval = DEFAULT_RECONNECT_INTERVAL;
         private Duration keepAliveInterval = DEFAULT_KEEP_ALIVE_INTERVAL;
@@ -65,8 +65,8 @@ public record MarketInboundGatewayConfig(
         }
 
         @Override
-        public MarketInboundGatewayConfig build() {
-            return new MarketInboundGatewayConfig(
+        public GatewayConfig build() {
+            return new GatewayConfig(
                     this.reconnectInterval,
                     this.keepAliveInterval,
                     this.sanityCheckInterval,

@@ -21,7 +21,7 @@ import group.gnometrading.sm.Listing;
 import java.io.IOException;
 import org.agrona.concurrent.EpochNanoClock;
 
-public final class LighterSocketReader extends JsonWebSocketReader<Mbp10Schema> implements MbpBufferSchemaFactory {
+public final class LighterInboundReader extends JsonWebSocketReader<Mbp10Schema> implements MbpBufferSchemaFactory {
 
     private static final long NANOS_PER_MILLIS = 1_000_000L;
     private static final int MAX_LEVELS = 10;
@@ -33,7 +33,7 @@ public final class LighterSocketReader extends JsonWebSocketReader<Mbp10Schema> 
     private long lastTradeSize;
     private long lastSequenceNumber;
 
-    public LighterSocketReader(
+    public LighterInboundReader(
             Logger logger,
             SequencedRingBuffer<Mbp10Schema> outputBuffer,
             EpochNanoClock clock,

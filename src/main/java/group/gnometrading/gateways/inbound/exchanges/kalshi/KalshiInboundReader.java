@@ -55,7 +55,7 @@ import org.agrona.concurrent.EpochNanoClock;
  * <p>Assumes Kalshi sends {@code "type"} before {@code "msg"} within each WebSocket message,
  * consistent with observed API behavior.
  */
-public final class KalshiSocketReader extends JsonWebSocketReader<Mbp10Schema> implements Mbp10SchemaFactory {
+public final class KalshiInboundReader extends JsonWebSocketReader<Mbp10Schema> implements Mbp10SchemaFactory {
 
     private static final int MAX_LEVEL_DEPTH = 10;
     // Kalshi prices: integer cents 1–99. Index 0 and 100 unused.
@@ -87,7 +87,7 @@ public final class KalshiSocketReader extends JsonWebSocketReader<Mbp10Schema> i
 
     private long lastTimestampNanos;
 
-    public KalshiSocketReader(
+    public KalshiInboundReader(
             Logger logger,
             SequencedRingBuffer<Mbp10Schema> outputBuffer,
             EpochNanoClock clock,

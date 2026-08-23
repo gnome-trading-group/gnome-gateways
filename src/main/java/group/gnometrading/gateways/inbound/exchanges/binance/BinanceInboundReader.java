@@ -31,7 +31,7 @@ import java.security.Signature;
 import java.util.Base64;
 import org.agrona.concurrent.EpochNanoClock;
 
-public final class BinanceFixSocketReader extends SocketReader<Mbp10Schema>
+public final class BinanceInboundReader extends SocketReader<Mbp10Schema>
         implements MbpBufferSchemaFactory, FixStatusListener {
 
     private static final long NANOS_PER_MICRO = 1_000L;
@@ -53,7 +53,7 @@ public final class BinanceFixSocketReader extends SocketReader<Mbp10Schema>
     private long lastTradeSize;
     private long lastSequenceNumber;
 
-    public BinanceFixSocketReader(
+    public BinanceInboundReader(
             final Logger logger,
             final SequencedRingBuffer<Mbp10Schema> outputBuffer,
             final EpochNanoClock clock,

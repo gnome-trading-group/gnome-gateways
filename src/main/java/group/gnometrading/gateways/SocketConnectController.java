@@ -1,4 +1,4 @@
-package group.gnometrading.gateways.inbound;
+package group.gnometrading.gateways;
 
 import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.Logger;
@@ -19,7 +19,7 @@ public final class SocketConnectController {
     private static final Duration MAX_BACKOFF = Duration.ofSeconds(10);
 
     private final Logger logger;
-    private final SocketReader<?> socketReader;
+    private final Connectable connectable;
     private final Duration connectTimeout;
     private final Duration initialBackoff;
     private final int maxReconnectAttempts;
@@ -28,12 +28,12 @@ public final class SocketConnectController {
 
     public SocketConnectController(
             Logger logger,
-            SocketReader<?> socketReader,
+            Connectable connectable,
             Duration connectTimeout,
             int maxReconnectAttempts,
             Duration initialBackoff) {
         this.logger = logger;
-        this.socketReader = socketReader;
+        this.connectable = connectable;
         this.maxReconnectAttempts = maxReconnectAttempts;
         this.connectTimeout = connectTimeout;
         this.initialBackoff = initialBackoff;
@@ -64,7 +64,7 @@ public final class SocketConnectController {
                         TimeUnit.MILLISECONDS);
 
                 try {
-                    this.socketReader.connect();
+                    this.connectable.connect();
 
                     timeoutTask.cancel(false);
 

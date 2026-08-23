@@ -4,7 +4,7 @@ import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.codecs.json.JsonEncoder;
 import group.gnometrading.concurrent.GnomeAgentRunner;
 import group.gnometrading.gateways.inbound.JsonWebSocketWriter;
-import group.gnometrading.gateways.inbound.exchanges.hyperliquid.HyperliquidSocketReader;
+import group.gnometrading.gateways.inbound.exchanges.hyperliquid.HyperliquidInboundReader;
 import group.gnometrading.logging.NullLogger;
 import group.gnometrading.networking.sockets.factory.NativeSSLSocketFactory;
 import group.gnometrading.networking.websockets.WebSocketClient;
@@ -47,7 +47,7 @@ public class HyperliquidIntegrationTest {
 
         JsonWebSocketWriter socketWriter = new JsonWebSocketWriter(wsClient, new JsonEncoder());
 
-        HyperliquidSocketReader reader = new HyperliquidSocketReader(
+        HyperliquidInboundReader reader = new HyperliquidInboundReader(
                 new NullLogger(),
                 outputBuffer,
                 new SystemEpochNanoClock(),

@@ -6,6 +6,7 @@ import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.schemas.Schema;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Listing;
+import group.gnometrading.utils.ByteBufferUtils;
 import java.nio.ByteBuffer;
 import org.agrona.concurrent.EpochNanoClock;
 
@@ -27,7 +28,7 @@ public abstract class JsonWebSocketReader<T extends Schema> extends WebSocketRea
 
     @Override
     protected final void handleGatewayMessage(final ByteBuffer buffer) {
-        skipWhitespace(buffer);
+        ByteBufferUtils.skipWhitespace(buffer);
         if (!buffer.hasRemaining()) {
             return;
         }
@@ -46,16 +47,6 @@ public abstract class JsonWebSocketReader<T extends Schema> extends WebSocketRea
      */
     protected boolean handleNonJsonMessage(ByteBuffer buffer) {
         return false;
-    }
-
-    private static void skipWhitespace(final ByteBuffer buffer) {
-        while (buffer.hasRemaining()) {
-            final byte next = buffer.get(buffer.position());
-            if (next != ' ' && next != '\n' && next != '\r' && next != '\t') {
-                return;
-            }
-            buffer.get();
-        }
     }
 
     protected abstract void handleJsonMessage(JsonDecoder.JsonNode node);

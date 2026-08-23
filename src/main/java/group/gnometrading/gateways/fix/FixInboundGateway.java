@@ -7,14 +7,14 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import org.agrona.concurrent.EpochNanoClock;
 
-public abstract class FixMarketInboundGateway implements FixStatusListener {
+public abstract class FixInboundGateway implements FixStatusListener {
 
     protected final FixSession fixSession;
     protected final FixMessage adminMessage;
     private final FixMessage message;
     protected final FixConfig fixConfig;
 
-    public FixMarketInboundGateway(
+    public FixInboundGateway(
             RingBuffer<Schema> ringBuffer, EpochNanoClock clock, SocketClient socketClient, FixConfig fixConfig) {
         //        super(ringBuffer, clock, socketClient);
 

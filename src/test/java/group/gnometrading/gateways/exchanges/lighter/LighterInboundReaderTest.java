@@ -5,7 +5,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import group.gnometrading.codecs.json.JsonDecoder;
-import group.gnometrading.gateways.inbound.exchanges.lighter.LighterSocketReader;
+import group.gnometrading.gateways.inbound.exchanges.lighter.LighterInboundReader;
 import group.gnometrading.logging.NullLogger;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.networking.websockets.WebSocketResponse;
@@ -33,14 +33,14 @@ import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 /**
- * Test suite for LighterSocketReader.
- * Reads Json data from lighter.txt, processes it through LighterSocketReader,
+ * Test suite for LighterInboundReader.
+ * Reads Json data from lighter.txt, processes it through LighterInboundReader,
  * and validates the output schemas match expected values.
  */
-public class LighterSocketReaderTest {
+public class LighterInboundReaderTest {
 
     private SequencedRingBuffer<Mbp10Schema> sequencedRingBuffer;
-    private LighterSocketReader socketReader;
+    private LighterInboundReader socketReader;
     private WebSocketClient mockClient;
     private WebSocketResponse mockResponse;
     private EpochNanoClock clock;
@@ -76,7 +76,7 @@ public class LighterSocketReaderTest {
                 "TEST" // symbol
                 );
 
-        socketReader = new LighterSocketReader(
+        socketReader = new LighterInboundReader(
                 new NullLogger(), sequencedRingBuffer, clock, null, listing, mockClient, jsonDecoder);
         socketReader.buffer = false;
         socketReader.pause = false;
@@ -96,7 +96,7 @@ public class LighterSocketReaderTest {
         List<String> messages = readLighterMessages();
         assertFalse(messages.isEmpty(), "Should have messages from lighter.txt");
 
-        // Process all messages through LighterSocketReader
+        // Process all messages through LighterInboundReader
         for (String message : messages) {
             processMessage(message);
         }
