@@ -3,10 +3,10 @@ package group.gnometrading.gateways.inbound.exchanges.hyperliquid;
 import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.codecs.json.JsonEncoder;
 import group.gnometrading.gateways.inbound.Book;
-import group.gnometrading.gateways.inbound.JsonWebSocketReader;
-import group.gnometrading.gateways.inbound.JsonWebSocketWriter;
-import group.gnometrading.gateways.inbound.SocketWriter;
-import group.gnometrading.gateways.inbound.WebSocketWriter;
+import group.gnometrading.gateways.inbound.InboundJsonWebSocketReader;
+import group.gnometrading.gateways.inbound.InboundJsonWebSocketWriter;
+import group.gnometrading.gateways.inbound.InboundSocketWriter;
+import group.gnometrading.gateways.inbound.InboundWebSocketWriter;
 import group.gnometrading.gateways.inbound.mbp.Mbp10Book;
 import group.gnometrading.gateways.inbound.mbp.Mbp10SchemaFactory;
 import group.gnometrading.logging.Logger;
@@ -21,7 +21,8 @@ import group.gnometrading.sm.Listing;
 import java.io.IOException;
 import org.agrona.concurrent.EpochNanoClock;
 
-public final class HyperliquidInboundReader extends JsonWebSocketReader<Mbp10Schema> implements Mbp10SchemaFactory {
+public final class HyperliquidInboundReader extends InboundJsonWebSocketReader<Mbp10Schema>
+        implements Mbp10SchemaFactory {
 
     private static final int MAX_LEVEL_DEPTH = 10;
     private static final long NANOS_PER_MILLI = 1_000_000L;
@@ -41,7 +42,7 @@ public final class HyperliquidInboundReader extends JsonWebSocketReader<Mbp10Sch
             Logger logger,
             SequencedRingBuffer<Mbp10Schema> outputBuffer,
             EpochNanoClock clock,
-            SocketWriter socketWriter,
+            InboundSocketWriter socketWriter,
             Listing listing,
             WebSocketClient socketClient,
             JsonDecoder jsonDecoder) {
@@ -55,13 +56,14 @@ public final class HyperliquidInboundReader extends JsonWebSocketReader<Mbp10Sch
     @Override
     protected void keepAlive() throws IOException {
         // { "method": "ping" }
-        final JsonWebSocketWriter jsonWebSocketWriter = (JsonWebSocketWriter) this.socketWriter;
-        final JsonEncoder jsonEncoder = jsonWebSocketWriter.getJsonEncoder();
+        final InboundJsonWebSocketWriter jsonInboundWebSocketWriter = (InboundJsonWebSocketWriter) this.socketWriter;
+        final JsonEncoder jsonEncoder = jsonInboundWebSocketWriter.getJsonEncoder();
         jsonEncoder.writeObjectStart();
         jsonEncoder.writeObjectEntry("method", "ping");
         jsonEncoder.writeObjectEnd();
 
-        ((WebSocketWriter) this.socketWriter).writeText(jsonWebSocketWriter.getAndFlipJsonBodyBuffer(), true);
+        ((InboundWebSocketWriter) this.socketWriter)
+                .writeText(jsonInboundWebSocketWriter.getAndFlipJsonBodyBuffer(), true);
     }
 
     @Override
@@ -269,8 +271,8 @@ public final class HyperliquidInboundReader extends JsonWebSocketReader<Mbp10Sch
 
     private void writeSubscription(final String channel) {
         // { "method": "subscribe", "subscription": { "type": "<channel>", "coin": "<coin_symbol>" } }
-        final JsonWebSocketWriter jsonWebSocketWriter = (JsonWebSocketWriter) this.socketWriter;
-        final JsonEncoder jsonEncoder = jsonWebSocketWriter.getJsonEncoder();
+        final InboundJsonWebSocketWriter jsonInboundWebSocketWriter = (InboundJsonWebSocketWriter) this.socketWriter;
+        final JsonEncoder jsonEncoder = jsonInboundWebSocketWriter.getJsonEncoder();
 
         jsonEncoder.writeObjectStart();
         jsonEncoder.writeObjectEntry("method", "subscribe");
@@ -287,7 +289,8 @@ public final class HyperliquidInboundReader extends JsonWebSocketReader<Mbp10Sch
 
         jsonEncoder.writeObjectEnd();
 
-        ((WebSocketWriter) this.socketWriter).writeText(jsonWebSocketWriter.getAndFlipJsonBodyBuffer(), false);
+        ((InboundWebSocketWriter) this.socketWriter)
+                .writeText(jsonInboundWebSocketWriter.getAndFlipJsonBodyBuffer(), false);
     }
 
     @Override

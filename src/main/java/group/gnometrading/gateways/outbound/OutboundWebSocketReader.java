@@ -41,6 +41,7 @@ public abstract class OutboundWebSocketReader extends OutboundSocketReader {
             return null;
         }
         if (result.getOpcode() == Opcode.PING) {
+            this.recvTimestamp = clock.nanoTime();
             pong(result.getBody());
             return null;
         }
@@ -50,8 +51,11 @@ public abstract class OutboundWebSocketReader extends OutboundSocketReader {
         return null;
     }
 
+    protected void beforeConnect() throws IOException {}
+
     @Override
     protected final void attachSocket() throws IOException {
+        beforeConnect();
         this.socketClient.connect();
         this.socketClient.configureBlocking(false);
         this.socketClient.setTcpNoDelay(true);

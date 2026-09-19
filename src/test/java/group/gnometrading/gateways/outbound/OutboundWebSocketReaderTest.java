@@ -134,6 +134,16 @@ class OutboundWebSocketReaderTest {
     }
 
     @Test
+    void readSocket_PingOpcode_UpdatesRecvTimestamp() throws Exception {
+        when(response.getOpcode()).thenReturn(Opcode.PING);
+        when(response.getBody()).thenReturn(ByteBuffer.allocate(0));
+
+        reader.doWork();
+
+        assertTrue(reader.recvTimestamp > 0);
+    }
+
+    @Test
     void readSocket_OtherOpcode_DoesNotCallHandleMessage() throws Exception {
         when(response.getOpcode()).thenReturn(Opcode.PONG);
 

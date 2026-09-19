@@ -7,7 +7,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 
-public abstract class SocketWriter implements GnomeAgent {
+public abstract class InboundSocketWriter implements GnomeAgent {
 
     private static final int DEFAULT_WRITE_BUFFER_SIZE = 1 << 10; // 1kb
     private static final int DEFAULT_MESSAGE_BUS_CAPACITY = 1 << 7; // 128 slots
@@ -16,11 +16,11 @@ public abstract class SocketWriter implements GnomeAgent {
     private final RingBuffer<ByteBuffer> controlWriteBuffer;
     private final int writeBufferSize;
 
-    public SocketWriter() {
+    public InboundSocketWriter() {
         this(DEFAULT_WRITE_BUFFER_SIZE, DEFAULT_MESSAGE_BUS_CAPACITY);
     }
 
-    public SocketWriter(int writeBufferSize, int messageBusCapacity) {
+    public InboundSocketWriter(int writeBufferSize, int messageBusCapacity) {
         this.writeBufferSize = writeBufferSize;
         this.writeBuffer = new ManyToOneRingBuffer<>(ByteBuffer[]::new, this::createWriteBuffer, messageBusCapacity);
         this.controlWriteBuffer =

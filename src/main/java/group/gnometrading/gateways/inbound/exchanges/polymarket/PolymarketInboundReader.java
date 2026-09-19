@@ -3,10 +3,10 @@ package group.gnometrading.gateways.inbound.exchanges.polymarket;
 import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.codecs.json.JsonEncoder;
 import group.gnometrading.gateways.inbound.Book;
-import group.gnometrading.gateways.inbound.JsonWebSocketReader;
-import group.gnometrading.gateways.inbound.JsonWebSocketWriter;
-import group.gnometrading.gateways.inbound.SocketWriter;
-import group.gnometrading.gateways.inbound.WebSocketWriter;
+import group.gnometrading.gateways.inbound.InboundJsonWebSocketReader;
+import group.gnometrading.gateways.inbound.InboundJsonWebSocketWriter;
+import group.gnometrading.gateways.inbound.InboundSocketWriter;
+import group.gnometrading.gateways.inbound.InboundWebSocketWriter;
 import group.gnometrading.gateways.inbound.mbp.buffer.MbpBufferBook;
 import group.gnometrading.gateways.inbound.mbp.buffer.MbpBufferSchemaFactory;
 import group.gnometrading.logging.Logger;
@@ -24,7 +24,8 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import org.agrona.concurrent.EpochNanoClock;
 
-public final class PolymarketInboundReader extends JsonWebSocketReader<Mbp10Schema> implements MbpBufferSchemaFactory {
+public final class PolymarketInboundReader extends InboundJsonWebSocketReader<Mbp10Schema>
+        implements MbpBufferSchemaFactory {
 
     private static final int MAX_BOOK_LEVELS = 1 << 10;
     private static final long NANOS_PER_MILLI = 1_000_000L;
@@ -63,7 +64,7 @@ public final class PolymarketInboundReader extends JsonWebSocketReader<Mbp10Sche
             Logger logger,
             SequencedRingBuffer<Mbp10Schema> outputBuffer,
             EpochNanoClock clock,
-            SocketWriter socketWriter,
+            InboundSocketWriter socketWriter,
             Listing listing,
             WebSocketClient socketClient,
             JsonDecoder jsonDecoder) {
@@ -88,7 +89,7 @@ public final class PolymarketInboundReader extends JsonWebSocketReader<Mbp10Sche
     @Override
     protected void keepAlive() throws IOException {
         this.pingBuffer.rewind();
-        ((WebSocketWriter) this.socketWriter).writeText(this.pingBuffer, true);
+        ((InboundWebSocketWriter) this.socketWriter).writeText(this.pingBuffer, true);
     }
 
     @Override
@@ -323,8 +324,8 @@ public final class PolymarketInboundReader extends JsonWebSocketReader<Mbp10Sche
     @Override
     protected void subscribe() throws IOException {
         // { "assets_ids": ["<token_id>"], "type": "market" }
-        final JsonWebSocketWriter jsonWebSocketWriter = (JsonWebSocketWriter) this.socketWriter;
-        final JsonEncoder jsonEncoder = jsonWebSocketWriter.getJsonEncoder();
+        final InboundJsonWebSocketWriter jsonInboundWebSocketWriter = (InboundJsonWebSocketWriter) this.socketWriter;
+        final JsonEncoder jsonEncoder = jsonInboundWebSocketWriter.getJsonEncoder();
 
         jsonEncoder.writeObjectStart();
         jsonEncoder.writeObjectEntry("type", "market");
@@ -338,6 +339,7 @@ public final class PolymarketInboundReader extends JsonWebSocketReader<Mbp10Sche
         jsonEncoder.writeObjectEntry("custom_feature_enabled", true);
         jsonEncoder.writeObjectEnd();
 
-        ((WebSocketWriter) this.socketWriter).writeText(jsonWebSocketWriter.getAndFlipJsonBodyBuffer(), false);
+        ((InboundWebSocketWriter) this.socketWriter)
+                .writeText(jsonInboundWebSocketWriter.getAndFlipJsonBodyBuffer(), false);
     }
 }

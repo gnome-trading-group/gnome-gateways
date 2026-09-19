@@ -10,15 +10,15 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import org.agrona.concurrent.EpochNanoClock;
 
-public abstract class WebSocketReader<T extends Schema> extends SocketReader<T> {
+public abstract class InboundWebSocketReader<T extends Schema> extends InboundSocketReader<T> {
 
     protected final WebSocketClient socketClient;
 
-    public WebSocketReader(
+    public InboundWebSocketReader(
             Logger logger,
             SequencedRingBuffer<T> outputBuffer,
             EpochNanoClock clock,
-            SocketWriter socketWriter,
+            InboundSocketWriter socketWriter,
             Listing listing,
             WebSocketClient socketClient) {
         super(logger, outputBuffer, clock, socketWriter, listing);
@@ -35,6 +35,7 @@ public abstract class WebSocketReader<T extends Schema> extends SocketReader<T> 
             this.onSocketClose();
             return null;
         } else if (result.getOpcode() == Opcode.PING) {
+            this.recvTimestamp = clock.nanoTime();
             pong();
             return null;
         } else {
@@ -43,7 +44,7 @@ public abstract class WebSocketReader<T extends Schema> extends SocketReader<T> 
     }
 
     private void pong() {
-        ((WebSocketWriter) this.socketWriter).writePong();
+        ((InboundWebSocketWriter) this.socketWriter).writePong();
     }
 
     @Override

@@ -3,10 +3,10 @@ package group.gnometrading.gateways.inbound.exchanges.kalshi;
 import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.codecs.json.JsonEncoder;
 import group.gnometrading.gateways.inbound.Book;
-import group.gnometrading.gateways.inbound.JsonWebSocketReader;
-import group.gnometrading.gateways.inbound.JsonWebSocketWriter;
-import group.gnometrading.gateways.inbound.SocketWriter;
-import group.gnometrading.gateways.inbound.WebSocketWriter;
+import group.gnometrading.gateways.inbound.InboundJsonWebSocketReader;
+import group.gnometrading.gateways.inbound.InboundJsonWebSocketWriter;
+import group.gnometrading.gateways.inbound.InboundSocketWriter;
+import group.gnometrading.gateways.inbound.InboundWebSocketWriter;
 import group.gnometrading.gateways.inbound.mbp.Mbp10Book;
 import group.gnometrading.gateways.inbound.mbp.Mbp10SchemaFactory;
 import group.gnometrading.logging.Logger;
@@ -55,7 +55,7 @@ import org.agrona.concurrent.EpochNanoClock;
  * <p>Assumes Kalshi sends {@code "type"} before {@code "msg"} within each WebSocket message,
  * consistent with observed API behavior.
  */
-public final class KalshiInboundReader extends JsonWebSocketReader<Mbp10Schema> implements Mbp10SchemaFactory {
+public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10Schema> implements Mbp10SchemaFactory {
 
     private static final int MAX_LEVEL_DEPTH = 10;
     // Kalshi prices: integer cents 1–99. Index 0 and 100 unused.
@@ -91,7 +91,7 @@ public final class KalshiInboundReader extends JsonWebSocketReader<Mbp10Schema> 
             Logger logger,
             SequencedRingBuffer<Mbp10Schema> outputBuffer,
             EpochNanoClock clock,
-            SocketWriter socketWriter,
+            InboundSocketWriter socketWriter,
             Listing listing,
             WebSocketClient socketClient,
             JsonDecoder jsonDecoder,
@@ -132,8 +132,8 @@ public final class KalshiInboundReader extends JsonWebSocketReader<Mbp10Schema> 
     protected void subscribe() throws IOException {
         // {"id": 1, "cmd": "subscribe", "params": {"channels": ["orderbook_delta", "trade"], "market_tickers":
         // ["<ticker>"]}}
-        final JsonWebSocketWriter jsonWebSocketWriter = (JsonWebSocketWriter) this.socketWriter;
-        final JsonEncoder jsonEncoder = jsonWebSocketWriter.getJsonEncoder();
+        final InboundJsonWebSocketWriter jsonInboundWebSocketWriter = (InboundJsonWebSocketWriter) this.socketWriter;
+        final JsonEncoder jsonEncoder = jsonInboundWebSocketWriter.getJsonEncoder();
 
         jsonEncoder.writeObjectStart();
         jsonEncoder.writeObjectEntry("id", 1);
@@ -159,7 +159,8 @@ public final class KalshiInboundReader extends JsonWebSocketReader<Mbp10Schema> 
         jsonEncoder.writeObjectEnd();
         jsonEncoder.writeObjectEnd();
 
-        ((WebSocketWriter) this.socketWriter).writeText(jsonWebSocketWriter.getAndFlipJsonBodyBuffer(), false);
+        ((InboundWebSocketWriter) this.socketWriter)
+                .writeText(jsonInboundWebSocketWriter.getAndFlipJsonBodyBuffer(), false);
     }
 
     @Override

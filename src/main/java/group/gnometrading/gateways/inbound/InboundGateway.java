@@ -7,9 +7,9 @@ import org.agrona.concurrent.EpochClock;
 
 public final class InboundGateway extends GatewaySupervisor {
 
-    private final SocketReader<?> socketReader;
+    private final InboundSocketReader<?> socketReader;
 
-    public InboundGateway(Logger logger, GatewayConfig config, SocketReader<?> socketReader, EpochClock clock) {
+    public InboundGateway(Logger logger, GatewayConfig config, InboundSocketReader<?> socketReader, EpochClock clock) {
         super(logger, socketReader::connect, config, clock, socketReader.clock);
         this.socketReader = socketReader;
     }

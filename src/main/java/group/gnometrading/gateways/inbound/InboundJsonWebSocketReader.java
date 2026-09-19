@@ -10,15 +10,15 @@ import group.gnometrading.utils.ByteBufferUtils;
 import java.nio.ByteBuffer;
 import org.agrona.concurrent.EpochNanoClock;
 
-public abstract class JsonWebSocketReader<T extends Schema> extends WebSocketReader<T> {
+public abstract class InboundJsonWebSocketReader<T extends Schema> extends InboundWebSocketReader<T> {
 
     protected final JsonDecoder jsonDecoder;
 
-    public JsonWebSocketReader(
+    public InboundJsonWebSocketReader(
             Logger logger,
             SequencedRingBuffer<T> outputBuffer,
             EpochNanoClock clock,
-            SocketWriter socketWriter,
+            InboundSocketWriter socketWriter,
             Listing listing,
             WebSocketClient socketClient,
             JsonDecoder jsonDecoder) {

@@ -12,7 +12,7 @@ import group.gnometrading.gateways.fix.FixTimestampPrecision;
 import group.gnometrading.gateways.fix.FixValue;
 import group.gnometrading.gateways.fix.fix50sp2.Fix50Sp2Tags;
 import group.gnometrading.gateways.inbound.Book;
-import group.gnometrading.gateways.inbound.SocketReader;
+import group.gnometrading.gateways.inbound.InboundSocketReader;
 import group.gnometrading.gateways.inbound.mbp.buffer.MbpBufferBook;
 import group.gnometrading.gateways.inbound.mbp.buffer.MbpBufferSchemaFactory;
 import group.gnometrading.logging.Logger;
@@ -31,7 +31,7 @@ import java.security.Signature;
 import java.util.Base64;
 import org.agrona.concurrent.EpochNanoClock;
 
-public final class BinanceInboundReader extends SocketReader<Mbp10Schema>
+public final class BinanceInboundReader extends InboundSocketReader<Mbp10Schema>
         implements MbpBufferSchemaFactory, FixStatusListener {
 
     private static final long NANOS_PER_MICRO = 1_000L;

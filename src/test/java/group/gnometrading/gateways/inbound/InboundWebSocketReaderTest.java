@@ -23,7 +23,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-class WebSocketReaderTest {
+class InboundWebSocketReaderTest {
 
     private static final Listing LISTING = new Listing(
             1, new Exchange(2, "test", "global", SchemaType.MBP_10), new Security(3, "TEST", 3), "test-id", "TEST");
@@ -31,7 +31,7 @@ class WebSocketReaderTest {
     private WebSocketClient client;
     private WebSocketResponse response;
     private SequencedRingBuffer<Mbp10Schema> outputBuffer;
-    private WebSocketWriter socketWriter;
+    private InboundWebSocketWriter socketWriter;
     private TestWebSocketReader reader;
 
     @BeforeEach
@@ -45,7 +45,7 @@ class WebSocketReaderTest {
         outputBuffer = new SequencedRingBuffer<>(Mbp10Schema::new, new GlobalSequence());
         outputBuffer.start();
 
-        socketWriter = new WebSocketWriter(client);
+        socketWriter = new InboundWebSocketWriter(client);
         reader = new TestWebSocketReader(outputBuffer, socketWriter, client);
         reader.pause = false;
     }
@@ -106,6 +106,15 @@ class WebSocketReaderTest {
     }
 
     @Test
+    void readSocket_PingOpcode_UpdatesRecvTimestamp() throws Exception {
+        when(response.getOpcode()).thenReturn(Opcode.PING);
+
+        reader.doWork();
+
+        assertTrue(reader.recvTimestamp > 0);
+    }
+
+    @Test
     void readSocket_PongOpcode_DoesNotCallHandleGatewayMessage() throws Exception {
         when(response.getOpcode()).thenReturn(Opcode.PONG);
 
@@ -161,7 +170,7 @@ class WebSocketReaderTest {
 
     // ========== Test subclass ==========
 
-    static class TestWebSocketReader extends WebSocketReader<Mbp10Schema> implements Mbp10SchemaFactory {
+    static class TestWebSocketReader extends InboundWebSocketReader<Mbp10Schema> implements Mbp10SchemaFactory {
 
         int handleMessageCallCount = 0;
         boolean subscribeCalled = false;
@@ -170,7 +179,7 @@ class WebSocketReaderTest {
 
         TestWebSocketReader(
                 SequencedRingBuffer<Mbp10Schema> outputBuffer,
-                WebSocketWriter socketWriter,
+                InboundWebSocketWriter socketWriter,
                 WebSocketClient socketClient) {
             super(new NullLogger(), outputBuffer, System::nanoTime, socketWriter, LISTING, socketClient);
         }

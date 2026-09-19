@@ -3,10 +3,10 @@ package group.gnometrading.gateways.inbound.exchanges.lighter;
 import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.codecs.json.JsonEncoder;
 import group.gnometrading.gateways.inbound.Book;
-import group.gnometrading.gateways.inbound.JsonWebSocketReader;
-import group.gnometrading.gateways.inbound.JsonWebSocketWriter;
-import group.gnometrading.gateways.inbound.SocketWriter;
-import group.gnometrading.gateways.inbound.WebSocketWriter;
+import group.gnometrading.gateways.inbound.InboundJsonWebSocketReader;
+import group.gnometrading.gateways.inbound.InboundJsonWebSocketWriter;
+import group.gnometrading.gateways.inbound.InboundSocketWriter;
+import group.gnometrading.gateways.inbound.InboundWebSocketWriter;
 import group.gnometrading.gateways.inbound.mbp.buffer.MbpBufferBook;
 import group.gnometrading.gateways.inbound.mbp.buffer.MbpBufferSchemaFactory;
 import group.gnometrading.logging.Logger;
@@ -21,7 +21,8 @@ import group.gnometrading.sm.Listing;
 import java.io.IOException;
 import org.agrona.concurrent.EpochNanoClock;
 
-public final class LighterInboundReader extends JsonWebSocketReader<Mbp10Schema> implements MbpBufferSchemaFactory {
+public final class LighterInboundReader extends InboundJsonWebSocketReader<Mbp10Schema>
+        implements MbpBufferSchemaFactory {
 
     private static final long NANOS_PER_MILLIS = 1_000_000L;
     private static final int MAX_LEVELS = 10;
@@ -37,7 +38,7 @@ public final class LighterInboundReader extends JsonWebSocketReader<Mbp10Schema>
             Logger logger,
             SequencedRingBuffer<Mbp10Schema> outputBuffer,
             EpochNanoClock clock,
-            SocketWriter socketWriter,
+            InboundSocketWriter socketWriter,
             Listing listing,
             WebSocketClient socketClient,
             JsonDecoder jsonDecoder) {
@@ -208,8 +209,8 @@ public final class LighterInboundReader extends JsonWebSocketReader<Mbp10Schema>
     }
 
     private void writeSubscription(final String channel) {
-        final JsonWebSocketWriter jsonWebSocketWriter = (JsonWebSocketWriter) this.socketWriter;
-        final JsonEncoder jsonEncoder = jsonWebSocketWriter.getJsonEncoder();
+        final InboundJsonWebSocketWriter jsonInboundWebSocketWriter = (InboundJsonWebSocketWriter) this.socketWriter;
+        final JsonEncoder jsonEncoder = jsonInboundWebSocketWriter.getJsonEncoder();
         jsonEncoder
                 .writeObjectStart()
                 .writeObjectEntry("type", "subscribe")
@@ -217,7 +218,8 @@ public final class LighterInboundReader extends JsonWebSocketReader<Mbp10Schema>
                 .writeObjectEntry("channel", channel)
                 .writeObjectEnd();
 
-        ((WebSocketWriter) this.socketWriter).writeText(jsonWebSocketWriter.getAndFlipJsonBodyBuffer(), false);
+        ((InboundWebSocketWriter) this.socketWriter)
+                .writeText(jsonInboundWebSocketWriter.getAndFlipJsonBodyBuffer(), false);
     }
 
     @Override
@@ -230,26 +232,28 @@ public final class LighterInboundReader extends JsonWebSocketReader<Mbp10Schema>
 
     private void sendPong() {
         // { "type": "pong" }
-        final JsonWebSocketWriter jsonWebSocketWriter = (JsonWebSocketWriter) this.socketWriter;
-        final JsonEncoder jsonEncoder = jsonWebSocketWriter.getJsonEncoder();
+        final InboundJsonWebSocketWriter jsonInboundWebSocketWriter = (InboundJsonWebSocketWriter) this.socketWriter;
+        final JsonEncoder jsonEncoder = jsonInboundWebSocketWriter.getJsonEncoder();
 
         jsonEncoder.writeObjectStart();
         jsonEncoder.writeObjectEntry("type", "pong");
         jsonEncoder.writeObjectEnd();
 
-        ((WebSocketWriter) this.socketWriter).writeText(jsonWebSocketWriter.getAndFlipJsonBodyBuffer(), true);
+        ((InboundWebSocketWriter) this.socketWriter)
+                .writeText(jsonInboundWebSocketWriter.getAndFlipJsonBodyBuffer(), true);
     }
 
     @Override
     protected void keepAlive() throws IOException {
         // { "type": "ping" }
-        final JsonWebSocketWriter jsonWebSocketWriter = (JsonWebSocketWriter) this.socketWriter;
-        final JsonEncoder jsonEncoder = jsonWebSocketWriter.getJsonEncoder();
+        final InboundJsonWebSocketWriter jsonInboundWebSocketWriter = (InboundJsonWebSocketWriter) this.socketWriter;
+        final JsonEncoder jsonEncoder = jsonInboundWebSocketWriter.getJsonEncoder();
         jsonEncoder.writeObjectStart();
         jsonEncoder.writeObjectEntry("type", "ping");
         jsonEncoder.writeObjectEnd();
 
-        ((WebSocketWriter) this.socketWriter).writeText(jsonWebSocketWriter.getAndFlipJsonBodyBuffer(), true);
+        ((InboundWebSocketWriter) this.socketWriter)
+                .writeText(jsonInboundWebSocketWriter.getAndFlipJsonBodyBuffer(), true);
     }
 
     @Override

@@ -5,11 +5,11 @@ import group.gnometrading.networking.websockets.enums.Opcode;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 
-public class WebSocketWriter extends SocketWriter {
+public class InboundWebSocketWriter extends InboundSocketWriter {
 
     private final WebSocketClient socketClient;
 
-    public WebSocketWriter(WebSocketClient socketClient) {
+    public InboundWebSocketWriter(WebSocketClient socketClient) {
         super();
         this.socketClient = socketClient;
     }

@@ -21,7 +21,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
-class JsonWebSocketReaderTest {
+class InboundJsonWebSocketReaderTest {
 
     private static final Listing LISTING = new Listing(
             1, new Exchange(2, "test", "global", SchemaType.MBP_10), new Security(3, "TEST", 3), "test-id", "TEST");
@@ -160,7 +160,7 @@ class JsonWebSocketReaderTest {
 
     // ========== Test subclass ==========
 
-    static class TestJsonWebSocketReader extends JsonWebSocketReader<Mbp10Schema> implements Mbp10SchemaFactory {
+    static class TestJsonWebSocketReader extends InboundJsonWebSocketReader<Mbp10Schema> implements Mbp10SchemaFactory {
 
         int handleJsonMessageCallCount = 0;
         JsonDecoder.JsonNode lastNode = null;

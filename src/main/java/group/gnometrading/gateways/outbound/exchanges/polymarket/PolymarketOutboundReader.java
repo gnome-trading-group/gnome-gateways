@@ -3,7 +3,7 @@ package group.gnometrading.gateways.outbound.exchanges.polymarket;
 import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
 import group.gnometrading.gateways.outbound.OrderContext;
-import group.gnometrading.gateways.outbound.OutboundWebSocketReader;
+import group.gnometrading.gateways.outbound.OutboundJsonWebSocketReader;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.networking.websockets.enums.Opcode;
@@ -14,13 +14,12 @@ import group.gnometrading.schemas.OrderStatus;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Listing;
 import group.gnometrading.strings.GnomeString;
-import group.gnometrading.utils.ByteBufferUtils;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import org.agrona.concurrent.EpochNanoClock;
 
-public final class PolymarketOutboundReader extends OutboundWebSocketReader {
+public final class PolymarketOutboundReader extends OutboundJsonWebSocketReader {
 
     private static final long NANOS_PER_MILLI = 1_000_000L;
     private static final byte[] PING = "PING".getBytes(StandardCharsets.US_ASCII);
@@ -39,7 +38,6 @@ public final class PolymarketOutboundReader extends OutboundWebSocketReader {
     private static final int STATUS_FLAG_FAILED = 4;
     private static final int STATUS_FLAG_MINED = 5;
 
-    private final JsonDecoder jsonDecoder;
     private final String apiKey;
     private final String secret;
     private final String passphrase;
@@ -61,8 +59,16 @@ public final class PolymarketOutboundReader extends OutboundWebSocketReader {
             String apiKey,
             String secret,
             String passphrase) {
-        super(logger, execReportBuffer, contextQueue, rejectQueue, completionQueue, clock, listing, socketClient);
-        this.jsonDecoder = jsonDecoder;
+        super(
+                logger,
+                execReportBuffer,
+                contextQueue,
+                rejectQueue,
+                completionQueue,
+                clock,
+                listing,
+                socketClient,
+                jsonDecoder);
         this.apiKey = apiKey;
         this.secret = secret;
         this.passphrase = passphrase;
@@ -70,21 +76,23 @@ public final class PolymarketOutboundReader extends OutboundWebSocketReader {
     }
 
     @Override
-    protected void handleGatewayMessage(final ByteBuffer buffer) throws Exception {
-        ByteBufferUtils.skipWhitespace(buffer);
-        if (!buffer.hasRemaining()) {
-            return;
-        }
-        // Ignore PONG responses
+    protected boolean skipNonJsonMessage(final ByteBuffer buffer) throws IOException {
         if (isPong(buffer)) {
             buffer.position(buffer.limit());
-            return;
+            return true;
         }
-        try (var node = this.jsonDecoder.wrap(buffer)) {
-            try (var obj = node.asObject()) {
-                parseMessage(obj);
+        return false;
+    }
+
+    @Override
+    protected void handleJsonMessage(final JsonDecoder.JsonObject obj) {
+        this.parsedEvent.reset();
+        while (obj.hasNextKey()) {
+            try (var entry = obj.nextKey()) {
+                parseEventField(entry, this.parsedEvent);
             }
         }
+        emitEvent(this.parsedEvent);
     }
 
     @Override
@@ -113,16 +121,6 @@ public final class PolymarketOutboundReader extends OutboundWebSocketReader {
                 + "\",\"secret\":\"" + this.secret
                 + "\",\"passphrase\":\"" + this.passphrase
                 + "\"},\"type\":\"user\"}";
-    }
-
-    private void parseMessage(final JsonDecoder.JsonObject obj) {
-        this.parsedEvent.reset();
-        while (obj.hasNextKey()) {
-            try (var entry = obj.nextKey()) {
-                parseEventField(entry, this.parsedEvent);
-            }
-        }
-        emitEvent(this.parsedEvent);
     }
 
     private static void parseEventField(final JsonDecoder.JsonNode entry, final ParsedEvent event) {

@@ -30,7 +30,7 @@ import org.junit.jupiter.api.Timeout;
  * Test suite for SocketReader focusing on doWork() and connect() methods.
  * Tests thread safety between the tight-loop worker thread and supervisor thread.
  */
-class SocketReaderTest {
+class InboundSocketReaderTest {
 
     private SequencedRingBuffer<Mbp10Schema> sequencedRingBuffer;
     private TestSocketReader socketReader;
@@ -642,7 +642,7 @@ class SocketReaderTest {
     /**
      * Test implementation of SocketReader for testing purposes.
      */
-    static class TestSocketReader extends SocketReader<Mbp10Schema> implements Mbp10SchemaFactory {
+    static class TestSocketReader extends InboundSocketReader<Mbp10Schema> implements Mbp10SchemaFactory {
 
         final AtomicInteger readSocketCallCount = new AtomicInteger(0);
         final AtomicInteger handleMessageByteCount = new AtomicInteger(0);

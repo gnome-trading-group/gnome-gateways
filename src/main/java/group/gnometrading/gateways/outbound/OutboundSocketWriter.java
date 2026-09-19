@@ -127,7 +127,11 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         }
     }
 
-    private void handleModifyOrder() throws Exception {
+    /**
+     * Subclasses may override to implement native amend instead of cancel-replace.
+     * The default implementation cancels the existing order and re-submits via {@link #submitForModify}.
+     */
+    protected void handleModifyOrder() throws Exception {
         final long orderId = this.modifyOrder.decoder.orderId();
         final OrderContext oldCtx = this.activeOrders.get(orderId);
         if (oldCtx == null) {
@@ -218,7 +222,7 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         this.rejectQueue.commit(idx);
     }
 
-    private OrderContext buildCancelReject(final OrderContext existing) {
+    protected final OrderContext buildCancelReject(final OrderContext existing) {
         if (this.writerPoolHead <= 0) {
             throw new RuntimeException("Writer order context pool exhausted");
         }
@@ -235,9 +239,17 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         return reject;
     }
 
-    private void returnToPool(final OrderContext ctx) {
+    protected final void returnToPool(final OrderContext ctx) {
         ctx.reset();
         this.writerPool[this.writerPoolHead++] = ctx;
+    }
+
+    protected final OrderContext getActiveOrder(final long orderId) {
+        return this.activeOrders.get(orderId);
+    }
+
+    protected final void removeActiveOrder(final long orderId) {
+        this.activeOrders.remove(orderId);
     }
 
     @VisibleForTesting

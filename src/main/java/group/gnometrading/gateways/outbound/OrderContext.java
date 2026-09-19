@@ -17,6 +17,7 @@ public final class OrderContext {
     public long originalQty;
     public long cumulativeFilledQty;
     public long leavesQty;
+    public long cumulativeCost;
     public Side side;
     public ExecType execType;
     public OrderStatus orderStatus;
@@ -33,6 +34,7 @@ public final class OrderContext {
         this.originalQty = 0;
         this.cumulativeFilledQty = 0;
         this.leavesQty = 0;
+        this.cumulativeCost = 0;
         this.side = null;
         this.execType = null;
         this.orderStatus = null;
@@ -49,6 +51,7 @@ public final class OrderContext {
         this.originalQty = src.originalQty;
         this.cumulativeFilledQty = src.cumulativeFilledQty;
         this.leavesQty = src.leavesQty;
+        this.cumulativeCost = src.cumulativeCost;
         this.side = src.side;
         this.execType = src.execType;
         this.orderStatus = src.orderStatus;

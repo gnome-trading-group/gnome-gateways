@@ -11,7 +11,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import org.agrona.concurrent.EpochNanoClock;
 
-public abstract class SocketReader<T extends Schema> implements GnomeAgent, SchemaFactory<T> {
+public abstract class InboundSocketReader<T extends Schema> implements GnomeAgent, SchemaFactory<T> {
 
     private static final int DEFAULT_BOOK_BUFFER_SIZE = 1 << 7; // 128 slots
     private static final int DEFAULT_REPLAY_BUFFER_SIZE = 1 << 11; // 2048 slots
@@ -19,7 +19,7 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
     private final Logger logger;
     private final SequencedRingBuffer<T> sequencedRingBuffer;
     public final EpochNanoClock clock;
-    protected final SocketWriter socketWriter;
+    protected final InboundSocketWriter socketWriter;
     protected final Listing listing;
     private final OneToOneRingBuffer<T> replayBuffer;
 
@@ -33,11 +33,11 @@ public abstract class SocketReader<T extends Schema> implements GnomeAgent, Sche
     public volatile boolean isPaused;
     public volatile boolean buffer;
 
-    public SocketReader(
+    public InboundSocketReader(
             Logger logger,
             SequencedRingBuffer<T> outputBuffer,
             EpochNanoClock clock,
-            SocketWriter socketWriter,
+            InboundSocketWriter socketWriter,
             Listing listing) {
         this.logger = logger;
         this.sequencedRingBuffer = outputBuffer;
