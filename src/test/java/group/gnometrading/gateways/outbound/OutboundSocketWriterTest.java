@@ -123,16 +123,16 @@ class OutboundSocketWriterTest {
         publishOrder(
                 Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
         writer.doWork();
-        final long orderId = drainQueue(contextQueue).get(0).orderId;
+        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
 
-        publishCancel(orderId, 2, 3L);
+        publishCancel(clientOidCounter, 2, 3L);
         writer.doWork();
 
         assertEquals(1, writer.cancelCallCount);
         assertEquals(0, drainQueue(rejectQueue).size());
 
         // Cancelled order removed from active — second cancel is a no-op
-        publishCancel(orderId, 2, 3L);
+        publishCancel(clientOidCounter, 2, 3L);
         writer.doWork();
         assertEquals(1, writer.cancelCallCount);
     }
@@ -145,7 +145,7 @@ class OutboundSocketWriterTest {
         final OrderContext submitted = drainQueue(contextQueue).get(0);
 
         writer.cancelResult = false;
-        publishCancel(submitted.orderId, 2, 3L);
+        publishCancel(submitted.clientOidCounter, 2, 3L);
         writer.doWork();
 
         final List<OrderContext> rejects = drainQueue(rejectQueue);
@@ -184,10 +184,10 @@ class OutboundSocketWriterTest {
         publishOrder(
                 Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
         writer.doWork();
-        final long orderId = drainQueue(contextQueue).get(0).orderId;
+        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
 
         writer.cancelResult = false;
-        publishModify(orderId, price("0.60"), qty("5.0"), 2, 3L);
+        publishModify(clientOidCounter, price("0.60"), qty("5.0"), 2, 3L);
         writer.doWork();
 
         final List<OrderContext> rejects = drainQueue(rejectQueue);
@@ -195,9 +195,9 @@ class OutboundSocketWriterTest {
         assertEquals(ExecType.CANCEL_REJECT, rejects.get(0).execType);
         assertEquals(0, writer.submitForModifyCallCount);
 
-        // Old orderId still in activeOrders — a subsequent cancel is routed
+        // Order still in activeOrders after failed modify cancel — a subsequent cancel is routed
         writer.cancelResult = true;
-        publishCancel(orderId, 2, 3L);
+        publishCancel(clientOidCounter, 2, 3L);
         writer.doWork();
         assertEquals(2, writer.cancelCallCount); // cancel called twice total
     }
@@ -207,10 +207,10 @@ class OutboundSocketWriterTest {
         publishOrder(
                 Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
         writer.doWork();
-        final long orderId = drainQueue(contextQueue).get(0).orderId;
+        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
 
         writer.submitForModifyResult = false;
-        publishModify(orderId, price("0.60"), qty("5.0"), 2, 3L);
+        publishModify(clientOidCounter, price("0.60"), qty("5.0"), 2, 3L);
         writer.doWork();
 
         final List<OrderContext> rejects = drainQueue(rejectQueue);
@@ -219,8 +219,8 @@ class OutboundSocketWriterTest {
         assertEquals(OrderStatus.REJECTED, rejects.get(0).orderStatus);
         assertEquals(1, writer.submitForModifyCallCount);
 
-        // Old orderId removed from activeOrders — cancel is now a no-op
-        publishCancel(orderId, 2, 3L);
+        // Order removed from activeOrders after modify cancel — subsequent cancel is a no-op
+        publishCancel(clientOidCounter, 2, 3L);
         writer.doWork();
         assertEquals(1, writer.cancelCallCount); // cancel not called again
     }
@@ -230,25 +230,23 @@ class OutboundSocketWriterTest {
         publishOrder(
                 Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
         writer.doWork();
-        final long oldOrderId = drainQueue(contextQueue).get(0).orderId;
+        final OrderContext original = drainQueue(contextQueue).get(0);
+        final long oldInternalOrderId = original.orderId;
+        final long clientOidCounter = original.clientOidCounter;
 
-        publishModify(oldOrderId, price("0.60"), qty("5.0"), 2, 3L);
+        publishModify(clientOidCounter, price("0.60"), qty("5.0"), 2, 3L);
         writer.doWork();
 
-        // Context for new order enqueued
+        // Context for replacement order enqueued; new writer-internal orderId, same clientOidCounter
         final List<OrderContext> contexts = drainQueue(contextQueue);
         assertEquals(1, contexts.size());
-        final long newOrderId = contexts.get(0).orderId;
-        assertNotEquals(oldOrderId, newOrderId);
+        assertNotEquals(oldInternalOrderId, contexts.get(0).orderId);
+        assertEquals(clientOidCounter, contexts.get(0).clientOidCounter);
         assertEquals(qty("5.0"), contexts.get(0).originalQty);
+        assertEquals(1, writer.cancelCallCount); // cancel for the old order
 
-        // Old orderId no longer in activeOrders
-        publishCancel(oldOrderId, 2, 3L);
-        writer.doWork();
-        assertEquals(1, writer.cancelCallCount); // cancel was for the modify, not this one
-
-        // New orderId is in activeOrders — cancel is routed
-        publishCancel(newOrderId, 2, 3L);
+        // New order is at the same clientOidCounter key — cancel is routed
+        publishCancel(clientOidCounter, 2, 3L);
         writer.doWork();
         assertEquals(2, writer.cancelCallCount);
     }
@@ -265,8 +263,7 @@ class OutboundSocketWriterTest {
 
         // Pool is now empty. Modify one of the orders: the old slot must be returned
         // before the new slot is claimed, so this should not throw.
-        final long orderId = 1L; // first submitted order
-        publishModify(orderId, price("0.60"), qty("5.0"), 2, 3L);
+        publishModify(1L, price("0.60"), qty("5.0"), 2, 3L);
         assertDoesNotThrow(() -> writer.doWork());
 
         // New context enqueued for the replacement order
@@ -295,9 +292,9 @@ class OutboundSocketWriterTest {
         publishOrder(
                 Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
         writer.doWork();
-        final long orderId = drainQueue(contextQueue).get(0).orderId;
+        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
 
-        publishCancel(orderId, 2, 3L);
+        publishCancel(clientOidCounter, 2, 3L);
         writer.doWork();
 
         // Should succeed — pool slot was returned on cancel
@@ -358,7 +355,7 @@ class OutboundSocketWriterTest {
             drainQueue(contextQueue);
         }
 
-        // Enqueue a completion for orderId=1 (pool full, would throw without reclaim)
+        // Enqueue a completion for clientOidCounter=1 (pool full, would throw without reclaim)
         enqueueCompletion(completionQueue, 1L);
 
         // Publish a new order — this doWork() should drain completion first, then process the order
@@ -379,10 +376,10 @@ class OutboundSocketWriterTest {
         publishOrder(
                 Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
         writer.doWork();
-        final long orderId = drainQueue(contextQueue).get(0).orderId;
+        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
 
-        enqueueCompletion(completionQueue, orderId);
-        enqueueCompletion(completionQueue, orderId);
+        enqueueCompletion(completionQueue, clientOidCounter);
+        enqueueCompletion(completionQueue, clientOidCounter);
 
         assertDoesNotThrow(() -> writer.doWork());
         assertDoesNotThrow(() -> writer.doWork());
@@ -390,10 +387,10 @@ class OutboundSocketWriterTest {
 
     // ========== Helpers ==========
 
-    private static void enqueueCompletion(final ManyToOneRingBuffer<OrderContext> queue, final long orderId) {
+    private static void enqueueCompletion(final ManyToOneRingBuffer<OrderContext> queue, final long clientOidCounter) {
         final int idx = queue.tryClaim();
         assertTrue(idx >= 0);
-        queue.indexAt(idx).orderId = orderId;
+        queue.indexAt(idx).clientOidCounter = clientOidCounter;
         queue.commit(idx);
     }
 
@@ -419,24 +416,28 @@ class OutboundSocketWriterTest {
         orderBuffer.publish();
     }
 
-    private void publishCancel(final long orderId, final int exchangeId, final long securityId) {
+    private void publishCancel(final long clientOidCounter, final int exchangeId, final long securityId) {
         final CancelOrder cancel = new CancelOrder();
-        cancel.encoder.orderId(orderId);
         cancel.encoder.exchangeId(exchangeId);
         cancel.encoder.securityId(securityId);
-        cancel.encodeClientOid(1L, 1);
+        cancel.encodeClientOid(clientOidCounter, 1);
         orderBuffer.publishRaw(cancel.buffer, CancelOrderDecoder.TEMPLATE_ID, cancel.totalMessageSize());
     }
 
     private void publishModify(
-            final long orderId, final long price, final long size, final int exchangeId, final long securityId) {
+            final long clientOidCounter,
+            final long price,
+            final long size,
+            final int exchangeId,
+            final long securityId) {
         final ModifyOrder modify = new ModifyOrder();
-        modify.encoder.orderId(orderId);
         modify.encoder.price(price);
         modify.encoder.size(size);
         modify.encoder.exchangeId(exchangeId);
         modify.encoder.securityId(securityId);
-        modify.encodeClientOid(1L, 1);
+        modify.encoder.orderType(OrderType.LIMIT);
+        modify.encoder.timeInForce(TimeInForce.GOOD_TILL_CANCELED);
+        modify.encodeClientOid(clientOidCounter, 1);
         orderBuffer.publishRaw(modify.buffer, ModifyOrderDecoder.TEMPLATE_ID, modify.totalMessageSize());
     }
 

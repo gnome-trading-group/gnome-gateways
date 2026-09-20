@@ -314,7 +314,7 @@ class PolymarketOutboundWriterTest {
         when(httpResponse.getBody()).thenReturn(successResponse("0xhashforcancel"));
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
-        final long orderId = drainQueue(contextQueue).get(0).orderId;
+        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
 
         // Now cancel
         when(httpClient.delete(
@@ -333,7 +333,7 @@ class PolymarketOutboundWriterTest {
                         anyString()))
                 .thenReturn(httpResponse);
         when(httpResponse.isSuccess()).thenReturn(true);
-        publishCancel(orderId);
+        publishCancel(clientOidCounter);
         writer.doWork();
 
         verify(httpClient)
@@ -378,7 +378,7 @@ class PolymarketOutboundWriterTest {
         when(httpResponse.getBody()).thenReturn(successResponse("0xhashforcancelreject"));
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
-        final long orderId = drainQueue(contextQueue).get(0).orderId;
+        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
 
         // Cancel fails
         when(httpClient.delete(
@@ -397,7 +397,7 @@ class PolymarketOutboundWriterTest {
                         anyString()))
                 .thenReturn(httpResponse);
         when(httpResponse.isSuccess()).thenReturn(false);
-        publishCancel(orderId);
+        publishCancel(clientOidCounter);
         writer.doWork();
 
         final List<OrderContext> rejects = drainQueue(rejectQueue);
@@ -431,7 +431,7 @@ class PolymarketOutboundWriterTest {
         when(httpResponse.getBody()).thenReturn(successResponse("0xoriginal"));
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
-        final long orderId = drainQueue(contextQueue).get(0).orderId;
+        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
 
         // Modify: cancel succeeds, new submit succeeds
         when(httpClient.delete(
@@ -451,7 +451,7 @@ class PolymarketOutboundWriterTest {
                 .thenReturn(httpResponse);
         when(httpResponse.isSuccess()).thenReturn(true);
         when(httpResponse.getBody()).thenReturn(successResponse("0xmodified"));
-        publishModify(orderId, price("0.60"), qty("5.0"));
+        publishModify(clientOidCounter, price("0.60"), qty("5.0"));
         writer.doWork();
 
         verify(httpClient)
@@ -498,7 +498,7 @@ class PolymarketOutboundWriterTest {
         when(httpResponse.getBody()).thenReturn(successResponse("0xoriginal2"));
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
-        final long orderId = drainQueue(contextQueue).get(0).orderId;
+        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
 
         // Modify: cancel fails
         when(httpClient.delete(
@@ -517,7 +517,7 @@ class PolymarketOutboundWriterTest {
                         anyString()))
                 .thenReturn(httpResponse);
         when(httpResponse.isSuccess()).thenReturn(false);
-        publishModify(orderId, price("0.60"), qty("5.0"));
+        publishModify(clientOidCounter, price("0.60"), qty("5.0"));
         writer.doWork();
 
         final List<OrderContext> rejects = drainQueue(rejectQueue);
@@ -549,7 +549,7 @@ class PolymarketOutboundWriterTest {
         when(httpResponse.getBody()).thenReturn(successResponse("0xoriginal3"));
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
-        final long orderId = drainQueue(contextQueue).get(0).orderId;
+        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
 
         // Modify: cancel DELETE succeeds, replacement POST fails
         final HTTPResponse deleteSuccess = mock(HTTPResponse.class);
@@ -590,7 +590,7 @@ class PolymarketOutboundWriterTest {
                         anyString()))
                 .thenReturn(postFailure);
 
-        publishModify(orderId, price("0.60"), qty("5.0"));
+        publishModify(clientOidCounter, price("0.60"), qty("5.0"));
         writer.doWork();
 
         final List<OrderContext> rejects = drainQueue(rejectQueue);
@@ -631,7 +631,7 @@ class PolymarketOutboundWriterTest {
         when(httpResponse.getBody()).thenReturn(successResponse("0xsell-original"));
         publishOrder(Side.Ask, priceVal, sizeVal, OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
-        final long orderId = drainQueue(contextQueue).get(0).orderId;
+        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
 
         // Modify: cancel succeeds, replacement submitted
         final HTTPResponse deleteSuccess = mock(HTTPResponse.class);
@@ -652,7 +652,7 @@ class PolymarketOutboundWriterTest {
                         anyString()))
                 .thenReturn(deleteSuccess);
         when(httpResponse.getBody()).thenReturn(successResponse("0xsell-modified"));
-        publishModify(orderId, priceVal, sizeVal);
+        publishModify(clientOidCounter, priceVal, sizeVal);
         writer.doWork();
 
         // Verify signOrder called with SELL_SIDE=1 and swapped maker/taker amounts —
@@ -773,23 +773,23 @@ class PolymarketOutboundWriterTest {
         orderBuffer.publish();
     }
 
-    private void publishCancel(final long orderId) {
+    private void publishCancel(final long clientOidCounter) {
         final CancelOrder cancel = new CancelOrder();
-        cancel.encoder.orderId(orderId);
         cancel.encoder.exchangeId(2);
         cancel.encoder.securityId(3L);
-        cancel.encodeClientOid(1L, 1);
+        cancel.encodeClientOid(clientOidCounter, 1);
         orderBuffer.publishRaw(cancel.buffer, CancelOrderDecoder.TEMPLATE_ID, cancel.totalMessageSize());
     }
 
-    private void publishModify(final long orderId, final long price, final long size) {
+    private void publishModify(final long clientOidCounter, final long price, final long size) {
         final ModifyOrder modify = new ModifyOrder();
-        modify.encoder.orderId(orderId);
         modify.encoder.price(price);
         modify.encoder.size(size);
         modify.encoder.exchangeId(2);
         modify.encoder.securityId(3L);
-        modify.encodeClientOid(2L, 1);
+        modify.encoder.orderType(group.gnometrading.schemas.OrderType.LIMIT);
+        modify.encoder.timeInForce(group.gnometrading.schemas.TimeInForce.GOOD_TILL_CANCELED);
+        modify.encodeClientOid(clientOidCounter, 1);
         orderBuffer.publishRaw(modify.buffer, ModifyOrderDecoder.TEMPLATE_ID, modify.totalMessageSize());
     }
 

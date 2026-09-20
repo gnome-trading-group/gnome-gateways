@@ -139,8 +139,8 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
 
     @Override
     protected void handleModifyOrder() throws Exception {
-        final long orderId = this.modifyOrder.decoder.orderId();
-        final OrderContext ctx = getActiveOrder(orderId);
+        final long clientOidCounter = this.modifyOrder.getClientOidCounter();
+        final OrderContext ctx = getActiveOrder(clientOidCounter);
         if (ctx == null) {
             return;
         }

@@ -363,13 +363,13 @@ class OutboundSocketReaderTest {
 
     private List<Long> drainCompletionQueue() {
         final List<Long> result = new ArrayList<>();
-        completionQueue.read(ctx -> result.add(ctx.orderId), Integer.MAX_VALUE);
+        completionQueue.read(ctx -> result.add(ctx.clientOidCounter), Integer.MAX_VALUE);
         return result;
     }
 
     private void enqueueContext(
             final String hash,
-            final long orderId,
+            final long clientOidCounter,
             final int exchangeId,
             final long securityId,
             final long originalQty) {
@@ -377,7 +377,8 @@ class OutboundSocketReaderTest {
         assertTrue(idx >= 0, "Context queue full");
         final OrderContext ctx = contextQueue.indexAt(idx);
         ctx.reset();
-        ctx.orderId = orderId;
+        ctx.orderId = clientOidCounter;
+        ctx.clientOidCounter = clientOidCounter;
         ctx.exchangeId = exchangeId;
         ctx.securityId = securityId;
         ctx.originalQty = originalQty;

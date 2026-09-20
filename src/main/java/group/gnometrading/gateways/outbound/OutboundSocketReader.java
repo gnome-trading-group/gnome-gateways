@@ -163,7 +163,7 @@ public abstract class OutboundSocketReader implements GnomeAgent {
         if (ctx != null) {
             final int idx = this.completionQueue.tryClaim();
             if (idx >= 0) {
-                this.completionQueue.indexAt(idx).orderId = ctx.orderId;
+                this.completionQueue.indexAt(idx).clientOidCounter = ctx.clientOidCounter;
                 this.completionQueue.commit(idx);
             }
             ctx.reset();

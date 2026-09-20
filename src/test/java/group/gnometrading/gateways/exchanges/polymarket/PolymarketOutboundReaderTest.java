@@ -308,7 +308,7 @@ class PolymarketOutboundReaderTest {
 
     private List<Long> drainCompletionQueue() {
         final List<Long> result = new java.util.ArrayList<>();
-        completionQueue.read(ctx -> result.add(ctx.orderId), Integer.MAX_VALUE);
+        completionQueue.read(ctx -> result.add(ctx.clientOidCounter), Integer.MAX_VALUE);
         return result;
     }
 
@@ -346,6 +346,7 @@ class PolymarketOutboundReaderTest {
         final OrderContext ctx = contextQueue.indexAt(idx);
         ctx.reset();
         ctx.orderId = orderId;
+        ctx.clientOidCounter = orderId;
         ctx.exchangeId = exchangeId;
         ctx.securityId = securityId;
         ctx.originalQty = originalQty;

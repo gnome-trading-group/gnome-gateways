@@ -247,10 +247,10 @@ class KalshiOutboundWriterTest {
         mockPostSuccess(orderResponse("exchange-order-abc"));
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
-        final long orderId = drainQueue(contextQueue).get(0).orderId;
+        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
 
         mockDeleteSuccess();
-        publishCancel(orderId);
+        publishCancel(clientOidCounter);
         writer.doWork();
 
         final ArgumentCaptor<GnomeString> pathCaptor = ArgumentCaptor.forClass(GnomeString.class);
@@ -274,10 +274,10 @@ class KalshiOutboundWriterTest {
         mockPostSuccess(orderResponse("exchange-order-xyz"));
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
-        final long orderId = drainQueue(contextQueue).get(0).orderId;
+        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
 
         mockDeleteFailure();
-        publishCancel(orderId);
+        publishCancel(clientOidCounter);
         writer.doWork();
 
         final List<OrderContext> rejects = drainQueue(rejectQueue);
@@ -301,10 +301,10 @@ class KalshiOutboundWriterTest {
         mockPostSuccess(orderResponse("exchange-order-for-amend"));
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
-        final long orderId = drainQueue(contextQueue).get(0).orderId;
+        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
 
         mockPostSuccess(orderResponse("not-used"));
-        publishModify(orderId, price("0.60"), qty("5.0"));
+        publishModify(clientOidCounter, price("0.60"), qty("5.0"));
         writer.doWork();
 
         assertEquals(0, drainQueue(contextQueue).size());
@@ -312,7 +312,7 @@ class KalshiOutboundWriterTest {
 
         // Order still active — cancel routes to exchange
         mockDeleteSuccess();
-        publishCancel(orderId);
+        publishCancel(clientOidCounter);
         writer.doWork();
         assertEquals(0, drainQueue(rejectQueue).size());
     }
@@ -322,10 +322,10 @@ class KalshiOutboundWriterTest {
         mockPostSuccess(orderResponse("amend-path-order"));
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
-        final long orderId = drainQueue(contextQueue).get(0).orderId;
+        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
 
         mockPostSuccess(orderResponse("not-used"));
-        publishModify(orderId, price("0.60"), qty("5.0"));
+        publishModify(clientOidCounter, price("0.60"), qty("5.0"));
         writer.doWork();
 
         final ArgumentCaptor<GnomeString> pathCaptor = ArgumentCaptor.forClass(GnomeString.class);
@@ -352,7 +352,7 @@ class KalshiOutboundWriterTest {
         mockPostSuccess(orderResponse("exchange-order-amend-fail"));
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
-        final long orderId = drainQueue(contextQueue).get(0).orderId;
+        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
 
         final HTTPResponse amendFailure = mock(HTTPResponse.class);
         when(amendFailure.isSuccess()).thenReturn(false);
@@ -370,7 +370,7 @@ class KalshiOutboundWriterTest {
                         anyString()))
                 .thenReturn(amendFailure);
 
-        publishModify(orderId, price("0.60"), qty("5.0"));
+        publishModify(clientOidCounter, price("0.60"), qty("5.0"));
         writer.doWork();
 
         final List<OrderContext> rejects = drainQueue(rejectQueue);
@@ -527,23 +527,23 @@ class KalshiOutboundWriterTest {
         buf.publish();
     }
 
-    private void publishCancel(final long orderId) {
+    private void publishCancel(final long clientOidCounter) {
         final CancelOrder cancel = new CancelOrder();
-        cancel.encoder.orderId(orderId);
         cancel.encoder.exchangeId(2);
         cancel.encoder.securityId(3L);
-        cancel.encodeClientOid(1L, 1);
+        cancel.encodeClientOid(clientOidCounter, 1);
         orderBuffer.publishRaw(cancel.buffer, CancelOrderDecoder.TEMPLATE_ID, cancel.totalMessageSize());
     }
 
-    private void publishModify(final long orderId, final long priceVal, final long sizeVal) {
+    private void publishModify(final long clientOidCounter, final long priceVal, final long sizeVal) {
         final ModifyOrder modify = new ModifyOrder();
-        modify.encoder.orderId(orderId);
         modify.encoder.price(priceVal);
         modify.encoder.size(sizeVal);
         modify.encoder.exchangeId(2);
         modify.encoder.securityId(3L);
-        modify.encodeClientOid(2L, 1);
+        modify.encoder.orderType(group.gnometrading.schemas.OrderType.LIMIT);
+        modify.encoder.timeInForce(group.gnometrading.schemas.TimeInForce.GOOD_TILL_CANCELED);
+        modify.encodeClientOid(clientOidCounter, 1);
         orderBuffer.publishRaw(modify.buffer, ModifyOrderDecoder.TEMPLATE_ID, modify.totalMessageSize());
     }
 

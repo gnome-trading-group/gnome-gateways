@@ -148,7 +148,6 @@ class OutboundPipelineIntegrationTest {
         // Cancel the order on writer side
         final String hash = "hash-1";
         final CancelOrder cancel = new CancelOrder();
-        cancel.encoder.orderId(1L);
         cancel.encoder.exchangeId(2);
         cancel.encoder.securityId(3L);
         cancel.encodeClientOid(1L, 1);

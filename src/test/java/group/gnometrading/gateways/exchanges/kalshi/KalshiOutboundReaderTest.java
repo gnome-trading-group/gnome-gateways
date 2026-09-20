@@ -357,6 +357,7 @@ class KalshiOutboundReaderTest {
         final OrderContext ctx = contextQueue.indexAt(idx);
         ctx.reset();
         ctx.orderId = internalOrderId;
+        ctx.clientOidCounter = internalOrderId;
         ctx.exchangeId = 2;
         ctx.securityId = 3L;
         ctx.originalQty = originalQty;
@@ -383,7 +384,7 @@ class KalshiOutboundReaderTest {
 
     private List<Long> drainCompletionQueue() {
         final List<Long> result = new ArrayList<>();
-        completionQueue.read(ctx -> result.add(ctx.orderId), Integer.MAX_VALUE);
+        completionQueue.read(ctx -> result.add(ctx.clientOidCounter), Integer.MAX_VALUE);
         return result;
     }
 

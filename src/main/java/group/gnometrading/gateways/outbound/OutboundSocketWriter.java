@@ -58,13 +58,21 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
     public void onStart() {}
 
     @Override
+    public final void onClose() {
+        try {
+            this.orderPoller.poll();
+        } catch (Exception e) { // best-effort drain on shutdown
+        }
+    }
+
+    @Override
     public final int doWork() throws Exception {
         this.completionQueue.read(this::consumeCompletion, 16);
         return this.orderPoller.poll();
     }
 
     private void consumeCompletion(final OrderContext src) {
-        final OrderContext ctx = this.activeOrders.remove(src.orderId);
+        final OrderContext ctx = this.activeOrders.remove(src.clientOidCounter);
         if (ctx != null) {
             returnToPool(ctx);
         }
@@ -100,7 +108,7 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         ctx.side = this.order.decoder.side();
 
         if (submitOrder(ctx)) {
-            this.activeOrders.put(ctx.orderId, ctx);
+            this.activeOrders.put(ctx.clientOidCounter, ctx);
             enqueueContext(ctx);
         } else {
             ctx.execType = ExecType.REJECT;
@@ -112,8 +120,8 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
     }
 
     private void handleCancelOrder() throws Exception {
-        final long orderId = this.cancelOrder.decoder.orderId();
-        final OrderContext ctx = this.activeOrders.get(orderId);
+        final long clientOidCounter = this.cancelOrder.getClientOidCounter();
+        final OrderContext ctx = this.activeOrders.get(clientOidCounter);
         if (ctx == null) {
             return;
         }
@@ -122,7 +130,7 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
             enqueueReject(reject);
             returnToPool(reject);
         } else {
-            this.activeOrders.remove(orderId);
+            this.activeOrders.remove(clientOidCounter);
             returnToPool(ctx);
         }
     }
@@ -132,8 +140,8 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
      * The default implementation cancels the existing order and re-submits via {@link #submitForModify}.
      */
     protected void handleModifyOrder() throws Exception {
-        final long orderId = this.modifyOrder.decoder.orderId();
-        final OrderContext oldCtx = this.activeOrders.get(orderId);
+        final long clientOidCounter = this.modifyOrder.getClientOidCounter();
+        final OrderContext oldCtx = this.activeOrders.get(clientOidCounter);
         if (oldCtx == null) {
             return;
         }
@@ -145,7 +153,7 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
             return;
         }
 
-        this.activeOrders.remove(orderId);
+        this.activeOrders.remove(clientOidCounter);
 
         // Save fields needed for the new order before returning the old slot
         final int oldExchangeId = oldCtx.exchangeId;
@@ -168,7 +176,7 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         newCtx.leavesQty = newCtx.originalQty;
 
         if (submitForModify(newCtx)) {
-            this.activeOrders.put(newCtx.orderId, newCtx);
+            this.activeOrders.put(newCtx.clientOidCounter, newCtx);
             enqueueContext(newCtx);
         } else {
             newCtx.execType = ExecType.REJECT;
@@ -244,12 +252,12 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         this.writerPool[this.writerPoolHead++] = ctx;
     }
 
-    protected final OrderContext getActiveOrder(final long orderId) {
-        return this.activeOrders.get(orderId);
+    protected final OrderContext getActiveOrder(final long clientOidCounter) {
+        return this.activeOrders.get(clientOidCounter);
     }
 
-    protected final void removeActiveOrder(final long orderId) {
-        this.activeOrders.remove(orderId);
+    protected final void removeActiveOrder(final long clientOidCounter) {
+        this.activeOrders.remove(clientOidCounter);
     }
 
     @VisibleForTesting
