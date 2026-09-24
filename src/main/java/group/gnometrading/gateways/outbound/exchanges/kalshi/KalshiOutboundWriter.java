@@ -96,7 +96,8 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
             price = Statics.PRICE_SCALING_FACTOR - price;
         }
 
-        buildOrderJson(price, size, side, orderType, tif);
+        buildOrderJson(
+                price, size, side, orderType, tif, this.order.decoder.flags().postOnly());
         this.authSigner.sign(epochMillis(), "POST", ORDER_PATH);
 
         final HTTPResponse response = this.httpClient.post(
@@ -194,7 +195,13 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
             price = Statics.PRICE_SCALING_FACTOR - price;
         }
 
-        buildOrderJson(price, size, side, orderType, tif);
+        buildOrderJson(
+                price,
+                size,
+                side,
+                orderType,
+                tif,
+                this.modifyOrder.decoder.flags().postOnly());
         this.authSigner.sign(epochMillis(), "POST", ORDER_PATH);
 
         final HTTPResponse response = this.httpClient.post(
@@ -217,7 +224,12 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
     }
 
     private void buildOrderJson(
-            final long price, final long size, final Side side, final OrderType orderType, final TimeInForce tif) {
+            final long price,
+            final long size,
+            final Side side,
+            final OrderType orderType,
+            final TimeInForce tif,
+            final boolean postOnly) {
         this.jsonBodyBuffer.clear();
         this.jsonEncoder.writeObjectStart();
         this.jsonEncoder.writeObjectEntry("ticker", this.marketTicker);
@@ -231,6 +243,10 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
         this.jsonEncoder.writeObjectEntry("time_in_force", resolveTimeInForce(orderType, tif));
         this.jsonEncoder.writeComma();
         this.jsonEncoder.writeObjectEntry("self_trade_prevention_type", "maker");
+        if (postOnly) {
+            this.jsonEncoder.writeComma();
+            this.jsonEncoder.writeObjectEntry("post_only", true);
+        }
         this.jsonEncoder.writeObjectEnd();
         this.jsonBodyLength = this.jsonBodyBuffer.position();
     }

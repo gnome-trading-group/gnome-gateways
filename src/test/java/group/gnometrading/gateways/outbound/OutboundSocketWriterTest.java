@@ -343,6 +343,44 @@ class OutboundSocketWriterTest {
         assertThrows(RuntimeException.class, () -> failWriter.doWork());
     }
 
+    // ========== Flags propagation ==========
+
+    @Test
+    void submitOrder_FlagsCopiedToContext() throws Exception {
+        publishOrderWithFlags(
+                Side.Bid,
+                price("0.50"),
+                qty("10.0"),
+                OrderType.LIMIT,
+                TimeInForce.GOOD_TILL_CANCELED,
+                2,
+                3L,
+                1L,
+                1,
+                (short) 1);
+
+        writer.doWork();
+
+        final List<OrderContext> contexts = drainQueue(contextQueue);
+        assertEquals(1, contexts.size());
+        assertEquals((short) 1, contexts.get(0).flags);
+    }
+
+    @Test
+    void modifyOrder_FlagsCopiedToNewContext() throws Exception {
+        publishOrder(
+                Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
+        writer.doWork();
+        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
+
+        publishModifyWithFlags(clientOidCounter, price("0.60"), qty("5.0"), 2, 3L, (short) 1);
+        writer.doWork();
+
+        final List<OrderContext> contexts = drainQueue(contextQueue);
+        assertEquals(1, contexts.size());
+        assertEquals((short) 1, contexts.get(0).flags);
+    }
+
     // ========== Completion queue ==========
 
     @Test
@@ -404,6 +442,30 @@ class OutboundSocketWriterTest {
             final long securityId,
             final long clientOidCounter,
             final int clientOidStrategyId) {
+        publishOrderWithFlags(
+                side,
+                price,
+                size,
+                orderType,
+                tif,
+                exchangeId,
+                securityId,
+                clientOidCounter,
+                clientOidStrategyId,
+                (short) 0);
+    }
+
+    private void publishOrderWithFlags(
+            final Side side,
+            final long price,
+            final long size,
+            final OrderType orderType,
+            final TimeInForce tif,
+            final int exchangeId,
+            final long securityId,
+            final long clientOidCounter,
+            final int clientOidStrategyId,
+            final short flags) {
         final Order order = orderBuffer.claim();
         order.encoder.exchangeId(exchangeId);
         order.encoder.securityId(securityId);
@@ -412,6 +474,10 @@ class OutboundSocketWriterTest {
         order.encoder.side(side);
         order.encoder.orderType(orderType);
         order.encoder.timeInForce(tif);
+        order.encoder.flags().clear();
+        if ((flags & 1) != 0) {
+            order.encoder.flags().postOnly(true);
+        }
         order.encodeClientOid(clientOidCounter, clientOidStrategyId);
         orderBuffer.publish();
     }
@@ -430,6 +496,16 @@ class OutboundSocketWriterTest {
             final long size,
             final int exchangeId,
             final long securityId) {
+        publishModifyWithFlags(clientOidCounter, price, size, exchangeId, securityId, (short) 0);
+    }
+
+    private void publishModifyWithFlags(
+            final long clientOidCounter,
+            final long price,
+            final long size,
+            final int exchangeId,
+            final long securityId,
+            final short flags) {
         final ModifyOrder modify = new ModifyOrder();
         modify.encoder.price(price);
         modify.encoder.size(size);
@@ -437,6 +513,10 @@ class OutboundSocketWriterTest {
         modify.encoder.securityId(securityId);
         modify.encoder.orderType(OrderType.LIMIT);
         modify.encoder.timeInForce(TimeInForce.GOOD_TILL_CANCELED);
+        modify.encoder.flags().clear();
+        if ((flags & 1) != 0) {
+            modify.encoder.flags().postOnly(true);
+        }
         modify.encodeClientOid(clientOidCounter, 1);
         orderBuffer.publishRaw(modify.buffer, ModifyOrderDecoder.TEMPLATE_ID, modify.totalMessageSize());
     }

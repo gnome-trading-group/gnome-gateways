@@ -100,7 +100,10 @@ public final class PolymarketOutboundWriter extends OutboundSocketWriter {
         final PolymarketOrderSigner.SignedOrder signed =
                 this.orderSigner.signOrder(this.tokenIdBigInt, makerAmount, takerAmount, pmSide, 0L);
 
-        buildOrderJson(signed, resolveOrderType(orderType, tif));
+        buildOrderJson(
+                signed,
+                resolveOrderType(orderType, tif),
+                this.order.decoder.flags().postOnly());
         this.authHeaders.sign("POST", ORDER_PATH, this.jsonBodyBuf, 0, this.jsonBodyLength);
 
         final HTTPResponse response = this.httpClient.post(
@@ -175,7 +178,9 @@ public final class PolymarketOutboundWriter extends OutboundSocketWriter {
                 this.orderSigner.signOrder(this.tokenIdBigInt, makerAmount, takerAmount, pmSide, 0L);
 
         buildOrderJson(
-                signed, resolveOrderType(this.modifyOrder.decoder.orderType(), this.modifyOrder.decoder.timeInForce()));
+                signed,
+                resolveOrderType(this.modifyOrder.decoder.orderType(), this.modifyOrder.decoder.timeInForce()),
+                this.modifyOrder.decoder.flags().postOnly());
         this.authHeaders.sign("POST", ORDER_PATH, this.jsonBodyBuf, 0, this.jsonBodyLength);
 
         final HTTPResponse response = this.httpClient.post(
@@ -202,7 +207,8 @@ public final class PolymarketOutboundWriter extends OutboundSocketWriter {
         return parseOrderHash(response, ctx);
     }
 
-    private void buildOrderJson(final PolymarketOrderSigner.SignedOrder signed, final String orderType) {
+    private void buildOrderJson(
+            final PolymarketOrderSigner.SignedOrder signed, final String orderType, final boolean postOnly) {
         this.jsonBodyBuffer.clear();
 
         this.jsonEncoder.writeObjectStart();
@@ -223,6 +229,10 @@ public final class PolymarketOutboundWriter extends OutboundSocketWriter {
         this.jsonEncoder.writeObjectEnd().writeComma();
         this.jsonEncoder.writeObjectEntry("owner", signed.maker()).writeComma();
         this.jsonEncoder.writeObjectEntry("orderType", orderType);
+        if (postOnly) {
+            this.jsonEncoder.writeComma();
+            this.jsonEncoder.writeObjectEntry("postOnly", true);
+        }
         this.jsonEncoder.writeObjectEnd();
 
         this.jsonBodyLength = this.jsonBodyBuffer.position();

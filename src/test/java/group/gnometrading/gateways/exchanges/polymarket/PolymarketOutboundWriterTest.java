@@ -1,6 +1,7 @@
 package group.gnometrading.gateways.exchanges.polymarket;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -753,6 +754,70 @@ class PolymarketOutboundWriterTest {
         verify(orderSigner).signOrder(eq(TOKEN_ID), eq(expectedMakerAmount), eq(expectedTakerAmount), eq(1), eq(0L));
     }
 
+    @Test
+    void submitOrder_PostOnlyFlagAppearsInJson() throws Exception {
+        when(httpClient.post(
+                        any(),
+                        anyString(),
+                        any(GnomeString.class),
+                        any(),
+                        anyInt(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString()))
+                .thenReturn(httpResponse);
+        when(httpResponse.isSuccess()).thenReturn(true);
+        when(httpResponse.getBody()).thenReturn(successResponse("0xpostonly"));
+
+        publishOrderWithPostOnly(Side.Bid, price("0.50"), qty("5.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
+        writer.doWork();
+
+        final ArgumentCaptor<byte[]> bodyCaptor = ArgumentCaptor.forClass(byte[].class);
+        final ArgumentCaptor<Integer> lenCaptor = ArgumentCaptor.forClass(Integer.class);
+        verify(authHeaders).sign(eq("POST"), eq("/order"), bodyCaptor.capture(), eq(0), lenCaptor.capture());
+        final String signedBody = new String(bodyCaptor.getValue(), 0, lenCaptor.getValue(), StandardCharsets.UTF_8);
+        assertTrue(signedBody.contains("\"postOnly\":true"), "Expected postOnly:true in: " + signedBody);
+    }
+
+    @Test
+    void submitOrder_NoPostOnlyFlag_NotInJson() throws Exception {
+        when(httpClient.post(
+                        any(),
+                        anyString(),
+                        any(GnomeString.class),
+                        any(),
+                        anyInt(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString()))
+                .thenReturn(httpResponse);
+        when(httpResponse.isSuccess()).thenReturn(true);
+        when(httpResponse.getBody()).thenReturn(successResponse("0xnormal"));
+
+        publishOrder(Side.Bid, price("0.50"), qty("5.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
+        writer.doWork();
+
+        final ArgumentCaptor<byte[]> bodyCaptor = ArgumentCaptor.forClass(byte[].class);
+        final ArgumentCaptor<Integer> lenCaptor = ArgumentCaptor.forClass(Integer.class);
+        verify(authHeaders).sign(eq("POST"), eq("/order"), bodyCaptor.capture(), eq(0), lenCaptor.capture());
+        final String signedBody = new String(bodyCaptor.getValue(), 0, lenCaptor.getValue(), StandardCharsets.UTF_8);
+        assertFalse(signedBody.contains("postOnly"), "Expected no postOnly in: " + signedBody);
+    }
+
     // --- helpers ---
 
     private void publishOrder(
@@ -769,6 +834,27 @@ class PolymarketOutboundWriterTest {
         order.encoder.side(side);
         order.encoder.orderType(orderType);
         order.encoder.timeInForce(tif);
+        order.encoder.flags().clear();
+        order.encodeClientOid(1L, 1);
+        orderBuffer.publish();
+    }
+
+    private void publishOrderWithPostOnly(
+            final Side side,
+            final long priceVal,
+            final long sizeVal,
+            final OrderType orderType,
+            final TimeInForce tif) {
+        final Order order = orderBuffer.claim();
+        order.encoder.exchangeId(2);
+        order.encoder.securityId(3L);
+        order.encoder.price(priceVal);
+        order.encoder.size(sizeVal);
+        order.encoder.side(side);
+        order.encoder.orderType(orderType);
+        order.encoder.timeInForce(tif);
+        order.encoder.flags().clear();
+        order.encoder.flags().postOnly(true);
         order.encodeClientOid(1L, 1);
         orderBuffer.publish();
     }

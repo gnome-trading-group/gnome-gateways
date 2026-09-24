@@ -106,6 +106,7 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         ctx.originalQty = this.order.decoder.size();
         ctx.leavesQty = ctx.originalQty;
         ctx.side = this.order.decoder.side();
+        ctx.flags = (short) this.order.decoder.flags().getRaw();
 
         if (submitOrder(ctx)) {
             this.activeOrders.put(ctx.clientOidCounter, ctx);
@@ -159,6 +160,7 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         final int oldExchangeId = oldCtx.exchangeId;
         final long oldSecurityId = oldCtx.securityId;
         final Side oldSide = oldCtx.side;
+        final short oldFlags = oldCtx.flags;
         returnToPool(oldCtx);
 
         if (this.writerPoolHead <= 0) {
@@ -174,6 +176,8 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         newCtx.side = oldSide;
         newCtx.originalQty = this.modifyOrder.decoder.size();
         newCtx.leavesQty = newCtx.originalQty;
+        final short modifyFlags = (short) this.modifyOrder.decoder.flags().getRaw();
+        newCtx.flags = modifyFlags != 0 ? modifyFlags : oldFlags;
 
         if (submitForModify(newCtx)) {
             this.activeOrders.put(newCtx.clientOidCounter, newCtx);

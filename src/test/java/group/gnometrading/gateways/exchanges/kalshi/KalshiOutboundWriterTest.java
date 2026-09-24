@@ -386,6 +386,30 @@ class KalshiOutboundWriterTest {
         verifyNoInteractions(httpClient);
     }
 
+    // ========== POST_ONLY flag ==========
+
+    @Test
+    void submitOrder_PostOnlyFlagAppearsInJson() throws Exception {
+        mockPostSuccess(orderResponse("post-only-order-id"));
+
+        publishOrderWithPostOnly(Side.Bid, price("0.50"), qty("5.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
+        writer.doWork();
+
+        final String body = captureLastPostBody();
+        assertTrue(body.contains("\"post_only\":true"), "Expected post_only:true in: " + body);
+    }
+
+    @Test
+    void submitOrder_NoPostOnlyFlag_NotInJson() throws Exception {
+        mockPostSuccess(orderResponse("normal-order-id"));
+
+        publishOrder(Side.Bid, price("0.50"), qty("5.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
+        writer.doWork();
+
+        final String body = captureLastPostBody();
+        assertFalse(body.contains("post_only"), "Expected no post_only in: " + body);
+    }
+
     // ========== Helpers ==========
 
     private KalshiOutboundWriter makeWriter(
@@ -523,8 +547,29 @@ class KalshiOutboundWriterTest {
         order.encoder.side(side);
         order.encoder.orderType(orderType);
         order.encoder.timeInForce(tif);
+        order.encoder.flags().clear();
         order.encodeClientOid(1L, 1);
         buf.publish();
+    }
+
+    private void publishOrderWithPostOnly(
+            final Side side,
+            final long priceVal,
+            final long sizeVal,
+            final OrderType orderType,
+            final TimeInForce tif) {
+        final Order order = orderBuffer.claim();
+        order.encoder.exchangeId(2);
+        order.encoder.securityId(3L);
+        order.encoder.price(priceVal);
+        order.encoder.size(sizeVal);
+        order.encoder.side(side);
+        order.encoder.orderType(orderType);
+        order.encoder.timeInForce(tif);
+        order.encoder.flags().clear();
+        order.encoder.flags().postOnly(true);
+        order.encodeClientOid(1L, 1);
+        orderBuffer.publish();
     }
 
     private void publishCancel(final long clientOidCounter) {

@@ -19,6 +19,7 @@ public final class OrderContext {
     public long leavesQty;
     public long cumulativeCost;
     public Side side;
+    public short flags;
     public ExecType execType;
     public OrderStatus orderStatus;
     public RejectReason rejectReason;
@@ -36,6 +37,7 @@ public final class OrderContext {
         this.leavesQty = 0;
         this.cumulativeCost = 0;
         this.side = null;
+        this.flags = 0;
         this.execType = null;
         this.orderStatus = null;
         this.rejectReason = null;
@@ -53,6 +55,7 @@ public final class OrderContext {
         this.leavesQty = src.leavesQty;
         this.cumulativeCost = src.cumulativeCost;
         this.side = src.side;
+        this.flags = src.flags;
         this.execType = src.execType;
         this.orderStatus = src.orderStatus;
         this.rejectReason = src.rejectReason;
