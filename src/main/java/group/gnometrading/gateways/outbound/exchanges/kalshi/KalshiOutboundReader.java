@@ -4,6 +4,7 @@ import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
 import group.gnometrading.gateways.outbound.OrderContext;
 import group.gnometrading.gateways.outbound.OutboundJsonWebSocketReader;
+import group.gnometrading.gateways.outbound.fee.PredictionMarketFees;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.schemas.ExecType;
@@ -31,6 +32,8 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
     private static final int STATUS_CANCELED = 3;
 
     private final KalshiAuthSigner authSigner;
+    private final double takerFeeRate;
+    private final double makerFeeRate;
     private final ParsedEvent parsedEvent = new ParsedEvent();
 
     public KalshiOutboundReader(
@@ -43,7 +46,9 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
             final Listing listing,
             final WebSocketClient socketClient,
             final JsonDecoder jsonDecoder,
-            final KalshiAuthSigner authSigner) {
+            final KalshiAuthSigner authSigner,
+            final double takerFeeRate,
+            final double makerFeeRate) {
         super(
                 logger,
                 execReportBuffer,
@@ -55,6 +60,8 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
                 socketClient,
                 jsonDecoder);
         this.authSigner = authSigner;
+        this.takerFeeRate = takerFeeRate;
+        this.makerFeeRate = makerFeeRate;
     }
 
     @Override
@@ -206,7 +213,7 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
         this.execReport.encoder.cumulativeQty(ctx.cumulativeFilledQty);
         this.execReport.encoder.leavesQty(ctx.leavesQty);
         setTimestamp(event.timestampMs);
-        this.execReport.encoder.fee(OrderExecutionReportEncoder.feeNullValue());
+        this.execReport.encoder.fee(PredictionMarketFees.calculateScaledFee(fillPrice, fillDelta, takerFeeRate));
         publishExecReport();
 
         if (fullyFilled) {

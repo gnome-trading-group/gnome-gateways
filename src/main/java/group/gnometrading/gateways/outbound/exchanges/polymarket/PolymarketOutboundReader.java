@@ -4,6 +4,7 @@ import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
 import group.gnometrading.gateways.outbound.OrderContext;
 import group.gnometrading.gateways.outbound.OutboundJsonWebSocketReader;
+import group.gnometrading.gateways.outbound.fee.PredictionMarketFees;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.networking.websockets.enums.Opcode;
@@ -41,6 +42,8 @@ public final class PolymarketOutboundReader extends OutboundJsonWebSocketReader 
     private final String apiKey;
     private final String secret;
     private final String passphrase;
+    private final double takerFeeRate;
+    private final double makerFeeRate;
     private final ByteBuffer pingBuffer;
 
     // Scratch space for parsing — reused each message
@@ -58,7 +61,9 @@ public final class PolymarketOutboundReader extends OutboundJsonWebSocketReader 
             JsonDecoder jsonDecoder,
             String apiKey,
             String secret,
-            String passphrase) {
+            String passphrase,
+            double takerFeeRate,
+            double makerFeeRate) {
         super(
                 logger,
                 execReportBuffer,
@@ -72,6 +77,8 @@ public final class PolymarketOutboundReader extends OutboundJsonWebSocketReader 
         this.apiKey = apiKey;
         this.secret = secret;
         this.passphrase = passphrase;
+        this.takerFeeRate = takerFeeRate;
+        this.makerFeeRate = makerFeeRate;
         this.pingBuffer = ByteBuffer.wrap(PING);
     }
 
@@ -251,7 +258,8 @@ public final class PolymarketOutboundReader extends OutboundJsonWebSocketReader 
         this.execReport.encoder.cumulativeQty(ctx.cumulativeFilledQty);
         this.execReport.encoder.leavesQty(Math.max(0, ctx.leavesQty));
         setTimestamps(event.timestampEvent);
-        this.execReport.encoder.fee(event.feeRateBps);
+        double feeRate = event.feeRateBps > 0 ? event.feeRateBps / 10000.0 : takerFeeRate;
+        this.execReport.encoder.fee(PredictionMarketFees.calculateScaledFee(event.price, fillSize, feeRate));
         publishExecReport();
 
         if (fullyFilled) {

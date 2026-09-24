@@ -100,7 +100,9 @@ class KalshiOutboundReaderTest {
                 listing,
                 client,
                 new JsonDecoder(),
-                new KalshiAuthSigner("test-api-key", TEST_PRIVATE_KEY));
+                new KalshiAuthSigner("test-api-key", TEST_PRIVATE_KEY),
+                0.07,
+                0.0175);
         reader.pause = false;
     }
 
@@ -278,6 +280,20 @@ class KalshiOutboundReaderTest {
         final List<Long> completions = drainCompletionQueue();
         assertEquals(1, completions.size());
         assertEquals(55L, completions.get(0));
+    }
+
+    // ========== Fee computation ==========
+
+    @Test
+    void partialFill_FeeComputedFromTakerRate() throws Exception {
+        // 5 contracts @ fill price $0.56 (cost $2.80), takerFeeRate=0.07
+        // fee = 5 * 0.07 * 0.56 * 0.44 * PRICE_SCALE = 86_240_000
+        enqueueContext(ORDER_ID, ORIG_QTY, 0);
+        process(userOrderEvent(ORDER_ID, "resting", "5.00", "5.00", "2.8000", "0.0000", EVENT_MS));
+        waitForReports(1);
+
+        final long expectedFee = (long) (5.0 * 0.07 * 0.56 * 0.44 * Statics.PRICE_SCALING_FACTOR);
+        assertEquals(expectedFee, captured.get(0).decoder.fee());
     }
 
     // ========== Edge cases ==========

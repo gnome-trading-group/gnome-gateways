@@ -87,7 +87,9 @@ class PolymarketOutboundReaderTest {
                 new JsonDecoder(),
                 "test-key",
                 "test-secret",
-                "test-passphrase");
+                "test-passphrase",
+                0.02,
+                0.0);
         reader.pause = false;
     }
 
@@ -302,6 +304,28 @@ class PolymarketOutboundReaderTest {
         final List<Long> completions = drainCompletionQueue();
         assertEquals(1, completions.size());
         assertEquals(77L, completions.get(0));
+    }
+
+    @Test
+    void tradeMatched_computesFeeFromExchangeProvidedFeeRateBps() throws Exception {
+        enqueueContext(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
+        // feeRateBps=200 (2%) on 10 contracts at $0.50: fee = 10 * 0.02 * 0.50 * 0.50 * PRICE_SCALE = 50_000_000
+        process(tradeEvent("MATCHED", ORDER_HASH, "0.50", "10.0", "200", "1700000000000"));
+        waitForReports(1);
+
+        final long expectedFee = (long) (10.0 * 0.02 * 0.50 * 0.50 * Statics.PRICE_SCALING_FACTOR);
+        assertEquals(expectedFee, captured.get(0).decoder.fee());
+    }
+
+    @Test
+    void tradeMatched_fallsBackToConfiguredTakerFeeRateWhenBpsIsZero() throws Exception {
+        enqueueContext(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
+        // feeRateBps=0, falls back to configured takerFeeRate=0.02
+        process(tradeEvent("MATCHED", ORDER_HASH, "0.50", "10.0", "0", "1700000000000"));
+        waitForReports(1);
+
+        final long expectedFee = (long) (10.0 * 0.02 * 0.50 * 0.50 * Statics.PRICE_SCALING_FACTOR);
+        assertEquals(expectedFee, captured.get(0).decoder.fee());
     }
 
     // --- helpers ---
