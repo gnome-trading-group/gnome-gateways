@@ -20,13 +20,13 @@ public abstract class OutboundWebSocketReader extends OutboundSocketReader {
     protected OutboundWebSocketReader(
             Logger logger,
             SequencedRingBuffer<OrderExecutionReport> execReportBuffer,
-            ManyToOneRingBuffer<OrderContext> contextQueue,
-            ManyToOneRingBuffer<OrderContext> rejectQueue,
-            ManyToOneRingBuffer<OrderContext> completionQueue,
+            ManyToOneRingBuffer<OrderContext> newOrderQueue,
+            ManyToOneRingBuffer<OrderContext> writerReportQueue,
+            ManyToOneRingBuffer<OrderContext> releasedOrderQueue,
             EpochNanoClock clock,
             Listing listing,
             WebSocketClient socketClient) {
-        super(logger, execReportBuffer, contextQueue, rejectQueue, completionQueue, clock, listing);
+        super(logger, execReportBuffer, newOrderQueue, writerReportQueue, releasedOrderQueue, clock, listing);
         this.socketClient = socketClient;
     }
 

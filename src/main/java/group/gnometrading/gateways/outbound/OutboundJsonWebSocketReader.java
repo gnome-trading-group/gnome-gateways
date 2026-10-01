@@ -19,14 +19,22 @@ public abstract class OutboundJsonWebSocketReader extends OutboundWebSocketReade
     protected OutboundJsonWebSocketReader(
             Logger logger,
             SequencedRingBuffer<OrderExecutionReport> execReportBuffer,
-            ManyToOneRingBuffer<OrderContext> contextQueue,
-            ManyToOneRingBuffer<OrderContext> rejectQueue,
-            ManyToOneRingBuffer<OrderContext> completionQueue,
+            ManyToOneRingBuffer<OrderContext> newOrderQueue,
+            ManyToOneRingBuffer<OrderContext> writerReportQueue,
+            ManyToOneRingBuffer<OrderContext> releasedOrderQueue,
             EpochNanoClock clock,
             Listing listing,
             WebSocketClient socketClient,
             JsonDecoder jsonDecoder) {
-        super(logger, execReportBuffer, contextQueue, rejectQueue, completionQueue, clock, listing, socketClient);
+        super(
+                logger,
+                execReportBuffer,
+                newOrderQueue,
+                writerReportQueue,
+                releasedOrderQueue,
+                clock,
+                listing,
+                socketClient);
         this.jsonDecoder = jsonDecoder;
     }
 

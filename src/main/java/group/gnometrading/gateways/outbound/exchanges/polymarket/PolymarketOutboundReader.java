@@ -9,6 +9,7 @@ import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.networking.websockets.enums.Opcode;
 import group.gnometrading.schemas.ExecType;
+import group.gnometrading.schemas.Liquidity;
 import group.gnometrading.schemas.OrderExecutionReport;
 import group.gnometrading.schemas.OrderExecutionReportEncoder;
 import group.gnometrading.schemas.OrderStatus;
@@ -52,9 +53,9 @@ public final class PolymarketOutboundReader extends OutboundJsonWebSocketReader 
     public PolymarketOutboundReader(
             Logger logger,
             SequencedRingBuffer<OrderExecutionReport> execReportBuffer,
-            ManyToOneRingBuffer<OrderContext> contextQueue,
-            ManyToOneRingBuffer<OrderContext> rejectQueue,
-            ManyToOneRingBuffer<OrderContext> completionQueue,
+            ManyToOneRingBuffer<OrderContext> newOrderQueue,
+            ManyToOneRingBuffer<OrderContext> writerReportQueue,
+            ManyToOneRingBuffer<OrderContext> releasedOrderQueue,
             EpochNanoClock clock,
             Listing listing,
             WebSocketClient socketClient,
@@ -67,9 +68,9 @@ public final class PolymarketOutboundReader extends OutboundJsonWebSocketReader 
         super(
                 logger,
                 execReportBuffer,
-                contextQueue,
-                rejectQueue,
-                completionQueue,
+                newOrderQueue,
+                writerReportQueue,
+                releasedOrderQueue,
                 clock,
                 listing,
                 socketClient,
@@ -148,6 +149,21 @@ public final class PolymarketOutboundReader extends OutboundJsonWebSocketReader 
             event.feeRateBps = entry.asString().toFixedPointLong(1L);
         } else if (name.equals("timestamp")) {
             event.timestampEvent = entry.asString().toFixedPointLong(1L) * NANOS_PER_MILLI;
+        } else {
+            parseLiquidityField(name, entry, event);
+        }
+    }
+
+    // Polymarket's docs show both spellings for this field across API versions.
+    private static void parseLiquidityField(
+            final GnomeString name, final JsonDecoder.JsonNode entry, final ParsedEvent event) {
+        if (name.equals("trader_side") || name.equals("traderSide")) {
+            final GnomeString side = entry.asString();
+            if (side.equals("MAKER")) {
+                event.liquidity = Liquidity.MAKER;
+            } else if (side.equals("TAKER")) {
+                event.liquidity = Liquidity.TAKER;
+            }
         }
     }
 
@@ -258,8 +274,15 @@ public final class PolymarketOutboundReader extends OutboundJsonWebSocketReader 
         this.execReport.encoder.cumulativeQty(ctx.cumulativeFilledQty);
         this.execReport.encoder.leavesQty(Math.max(0, ctx.leavesQty));
         setTimestamps(event.timestampEvent);
-        double feeRate = event.feeRateBps > 0 ? event.feeRateBps / 10000.0 : takerFeeRate;
+        // A trade's top-level fee_rate_bps belongs to the taker order, so it only applies when we took.
+        final double feeRate;
+        if (event.liquidity == Liquidity.MAKER) {
+            feeRate = makerFeeRate;
+        } else {
+            feeRate = event.feeRateBps > 0 ? event.feeRateBps / 10000.0 : takerFeeRate;
+        }
         this.execReport.encoder.fee(PredictionMarketFees.calculateScaledFee(event.price, fillSize, feeRate));
+        this.execReport.encoder.liquidity(event.liquidity);
         publishExecReport();
 
         if (fullyFilled) {
@@ -296,6 +319,7 @@ public final class PolymarketOutboundReader extends OutboundJsonWebSocketReader 
         long price;
         long size;
         long feeRateBps;
+        Liquidity liquidity;
         long timestampEvent;
 
         void reset() {
@@ -306,6 +330,7 @@ public final class PolymarketOutboundReader extends OutboundJsonWebSocketReader 
             this.price = OrderExecutionReportEncoder.fillPriceNullValue();
             this.size = OrderExecutionReportEncoder.filledQtyNullValue();
             this.feeRateBps = 0;
+            this.liquidity = Liquidity.NULL_VAL;
             this.timestampEvent = OrderExecutionReportEncoder.timestampEventNullValue();
         }
     }

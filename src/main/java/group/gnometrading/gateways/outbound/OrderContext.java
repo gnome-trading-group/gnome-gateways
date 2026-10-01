@@ -9,6 +9,22 @@ public final class OrderContext {
 
     public static final int EXCHANGE_ORDER_ID_MAX_LENGTH = 70;
 
+    /**
+     * Orders a gateway may have live at once. Both the writer and the reader hold a copy of every
+     * live order, so both pools must be sized from this one bound.
+     */
+    public static final int MAX_IN_FLIGHT_ORDERS = 256;
+
+    /**
+     * Capacity of each writer/reader handoff queue. One writer poll handles at most one outbound
+     * buffer's worth of messages, so twice the in-flight bound leaves headroom for every live order
+     * to complete plus that poll's own submissions before the writer drains again.
+     */
+    public static final int HANDOFF_QUEUE_CAPACITY = 2 * MAX_IN_FLIGHT_ORDERS;
+
+    /** Marks a quantity the venue did not report. */
+    public static final long QTY_ABSENT = -1L;
+
     public long orderId;
     public long clientOidCounter;
     public int clientOidStrategyId;
@@ -18,6 +34,15 @@ public final class OrderContext {
     public long cumulativeFilledQty;
     public long leavesQty;
     public long cumulativeCost;
+    public long cumulativeMakerCost;
+    public long cumulativeFees;
+
+    // Reader-side: the order has been acknowledged to the OMS with an ExecType.NEW.
+    public boolean acked;
+    // Venue fill count at the most recent accepted amend; fills at or below it predate the amend.
+    public long amendFillCount = QTY_ABSENT;
+    // Writer-to-reader marker: this context reports an accepted amend rather than a report to replay.
+    public boolean amendAccepted;
     public Side side;
     public short flags;
     public ExecType execType;
@@ -36,6 +61,11 @@ public final class OrderContext {
         this.cumulativeFilledQty = 0;
         this.leavesQty = 0;
         this.cumulativeCost = 0;
+        this.cumulativeMakerCost = 0;
+        this.cumulativeFees = 0;
+        this.acked = false;
+        this.amendFillCount = QTY_ABSENT;
+        this.amendAccepted = false;
         this.side = null;
         this.flags = 0;
         this.execType = null;
@@ -54,6 +84,11 @@ public final class OrderContext {
         this.cumulativeFilledQty = src.cumulativeFilledQty;
         this.leavesQty = src.leavesQty;
         this.cumulativeCost = src.cumulativeCost;
+        this.cumulativeMakerCost = src.cumulativeMakerCost;
+        this.cumulativeFees = src.cumulativeFees;
+        this.acked = src.acked;
+        this.amendFillCount = src.amendFillCount;
+        this.amendAccepted = src.amendAccepted;
         this.side = src.side;
         this.flags = src.flags;
         this.execType = src.execType;

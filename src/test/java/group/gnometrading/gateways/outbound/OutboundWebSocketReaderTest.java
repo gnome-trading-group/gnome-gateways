@@ -46,13 +46,14 @@ class OutboundWebSocketReaderTest {
         execReportBuffer = new SequencedRingBuffer<>(OrderExecutionReport::new, new GlobalSequence());
         execReportBuffer.start();
 
-        final ManyToOneRingBuffer<OrderContext> contextQueue =
+        final ManyToOneRingBuffer<OrderContext> newOrderQueue =
                 new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
-        final ManyToOneRingBuffer<OrderContext> rejectQueue =
+        final ManyToOneRingBuffer<OrderContext> writerReportQueue =
                 new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
-        final ManyToOneRingBuffer<OrderContext> completionQueue =
+        final ManyToOneRingBuffer<OrderContext> releasedOrderQueue =
                 new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
-        reader = new TestOutboundWebSocketReader(execReportBuffer, contextQueue, rejectQueue, completionQueue, client);
+        reader = new TestOutboundWebSocketReader(
+                execReportBuffer, newOrderQueue, writerReportQueue, releasedOrderQueue, client);
         reader.pause = false;
     }
 
@@ -223,16 +224,16 @@ class OutboundWebSocketReaderTest {
 
         TestOutboundWebSocketReader(
                 SequencedRingBuffer<OrderExecutionReport> execReportBuffer,
-                ManyToOneRingBuffer<OrderContext> contextQueue,
-                ManyToOneRingBuffer<OrderContext> rejectQueue,
-                ManyToOneRingBuffer<OrderContext> completionQueue,
+                ManyToOneRingBuffer<OrderContext> newOrderQueue,
+                ManyToOneRingBuffer<OrderContext> writerReportQueue,
+                ManyToOneRingBuffer<OrderContext> releasedOrderQueue,
                 WebSocketClient socketClient) {
             super(
                     new NullLogger(),
                     execReportBuffer,
-                    contextQueue,
-                    rejectQueue,
-                    completionQueue,
+                    newOrderQueue,
+                    writerReportQueue,
+                    releasedOrderQueue,
                     System::nanoTime,
                     LISTING,
                     socketClient);

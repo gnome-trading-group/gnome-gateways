@@ -20,18 +20,16 @@ import org.agrona.concurrent.UnsafeBuffer;
 
 public abstract class OutboundSocketWriter implements GnomeAgent {
 
-    private static final int DEFAULT_ACTIVE_ORDER_MAP_CAPACITY = 256;
-
     private final SequencedPoller orderPoller;
-    protected final ManyToOneRingBuffer<OrderContext> contextQueue;
-    protected final ManyToOneRingBuffer<OrderContext> rejectQueue;
+    protected final ManyToOneRingBuffer<OrderContext> newOrderQueue;
+    protected final ManyToOneRingBuffer<OrderContext> writerReportQueue;
 
     private final Long2ObjectHashMap<OrderContext> activeOrders;
     private final OrderContext[] writerPool;
     private int writerPoolHead;
     private long nextOrderId = 1;
 
-    private final ManyToOneRingBuffer<OrderContext> completionQueue;
+    private final ManyToOneRingBuffer<OrderContext> releasedOrderQueue;
 
     protected final Order order = new Order();
     protected final CancelOrder cancelOrder = new CancelOrder();
@@ -39,19 +37,19 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
 
     protected OutboundSocketWriter(
             SequencedRingBuffer<?> orderOutboundBuffer,
-            ManyToOneRingBuffer<OrderContext> contextQueue,
-            ManyToOneRingBuffer<OrderContext> rejectQueue,
-            ManyToOneRingBuffer<OrderContext> completionQueue) {
+            ManyToOneRingBuffer<OrderContext> newOrderQueue,
+            ManyToOneRingBuffer<OrderContext> writerReportQueue,
+            ManyToOneRingBuffer<OrderContext> releasedOrderQueue) {
         this.orderPoller = orderOutboundBuffer.createPoller(this::onOrder);
-        this.contextQueue = contextQueue;
-        this.rejectQueue = rejectQueue;
-        this.completionQueue = completionQueue;
-        this.activeOrders = new Long2ObjectHashMap<>(DEFAULT_ACTIVE_ORDER_MAP_CAPACITY, 0.6f);
-        this.writerPool = new OrderContext[DEFAULT_ACTIVE_ORDER_MAP_CAPACITY];
-        for (int i = 0; i < DEFAULT_ACTIVE_ORDER_MAP_CAPACITY; i++) {
+        this.newOrderQueue = newOrderQueue;
+        this.writerReportQueue = writerReportQueue;
+        this.releasedOrderQueue = releasedOrderQueue;
+        this.activeOrders = new Long2ObjectHashMap<>(OrderContext.MAX_IN_FLIGHT_ORDERS, 0.6f);
+        this.writerPool = new OrderContext[OrderContext.MAX_IN_FLIGHT_ORDERS];
+        for (int i = 0; i < OrderContext.MAX_IN_FLIGHT_ORDERS; i++) {
             this.writerPool[i] = new OrderContext();
         }
-        this.writerPoolHead = DEFAULT_ACTIVE_ORDER_MAP_CAPACITY;
+        this.writerPoolHead = OrderContext.MAX_IN_FLIGHT_ORDERS;
     }
 
     @Override
@@ -67,11 +65,11 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
 
     @Override
     public final int doWork() throws Exception {
-        this.completionQueue.read(this::consumeCompletion, 16);
+        this.releasedOrderQueue.read(this::consumeReleasedOrder, OrderContext.HANDOFF_QUEUE_CAPACITY);
         return this.orderPoller.poll();
     }
 
-    private void consumeCompletion(final OrderContext src) {
+    private void consumeReleasedOrder(final OrderContext src) {
         final OrderContext ctx = this.activeOrders.remove(src.clientOidCounter);
         if (ctx != null) {
             returnToPool(ctx);
@@ -110,12 +108,12 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
 
         if (submitOrder(ctx)) {
             this.activeOrders.put(ctx.clientOidCounter, ctx);
-            enqueueContext(ctx);
+            enqueueNewOrder(ctx);
         } else {
             ctx.execType = ExecType.REJECT;
             ctx.orderStatus = OrderStatus.REJECTED;
             ctx.rejectReason = RejectReason.EXCHANGE_REJECTED;
-            enqueueReject(ctx);
+            enqueueWriterReport(ctx);
             returnToPool(ctx);
         }
     }
@@ -128,7 +126,7 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         }
         if (!cancelOrder(ctx)) {
             final OrderContext reject = buildCancelReject(ctx);
-            enqueueReject(reject);
+            enqueueWriterReport(reject);
             returnToPool(reject);
         } else {
             this.activeOrders.remove(clientOidCounter);
@@ -149,7 +147,7 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
 
         if (!cancelOrder(oldCtx)) {
             final OrderContext reject = buildCancelReject(oldCtx);
-            enqueueReject(reject);
+            enqueueWriterReport(reject);
             returnToPool(reject);
             return;
         }
@@ -181,12 +179,12 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
 
         if (submitForModify(newCtx)) {
             this.activeOrders.put(newCtx.clientOidCounter, newCtx);
-            enqueueContext(newCtx);
+            enqueueNewOrder(newCtx);
         } else {
             newCtx.execType = ExecType.REJECT;
             newCtx.orderStatus = OrderStatus.REJECTED;
             newCtx.rejectReason = RejectReason.EXCHANGE_REJECTED;
-            enqueueReject(newCtx);
+            enqueueWriterReport(newCtx);
             returnToPool(newCtx);
         }
     }
@@ -216,22 +214,22 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
      */
     protected abstract boolean submitForModify(OrderContext ctx) throws Exception;
 
-    protected final void enqueueContext(final OrderContext ctx) {
-        final int idx = this.contextQueue.tryClaim();
+    protected final void enqueueNewOrder(final OrderContext ctx) {
+        final int idx = this.newOrderQueue.tryClaim();
         if (idx < 0) {
-            throw new RuntimeException("Context queue overflow");
+            throw new RuntimeException("New order queue overflow");
         }
-        this.contextQueue.indexAt(idx).copyFrom(ctx);
-        this.contextQueue.commit(idx);
+        this.newOrderQueue.indexAt(idx).copyFrom(ctx);
+        this.newOrderQueue.commit(idx);
     }
 
-    protected final void enqueueReject(final OrderContext ctx) {
-        final int idx = this.rejectQueue.tryClaim();
+    protected final void enqueueWriterReport(final OrderContext ctx) {
+        final int idx = this.writerReportQueue.tryClaim();
         if (idx < 0) {
-            throw new RuntimeException("Reject queue overflow");
+            throw new RuntimeException("Writer report queue overflow");
         }
-        this.rejectQueue.indexAt(idx).copyFrom(ctx);
-        this.rejectQueue.commit(idx);
+        this.writerReportQueue.indexAt(idx).copyFrom(ctx);
+        this.writerReportQueue.commit(idx);
     }
 
     protected final OrderContext buildCancelReject(final OrderContext existing) {
@@ -249,6 +247,34 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         reject.orderStatus = OrderStatus.CANCELED;
         reject.rejectReason = RejectReason.EXCHANGE_REJECTED;
         return reject;
+    }
+
+    /**
+     * Builds a notice that the venue accepted an amend, for the reader to apply.
+     *
+     * <p>The writer sees the amend's result but not the order's fills, which arrive on the reader's
+     * stream. Only the reader can therefore produce a correct acknowledgement, so the writer hands it
+     * the venue's numbers instead of reporting directly. Pass {@link OrderContext#QTY_ABSENT} for any
+     * quantity the venue did not report. The returned context must be passed to
+     * {@link #enqueueWriterReport} and then {@link #returnToPool}.
+     */
+    protected final OrderContext buildAmendAccepted(
+            final OrderContext existing, final long newSize, final long venueFillCount, final long venueRemaining) {
+        if (this.writerPoolHead <= 0) {
+            throw new RuntimeException("Writer order context pool exhausted");
+        }
+        final OrderContext notice = this.writerPool[--this.writerPoolHead];
+        notice.reset();
+        notice.amendAccepted = true;
+        notice.clientOidCounter = existing.clientOidCounter;
+        notice.clientOidStrategyId = existing.clientOidStrategyId;
+        notice.originalQty = newSize;
+        notice.cumulativeFilledQty = venueFillCount;
+        notice.leavesQty = venueRemaining;
+        notice.exchangeOrderIdLength = existing.exchangeOrderIdLength;
+        System.arraycopy(
+                existing.exchangeOrderIdBytes, 0, notice.exchangeOrderIdBytes, 0, existing.exchangeOrderIdLength);
+        return notice;
     }
 
     protected final void returnToPool(final OrderContext ctx) {

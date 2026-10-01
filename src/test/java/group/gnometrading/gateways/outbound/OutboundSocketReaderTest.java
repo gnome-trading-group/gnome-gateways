@@ -36,9 +36,9 @@ class OutboundSocketReaderTest {
             1, new Exchange(2, "test", "global", SchemaType.MBP_10), new Security(3, "TEST", 3), "test-id", "TEST");
 
     private SequencedRingBuffer<OrderExecutionReport> execReportBuffer;
-    private ManyToOneRingBuffer<OrderContext> contextQueue;
-    private ManyToOneRingBuffer<OrderContext> rejectQueue;
-    private ManyToOneRingBuffer<OrderContext> completionQueue;
+    private ManyToOneRingBuffer<OrderContext> newOrderQueue;
+    private ManyToOneRingBuffer<OrderContext> writerReportQueue;
+    private ManyToOneRingBuffer<OrderContext> releasedOrderQueue;
     private List<OrderExecutionReport> captured;
     private TestOutboundSocketReader reader;
 
@@ -53,10 +53,10 @@ class OutboundSocketReaderTest {
             captured.add(copy);
         });
         execReportBuffer.start();
-        contextQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 256);
-        rejectQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 256);
-        completionQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
-        reader = new TestOutboundSocketReader(execReportBuffer, contextQueue, rejectQueue, completionQueue);
+        newOrderQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 256);
+        writerReportQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 256);
+        releasedOrderQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
+        reader = new TestOutboundSocketReader(execReportBuffer, newOrderQueue, writerReportQueue, releasedOrderQueue);
         reader.pause = false;
     }
 
@@ -112,7 +112,7 @@ class OutboundSocketReaderTest {
     @Test
     void doWork_ConsumesContextQueue_ContextFindableByHash() throws Exception {
         final String hash = "test-order-hash";
-        enqueueContext(hash, 1L, 2, 3L, 10L);
+        enqueueNewOrder(hash, 1L, 2, 3L, 10L);
 
         reader.doWork();
 
@@ -123,7 +123,7 @@ class OutboundSocketReaderTest {
     @Test
     void doWork_ConsumesContextQueue_FieldsPreserved() throws Exception {
         final String hash = "order-abc";
-        enqueueContext(hash, 42L, 5, 99L, 200L);
+        enqueueNewOrder(hash, 42L, 5, 99L, 200L);
 
         reader.doWork();
 
@@ -151,9 +151,21 @@ class OutboundSocketReaderTest {
     }
 
     @Test
+    void doWork_RejectStillReportsZeroQuantities() throws Exception {
+        // buildCancelReject resets the context, so a reject must stay at zero quantities.
+        enqueueReject(99L, 2, 3L, ExecType.CANCEL_REJECT, OrderStatus.CANCELED);
+
+        reader.doWork();
+
+        waitForReports(1);
+        assertEquals(0, captured.get(0).decoder.cumulativeQty());
+        assertEquals(0, captured.get(0).decoder.leavesQty());
+    }
+
+    @Test
     void doWork_ContextConsumedBeforeReadSocket() throws Exception {
         final String hash = "before-socket";
-        enqueueContext(hash, 1L, 2, 3L, 100L);
+        enqueueNewOrder(hash, 1L, 2, 3L, 100L);
 
         final long key = TestOutboundSocketReader.testComputeKey(hash.getBytes(StandardCharsets.UTF_8), hash.length());
 
@@ -182,7 +194,7 @@ class OutboundSocketReaderTest {
     @Timeout(5)
     void connect_PreservesExistingContexts() throws Exception {
         final String hash = "active-order-hash";
-        enqueueContext(hash, 1L, 2, 3L, 100L);
+        enqueueNewOrder(hash, 1L, 2, 3L, 100L);
         reader.doWork(); // consume context into orderContexts map
 
         startReaderOnThread();
@@ -197,7 +209,7 @@ class OutboundSocketReaderTest {
     @Timeout(5)
     void connect_DoesNotDrainPendingQueueEntries() throws Exception {
         // Enqueue a context without consuming — simulates writer posting during disconnect window
-        enqueueContext("hash1", 1L, 2, 3L, 100L);
+        enqueueNewOrder("hash1", 1L, 2, 3L, 100L);
 
         startReaderOnThread();
         reader.connect();
@@ -214,7 +226,7 @@ class OutboundSocketReaderTest {
     @Timeout(5)
     void reconnect_ContextSurvives_FillCanBeMatchedAfterReconnect() throws Exception {
         final String hash = "0xdeadbeef";
-        enqueueContext(hash, 42L, 2, 99L, 500L);
+        enqueueNewOrder(hash, 42L, 2, 99L, 500L);
         reader.doWork();
 
         // Simulate reconnect: disconnect then connect
@@ -302,29 +314,35 @@ class OutboundSocketReaderTest {
 
     @Test
     void contextPoolExhaustion_ThrowsOnConsume() throws Exception {
-        // Exhaust all 128 reader pool slots by enqueuing 128 contexts
-        for (int i = 0; i < 128; i++) {
-            enqueueContext("hash-" + i, (long) i, 2, 3L, 100L);
-        }
-        // Consume first 128 — all go into orderContexts map
-        for (int i = 0; i < 8; i++) {
-            reader.doWork(); // reads up to 16 per doWork call
-        }
+        fillReaderPool();
 
-        // 129th enqueue: pool should be exhausted on next consume
-        enqueueContext("hash-overflow", 999L, 2, 3L, 100L);
+        // One past the bound: pool should be exhausted on next consume
+        enqueueNewOrder("hash-overflow", 999L, 2, 3L, 100L);
         assertThrows(RuntimeException.class, () -> reader.doWork());
     }
 
     @Test
-    void releaseOrderContext_ReturnsToPool() throws Exception {
-        // Exhaust pool
-        for (int i = 0; i < 128; i++) {
-            enqueueContext("hash-" + i, (long) i, 2, 3L, 100L);
-        }
-        for (int i = 0; i < 8; i++) {
+    void releaseOrderContext_CompletionQueueFull_ThrowsInsteadOfLeakingWriterSlot() throws Exception {
+        // releasedOrderQueue capacity is 64 and nothing drains it in this test.
+        for (int i = 0; i <= 64; i++) {
+            enqueueNewOrder("hash-" + i, (long) i, 2, 3L, 100L);
             reader.doWork();
         }
+        for (int i = 0; i < 64; i++) {
+            final byte[] hash = ("hash-" + i).getBytes(StandardCharsets.UTF_8);
+            reader.testReleaseOrderContext(TestOutboundSocketReader.testComputeKey(hash, hash.length));
+        }
+
+        final byte[] last = "hash-64".getBytes(StandardCharsets.UTF_8);
+        final long lastKey = TestOutboundSocketReader.testComputeKey(last, last.length);
+        final RuntimeException thrown =
+                assertThrows(RuntimeException.class, () -> reader.testReleaseOrderContext(lastKey));
+        assertEquals("Released order queue overflow", thrown.getMessage());
+    }
+
+    @Test
+    void releaseOrderContext_ReturnsToPool() throws Exception {
+        fillReaderPool();
 
         // Release one context back to pool
         final byte[] firstHash = "hash-0".getBytes(StandardCharsets.UTF_8);
@@ -332,16 +350,16 @@ class OutboundSocketReaderTest {
         reader.testReleaseOrderContext(key);
 
         // Now there's one slot free — next consume should succeed
-        enqueueContext("hash-new", 999L, 2, 3L, 100L);
+        enqueueNewOrder("hash-new", 999L, 2, 3L, 100L);
         assertDoesNotThrow(() -> reader.doWork());
     }
 
-    // ========== Completion queue ==========
+    // ========== Released order queue ==========
 
     @Test
     void releaseOrderContext_EnqueuesCompletionWithOrderId() throws Exception {
         final String hash = "order-for-completion";
-        enqueueContext(hash, 42L, 2, 3L, 100L);
+        enqueueNewOrder(hash, 42L, 2, 3L, 100L);
         reader.doWork();
 
         final long key = TestOutboundSocketReader.testComputeKey(hash.getBytes(StandardCharsets.UTF_8), hash.length());
@@ -363,19 +381,19 @@ class OutboundSocketReaderTest {
 
     private List<Long> drainCompletionQueue() {
         final List<Long> result = new ArrayList<>();
-        completionQueue.read(ctx -> result.add(ctx.clientOidCounter), Integer.MAX_VALUE);
+        releasedOrderQueue.read(ctx -> result.add(ctx.clientOidCounter), Integer.MAX_VALUE);
         return result;
     }
 
-    private void enqueueContext(
+    private void enqueueNewOrder(
             final String hash,
             final long clientOidCounter,
             final int exchangeId,
             final long securityId,
             final long originalQty) {
-        final int idx = contextQueue.tryClaim();
-        assertTrue(idx >= 0, "Context queue full");
-        final OrderContext ctx = contextQueue.indexAt(idx);
+        final int idx = newOrderQueue.tryClaim();
+        assertTrue(idx >= 0, "New order queue full");
+        final OrderContext ctx = newOrderQueue.indexAt(idx);
         ctx.reset();
         ctx.orderId = clientOidCounter;
         ctx.clientOidCounter = clientOidCounter;
@@ -386,7 +404,7 @@ class OutboundSocketReaderTest {
         final byte[] hashBytes = hash.getBytes(StandardCharsets.UTF_8);
         ctx.exchangeOrderIdLength = Math.min(hashBytes.length, OrderContext.EXCHANGE_ORDER_ID_MAX_LENGTH);
         System.arraycopy(hashBytes, 0, ctx.exchangeOrderIdBytes, 0, ctx.exchangeOrderIdLength);
-        contextQueue.commit(idx);
+        newOrderQueue.commit(idx);
     }
 
     private void enqueueReject(
@@ -395,9 +413,9 @@ class OutboundSocketReaderTest {
             final long securityId,
             final ExecType execType,
             final OrderStatus orderStatus) {
-        final int idx = rejectQueue.tryClaim();
-        assertTrue(idx >= 0, "Reject queue full");
-        final OrderContext ctx = rejectQueue.indexAt(idx);
+        final int idx = writerReportQueue.tryClaim();
+        assertTrue(idx >= 0, "Writer report queue full");
+        final OrderContext ctx = writerReportQueue.indexAt(idx);
         ctx.reset();
         ctx.orderId = orderId;
         ctx.exchangeId = exchangeId;
@@ -405,7 +423,14 @@ class OutboundSocketReaderTest {
         ctx.execType = execType;
         ctx.orderStatus = orderStatus;
         ctx.rejectReason = RejectReason.EXCHANGE_REJECTED;
-        rejectQueue.commit(idx);
+        writerReportQueue.commit(idx);
+    }
+
+    private void fillReaderPool() throws Exception {
+        for (int i = 0; i < OrderContext.MAX_IN_FLIGHT_ORDERS; i++) {
+            enqueueNewOrder("hash-" + i, (long) i, 2, 3L, 100L);
+            reader.doWork();
+        }
     }
 
     private void startReaderOnThread() {
@@ -448,15 +473,15 @@ class OutboundSocketReaderTest {
 
         TestOutboundSocketReader(
                 SequencedRingBuffer<OrderExecutionReport> execReportBuffer,
-                ManyToOneRingBuffer<OrderContext> contextQueue,
-                ManyToOneRingBuffer<OrderContext> rejectQueue,
-                ManyToOneRingBuffer<OrderContext> completionQueue) {
+                ManyToOneRingBuffer<OrderContext> newOrderQueue,
+                ManyToOneRingBuffer<OrderContext> writerReportQueue,
+                ManyToOneRingBuffer<OrderContext> releasedOrderQueue) {
             super(
                     new NullLogger(),
                     execReportBuffer,
-                    contextQueue,
-                    rejectQueue,
-                    completionQueue,
+                    newOrderQueue,
+                    writerReportQueue,
+                    releasedOrderQueue,
                     System::nanoTime,
                     LISTING);
         }

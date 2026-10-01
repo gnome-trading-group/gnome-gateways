@@ -26,18 +26,18 @@ import org.junit.jupiter.api.Test;
 class OutboundSocketWriterTest {
 
     private SequencedRingBuffer<Order> orderBuffer;
-    private ManyToOneRingBuffer<OrderContext> contextQueue;
-    private ManyToOneRingBuffer<OrderContext> rejectQueue;
-    private ManyToOneRingBuffer<OrderContext> completionQueue;
+    private ManyToOneRingBuffer<OrderContext> newOrderQueue;
+    private ManyToOneRingBuffer<OrderContext> writerReportQueue;
+    private ManyToOneRingBuffer<OrderContext> releasedOrderQueue;
     private TestOutboundSocketWriter writer;
 
     @BeforeEach
     void setUp() {
         orderBuffer = new SequencedRingBuffer<>(Order::new, new GlobalSequence());
-        contextQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 512);
-        rejectQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 512);
-        completionQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
-        writer = new TestOutboundSocketWriter(orderBuffer, contextQueue, rejectQueue, completionQueue);
+        newOrderQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 512);
+        writerReportQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 512);
+        releasedOrderQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
+        writer = new TestOutboundSocketWriter(orderBuffer, newOrderQueue, writerReportQueue, releasedOrderQueue);
     }
 
     // ========== Submit path ==========
@@ -49,7 +49,7 @@ class OutboundSocketWriterTest {
 
         writer.doWork();
 
-        final List<OrderContext> contexts = drainQueue(contextQueue);
+        final List<OrderContext> contexts = drainQueue(newOrderQueue);
         assertEquals(1, contexts.size());
         final OrderContext ctx = contexts.get(0);
         assertEquals(1L, ctx.orderId);
@@ -77,7 +77,7 @@ class OutboundSocketWriterTest {
         writer.doWork();
         writer.doWork();
 
-        final List<OrderContext> contexts = drainQueue(contextQueue);
+        final List<OrderContext> contexts = drainQueue(newOrderQueue);
         assertEquals(3, contexts.size());
         assertEquals(1L, contexts.get(0).orderId);
         assertEquals(2L, contexts.get(1).orderId);
@@ -92,12 +92,12 @@ class OutboundSocketWriterTest {
 
         writer.doWork();
 
-        final List<OrderContext> rejects = drainQueue(rejectQueue);
+        final List<OrderContext> rejects = drainQueue(writerReportQueue);
         assertEquals(1, rejects.size());
         assertEquals(ExecType.REJECT, rejects.get(0).execType);
         assertEquals(OrderStatus.REJECTED, rejects.get(0).orderStatus);
         assertEquals(RejectReason.EXCHANGE_REJECTED, rejects.get(0).rejectReason);
-        assertEquals(0, drainQueue(contextQueue).size());
+        assertEquals(0, drainQueue(newOrderQueue).size());
     }
 
     @Test
@@ -106,14 +106,14 @@ class OutboundSocketWriterTest {
         publishOrder(
                 Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
         writer.doWork();
-        drainQueue(rejectQueue);
+        drainQueue(writerReportQueue);
 
         writer.submitResult = true;
         publishOrder(
                 Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
         writer.doWork();
 
-        assertEquals(1, drainQueue(contextQueue).size());
+        assertEquals(1, drainQueue(newOrderQueue).size());
     }
 
     // ========== Cancel path ==========
@@ -123,13 +123,13 @@ class OutboundSocketWriterTest {
         publishOrder(
                 Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
         writer.doWork();
-        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
+        final long clientOidCounter = drainQueue(newOrderQueue).get(0).clientOidCounter;
 
         publishCancel(clientOidCounter, 2, 3L);
         writer.doWork();
 
         assertEquals(1, writer.cancelCallCount);
-        assertEquals(0, drainQueue(rejectQueue).size());
+        assertEquals(0, drainQueue(writerReportQueue).size());
 
         // Cancelled order removed from active — second cancel is a no-op
         publishCancel(clientOidCounter, 2, 3L);
@@ -142,13 +142,13 @@ class OutboundSocketWriterTest {
         publishOrder(
                 Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 7L, 1);
         writer.doWork();
-        final OrderContext submitted = drainQueue(contextQueue).get(0);
+        final OrderContext submitted = drainQueue(newOrderQueue).get(0);
 
         writer.cancelResult = false;
         publishCancel(submitted.clientOidCounter, 2, 3L);
         writer.doWork();
 
-        final List<OrderContext> rejects = drainQueue(rejectQueue);
+        final List<OrderContext> rejects = drainQueue(writerReportQueue);
         assertEquals(1, rejects.size());
         final OrderContext reject = rejects.get(0);
         assertEquals(ExecType.CANCEL_REJECT, reject.execType);
@@ -165,7 +165,7 @@ class OutboundSocketWriterTest {
         writer.doWork();
 
         assertEquals(0, writer.cancelCallCount);
-        assertEquals(0, drainQueue(rejectQueue).size());
+        assertEquals(0, drainQueue(writerReportQueue).size());
     }
 
     // ========== Modify path ==========
@@ -184,13 +184,13 @@ class OutboundSocketWriterTest {
         publishOrder(
                 Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
         writer.doWork();
-        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
+        final long clientOidCounter = drainQueue(newOrderQueue).get(0).clientOidCounter;
 
         writer.cancelResult = false;
         publishModify(clientOidCounter, price("0.60"), qty("5.0"), 2, 3L);
         writer.doWork();
 
-        final List<OrderContext> rejects = drainQueue(rejectQueue);
+        final List<OrderContext> rejects = drainQueue(writerReportQueue);
         assertEquals(1, rejects.size());
         assertEquals(ExecType.CANCEL_REJECT, rejects.get(0).execType);
         assertEquals(0, writer.submitForModifyCallCount);
@@ -207,13 +207,13 @@ class OutboundSocketWriterTest {
         publishOrder(
                 Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
         writer.doWork();
-        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
+        final long clientOidCounter = drainQueue(newOrderQueue).get(0).clientOidCounter;
 
         writer.submitForModifyResult = false;
         publishModify(clientOidCounter, price("0.60"), qty("5.0"), 2, 3L);
         writer.doWork();
 
-        final List<OrderContext> rejects = drainQueue(rejectQueue);
+        final List<OrderContext> rejects = drainQueue(writerReportQueue);
         assertEquals(1, rejects.size());
         assertEquals(ExecType.REJECT, rejects.get(0).execType);
         assertEquals(OrderStatus.REJECTED, rejects.get(0).orderStatus);
@@ -230,7 +230,7 @@ class OutboundSocketWriterTest {
         publishOrder(
                 Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
         writer.doWork();
-        final OrderContext original = drainQueue(contextQueue).get(0);
+        final OrderContext original = drainQueue(newOrderQueue).get(0);
         final long oldInternalOrderId = original.orderId;
         final long clientOidCounter = original.clientOidCounter;
 
@@ -238,7 +238,7 @@ class OutboundSocketWriterTest {
         writer.doWork();
 
         // Context for replacement order enqueued; new writer-internal orderId, same clientOidCounter
-        final List<OrderContext> contexts = drainQueue(contextQueue);
+        final List<OrderContext> contexts = drainQueue(newOrderQueue);
         assertEquals(1, contexts.size());
         assertNotEquals(oldInternalOrderId, contexts.get(0).orderId);
         assertEquals(clientOidCounter, contexts.get(0).clientOidCounter);
@@ -258,7 +258,7 @@ class OutboundSocketWriterTest {
             publishOrder(
                     Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
             writer.doWork();
-            drainQueue(contextQueue);
+            drainQueue(newOrderQueue);
         }
 
         // Pool is now empty. Modify one of the orders: the old slot must be returned
@@ -267,7 +267,7 @@ class OutboundSocketWriterTest {
         assertDoesNotThrow(() -> writer.doWork());
 
         // New context enqueued for the replacement order
-        assertEquals(1, drainQueue(contextQueue).size());
+        assertEquals(1, drainQueue(newOrderQueue).size());
     }
 
     // ========== Pool management ==========
@@ -279,7 +279,7 @@ class OutboundSocketWriterTest {
             publishOrder(
                     Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
             writer.doWork();
-            drainQueue(contextQueue);
+            drainQueue(newOrderQueue);
         }
 
         publishOrder(
@@ -292,7 +292,7 @@ class OutboundSocketWriterTest {
         publishOrder(
                 Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
         writer.doWork();
-        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
+        final long clientOidCounter = drainQueue(newOrderQueue).get(0).clientOidCounter;
 
         publishCancel(clientOidCounter, 2, 3L);
         writer.doWork();
@@ -301,7 +301,7 @@ class OutboundSocketWriterTest {
         publishOrder(
                 Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
         writer.doWork();
-        assertEquals(1, drainQueue(contextQueue).size());
+        assertEquals(1, drainQueue(newOrderQueue).size());
     }
 
     @Test
@@ -309,16 +309,16 @@ class OutboundSocketWriterTest {
         final ManyToOneRingBuffer<OrderContext> smallContextQueue =
                 new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 2);
         final TestOutboundSocketWriter smallWriter =
-                new TestOutboundSocketWriter(orderBuffer, smallContextQueue, rejectQueue, completionQueue);
+                new TestOutboundSocketWriter(orderBuffer, smallContextQueue, writerReportQueue, releasedOrderQueue);
 
-        // Fill the context queue (capacity 2) without draining
+        // Fill the new order queue (capacity 2) without draining
         for (int i = 0; i < 2; i++) {
             publishOrder(
                     Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
             smallWriter.doWork();
         }
 
-        // 3rd submit should overflow context queue
+        // 3rd submit should overflow new order queue
         publishOrder(
                 Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
         assertThrows(RuntimeException.class, () -> smallWriter.doWork());
@@ -329,7 +329,7 @@ class OutboundSocketWriterTest {
         final ManyToOneRingBuffer<OrderContext> smallRejectQueue =
                 new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 2);
         final TestOutboundSocketWriter failWriter =
-                new TestOutboundSocketWriter(orderBuffer, contextQueue, smallRejectQueue, completionQueue);
+                new TestOutboundSocketWriter(orderBuffer, newOrderQueue, smallRejectQueue, releasedOrderQueue);
         failWriter.submitResult = false;
 
         for (int i = 0; i < 2; i++) {
@@ -361,7 +361,7 @@ class OutboundSocketWriterTest {
 
         writer.doWork();
 
-        final List<OrderContext> contexts = drainQueue(contextQueue);
+        final List<OrderContext> contexts = drainQueue(newOrderQueue);
         assertEquals(1, contexts.size());
         assertEquals((short) 1, contexts.get(0).flags);
     }
@@ -371,17 +371,17 @@ class OutboundSocketWriterTest {
         publishOrder(
                 Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
         writer.doWork();
-        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
+        final long clientOidCounter = drainQueue(newOrderQueue).get(0).clientOidCounter;
 
         publishModifyWithFlags(clientOidCounter, price("0.60"), qty("5.0"), 2, 3L, (short) 1);
         writer.doWork();
 
-        final List<OrderContext> contexts = drainQueue(contextQueue);
+        final List<OrderContext> contexts = drainQueue(newOrderQueue);
         assertEquals(1, contexts.size());
         assertEquals((short) 1, contexts.get(0).flags);
     }
 
-    // ========== Completion queue ==========
+    // ========== Released order queue ==========
 
     @Test
     void completionQueue_DrainedBeforeOrderPoll_PoolSlotReclaimed() throws Exception {
@@ -390,22 +390,50 @@ class OutboundSocketWriterTest {
             publishOrder(
                     Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
             writer.doWork();
-            drainQueue(contextQueue);
+            drainQueue(newOrderQueue);
         }
 
         // Enqueue a completion for clientOidCounter=1 (pool full, would throw without reclaim)
-        enqueueCompletion(completionQueue, 1L);
+        enqueueCompletion(releasedOrderQueue, 1L);
 
         // Publish a new order — this doWork() should drain completion first, then process the order
         publishOrder(
                 Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
         assertDoesNotThrow(() -> writer.doWork());
-        assertEquals(1, drainQueue(contextQueue).size());
+        assertEquals(1, drainQueue(newOrderQueue).size());
+    }
+
+    @Test
+    void releasedOrders_AllDrainedInOneLoop_NotSixteenAtATime() throws Exception {
+        // A writer that falls behind the reader must catch up in one pass, or completions pile up.
+        final int orders = 40;
+        for (long oid = 1; oid <= orders; oid++) {
+            publishOrder(
+                    Side.Bid,
+                    price("0.50"),
+                    qty("1.0"),
+                    OrderType.LIMIT,
+                    TimeInForce.GOOD_TILL_CANCELED,
+                    2,
+                    3L,
+                    oid,
+                    1);
+            writer.doWork();
+        }
+        drainQueue(newOrderQueue);
+        assertEquals(orders, writer.activeOrderCount());
+
+        for (long oid = 1; oid <= orders; oid++) {
+            enqueueCompletion(releasedOrderQueue, oid);
+        }
+        writer.doWork();
+
+        assertEquals(0, writer.activeOrderCount());
     }
 
     @Test
     void completionQueue_UnknownOrderId_IsNoOp() throws Exception {
-        enqueueCompletion(completionQueue, 9999L);
+        enqueueCompletion(releasedOrderQueue, 9999L);
         assertDoesNotThrow(() -> writer.doWork());
     }
 
@@ -414,10 +442,10 @@ class OutboundSocketWriterTest {
         publishOrder(
                 Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
         writer.doWork();
-        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
+        final long clientOidCounter = drainQueue(newOrderQueue).get(0).clientOidCounter;
 
-        enqueueCompletion(completionQueue, clientOidCounter);
-        enqueueCompletion(completionQueue, clientOidCounter);
+        enqueueCompletion(releasedOrderQueue, clientOidCounter);
+        enqueueCompletion(releasedOrderQueue, clientOidCounter);
 
         assertDoesNotThrow(() -> writer.doWork());
         assertDoesNotThrow(() -> writer.doWork());
@@ -556,10 +584,10 @@ class OutboundSocketWriterTest {
 
         TestOutboundSocketWriter(
                 SequencedRingBuffer<Order> orderBuffer,
-                ManyToOneRingBuffer<OrderContext> contextQueue,
-                ManyToOneRingBuffer<OrderContext> rejectQueue,
-                ManyToOneRingBuffer<OrderContext> completionQueue) {
-            super(orderBuffer, contextQueue, rejectQueue, completionQueue);
+                ManyToOneRingBuffer<OrderContext> newOrderQueue,
+                ManyToOneRingBuffer<OrderContext> writerReportQueue,
+                ManyToOneRingBuffer<OrderContext> releasedOrderQueue) {
+            super(orderBuffer, newOrderQueue, writerReportQueue, releasedOrderQueue);
         }
 
         @Override

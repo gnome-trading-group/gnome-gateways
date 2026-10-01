@@ -7,10 +7,13 @@ import group.gnometrading.logging.NullLogger;
 import group.gnometrading.schemas.CancelOrder;
 import group.gnometrading.schemas.CancelOrderDecoder;
 import group.gnometrading.schemas.ExecType;
+import group.gnometrading.schemas.ModifyOrder;
+import group.gnometrading.schemas.ModifyOrderDecoder;
 import group.gnometrading.schemas.Order;
 import group.gnometrading.schemas.OrderExecutionReport;
 import group.gnometrading.schemas.OrderStatus;
 import group.gnometrading.schemas.OrderType;
+import group.gnometrading.schemas.RejectReason;
 import group.gnometrading.schemas.SchemaType;
 import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
@@ -32,7 +35,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * Tests the writer→contextQueue→reader pipeline end-to-end using real components and no mocks.
+ * Tests the writer→newOrderQueue→reader pipeline end-to-end using real components and no mocks.
  * Validates that OrderContext survives two copyFrom passes across ManyToOneRingBuffer boundaries,
  * that FNV hash keys are consistent between writer and reader, and that exec reports are
  * published correctly downstream.
@@ -43,9 +46,9 @@ class OutboundPipelineIntegrationTest {
             1, new Exchange(2, "test", "global", SchemaType.MBP_10), new Security(3, "TEST", 3), "test-id", "TEST");
 
     private SequencedRingBuffer<Order> orderBuffer;
-    private ManyToOneRingBuffer<OrderContext> contextQueue;
-    private ManyToOneRingBuffer<OrderContext> rejectQueue;
-    private ManyToOneRingBuffer<OrderContext> completionQueue;
+    private ManyToOneRingBuffer<OrderContext> newOrderQueue;
+    private ManyToOneRingBuffer<OrderContext> writerReportQueue;
+    private ManyToOneRingBuffer<OrderContext> releasedOrderQueue;
     private SequencedRingBuffer<OrderExecutionReport> execReportBuffer;
     private List<OrderExecutionReport> captured;
     private TestPipelineWriter writer;
@@ -54,9 +57,9 @@ class OutboundPipelineIntegrationTest {
     @BeforeEach
     void setUp() {
         orderBuffer = new SequencedRingBuffer<>(Order::new, new GlobalSequence());
-        contextQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
-        rejectQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
-        completionQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
+        newOrderQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
+        writerReportQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
+        releasedOrderQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
 
         captured = new CopyOnWriteArrayList<>();
         execReportBuffer = new SequencedRingBuffer<>(OrderExecutionReport::new, new GlobalSequence());
@@ -68,8 +71,8 @@ class OutboundPipelineIntegrationTest {
         });
         execReportBuffer.start();
 
-        writer = new TestPipelineWriter(orderBuffer, contextQueue, rejectQueue, completionQueue);
-        reader = new TestPipelineReader(execReportBuffer, contextQueue, rejectQueue, completionQueue);
+        writer = new TestPipelineWriter(orderBuffer, newOrderQueue, writerReportQueue, releasedOrderQueue);
+        reader = new TestPipelineReader(execReportBuffer, newOrderQueue, writerReportQueue, releasedOrderQueue);
         reader.pause = false;
     }
 
@@ -95,6 +98,47 @@ class OutboundPipelineIntegrationTest {
         assertEquals(1L, report.decoder.orderId());
         assertEquals(2, report.decoder.exchangeId());
         assertEquals(3L, report.decoder.securityId());
+    }
+
+    @Test
+    void nativeAmend_NoticeFlowsThroughQueues_ReaderEmitsOneNewWithQuantities() throws Exception {
+        publishOrder(Side.Bid, price("0.50"), qty("10.0"), 2, 3L, 1L, 1);
+        writer.doWork();
+        reader.doWork(); // consume the submit context
+
+        writer.nativeAmend = true;
+        writer.amendVenueFillCount = 0;
+        writer.amendVenueRemaining = qty("5.0");
+        publishModify(1L, qty("5.0"));
+        writer.doWork();
+        reader.doWork();
+
+        waitForReports(1);
+        assertEquals(1, captured.size());
+        final OrderExecutionReport ack = captured.get(0);
+        assertEquals(ExecType.NEW, ack.decoder.execType());
+        assertEquals(OrderStatus.NEW, ack.decoder.orderStatus());
+        assertEquals(0, ack.decoder.cumulativeQty());
+        assertEquals(qty("5.0"), ack.decoder.leavesQty());
+        assertEquals(RejectReason.NULL_VAL, ack.decoder.rejectReason());
+        assertEquals(1L, ack.decoder.orderId());
+    }
+
+    @Test
+    void nativeAmend_SubmittedAndAmendedInOneWriterPoll_StillAcknowledged() throws Exception {
+        // Both land in the reader's queues before it runs; it must register the order first.
+        writer.nativeAmend = true;
+        writer.amendVenueFillCount = 0;
+        writer.amendVenueRemaining = qty("5.0");
+        publishOrder(Side.Bid, price("0.50"), qty("10.0"), 2, 3L, 1L, 1);
+        publishModify(1L, qty("5.0"));
+        writer.doWork();
+        reader.doWork();
+
+        waitForReports(1);
+        assertEquals(1, captured.size());
+        assertEquals(ExecType.NEW, captured.get(0).decoder.execType());
+        assertEquals(qty("5.0"), captured.get(0).decoder.leavesQty());
     }
 
     @Test
@@ -284,6 +328,19 @@ class OutboundPipelineIntegrationTest {
         orderBuffer.publish();
     }
 
+    private void publishModify(final long clientOidCounter, final long sizeVal) {
+        final ModifyOrder modify = new ModifyOrder();
+        modify.encoder.exchangeId(2);
+        modify.encoder.securityId(3L);
+        modify.encoder.price(price("0.60"));
+        modify.encoder.size(sizeVal);
+        modify.encoder.orderType(OrderType.LIMIT);
+        modify.encoder.timeInForce(TimeInForce.GOOD_TILL_CANCELED);
+        modify.encoder.flags().clear();
+        modify.encodeClientOid(clientOidCounter, 1);
+        orderBuffer.publishRaw(modify.buffer, ModifyOrderDecoder.TEMPLATE_ID, modify.totalMessageSize());
+    }
+
     private static ByteBuffer fillMessage(final String hash) {
         return ByteBuffer.wrap(("FILL:" + hash).getBytes(StandardCharsets.UTF_8));
     }
@@ -320,10 +377,10 @@ class OutboundPipelineIntegrationTest {
 
         TestPipelineWriter(
                 SequencedRingBuffer<Order> orderBuffer,
-                ManyToOneRingBuffer<OrderContext> contextQueue,
-                ManyToOneRingBuffer<OrderContext> rejectQueue,
-                ManyToOneRingBuffer<OrderContext> completionQueue) {
-            super(orderBuffer, contextQueue, rejectQueue, completionQueue);
+                ManyToOneRingBuffer<OrderContext> newOrderQueue,
+                ManyToOneRingBuffer<OrderContext> writerReportQueue,
+                ManyToOneRingBuffer<OrderContext> releasedOrderQueue) {
+            super(orderBuffer, newOrderQueue, writerReportQueue, releasedOrderQueue);
         }
 
         @Override
@@ -348,6 +405,26 @@ class OutboundPipelineIntegrationTest {
         protected boolean submitForModify(final OrderContext ctx) {
             return true;
         }
+
+        boolean nativeAmend = false;
+        long amendVenueFillCount;
+        long amendVenueRemaining;
+
+        @Override
+        protected void handleModifyOrder() throws Exception {
+            if (!nativeAmend) {
+                super.handleModifyOrder();
+                return;
+            }
+            final OrderContext ctx = getActiveOrder(modifyOrder.getClientOidCounter());
+            if (ctx == null) {
+                return;
+            }
+            final OrderContext notice =
+                    buildAmendAccepted(ctx, modifyOrder.decoder.size(), amendVenueFillCount, amendVenueRemaining);
+            enqueueWriterReport(notice);
+            returnToPool(notice);
+        }
     }
 
     // ========== Test reader ==========
@@ -363,15 +440,15 @@ class OutboundPipelineIntegrationTest {
 
         TestPipelineReader(
                 SequencedRingBuffer<OrderExecutionReport> execReportBuffer,
-                ManyToOneRingBuffer<OrderContext> contextQueue,
-                ManyToOneRingBuffer<OrderContext> rejectQueue,
-                ManyToOneRingBuffer<OrderContext> completionQueue) {
+                ManyToOneRingBuffer<OrderContext> newOrderQueue,
+                ManyToOneRingBuffer<OrderContext> writerReportQueue,
+                ManyToOneRingBuffer<OrderContext> releasedOrderQueue) {
             super(
                     new NullLogger(),
                     execReportBuffer,
-                    contextQueue,
-                    rejectQueue,
-                    completionQueue,
+                    newOrderQueue,
+                    writerReportQueue,
+                    releasedOrderQueue,
                     System::nanoTime,
                     LISTING);
         }

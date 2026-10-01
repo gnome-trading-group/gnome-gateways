@@ -61,8 +61,8 @@ class PolymarketOutboundWriterTest {
     private static final String EXCHANGE_SECURITY_ID = CONDITION_ID + ":" + TOKEN_ID_STR;
 
     private SequencedRingBuffer<Order> orderBuffer;
-    private ManyToOneRingBuffer<OrderContext> contextQueue;
-    private ManyToOneRingBuffer<OrderContext> rejectQueue;
+    private ManyToOneRingBuffer<OrderContext> newOrderQueue;
+    private ManyToOneRingBuffer<OrderContext> writerReportQueue;
     private HTTPClient httpClient;
     private PolymarketOrderSigner orderSigner;
     private PolymarketAuthHeaders authHeaders;
@@ -72,9 +72,9 @@ class PolymarketOutboundWriterTest {
     @BeforeEach
     void setUp() throws Exception {
         orderBuffer = new SequencedRingBuffer<>(Order::new, new GlobalSequence());
-        contextQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
-        rejectQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
-        final ManyToOneRingBuffer<OrderContext> completionQueue =
+        newOrderQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
+        writerReportQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
+        final ManyToOneRingBuffer<OrderContext> releasedOrderQueue =
                 new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
 
         httpClient = mock(HTTPClient.class);
@@ -103,9 +103,9 @@ class PolymarketOutboundWriterTest {
 
         writer = new PolymarketOutboundWriter(
                 orderBuffer,
-                contextQueue,
-                rejectQueue,
-                completionQueue,
+                newOrderQueue,
+                writerReportQueue,
+                releasedOrderQueue,
                 httpClient,
                 "clob.polymarket.com",
                 orderSigner,
@@ -182,7 +182,7 @@ class PolymarketOutboundWriterTest {
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
 
-        final List<OrderContext> contexts = drainQueue(contextQueue);
+        final List<OrderContext> contexts = drainQueue(newOrderQueue);
         assertEquals(1, contexts.size());
         final OrderContext ctx = contexts.get(0);
         assertEquals(1L, ctx.orderId);
@@ -217,13 +217,13 @@ class PolymarketOutboundWriterTest {
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
 
-        final List<OrderContext> rejects = drainQueue(rejectQueue);
+        final List<OrderContext> rejects = drainQueue(writerReportQueue);
         assertEquals(1, rejects.size());
         assertEquals(ExecType.REJECT, rejects.get(0).execType);
         assertEquals(OrderStatus.REJECTED, rejects.get(0).orderStatus);
 
         // No context enqueued on failure
-        assertEquals(0, drainQueue(contextQueue).size());
+        assertEquals(0, drainQueue(newOrderQueue).size());
     }
 
     @Test
@@ -315,7 +315,7 @@ class PolymarketOutboundWriterTest {
         when(httpResponse.getBody()).thenReturn(successResponse("0xhashforcancel"));
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
-        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
+        final long clientOidCounter = drainQueue(newOrderQueue).get(0).clientOidCounter;
 
         // Now cancel
         when(httpClient.delete(
@@ -352,7 +352,7 @@ class PolymarketOutboundWriterTest {
                         anyString(),
                         anyString(),
                         anyString());
-        assertEquals(0, drainQueue(rejectQueue).size());
+        assertEquals(0, drainQueue(writerReportQueue).size());
     }
 
     @Test
@@ -379,7 +379,7 @@ class PolymarketOutboundWriterTest {
         when(httpResponse.getBody()).thenReturn(successResponse("0xhashforcancelreject"));
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
-        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
+        final long clientOidCounter = drainQueue(newOrderQueue).get(0).clientOidCounter;
 
         // Cancel fails
         when(httpClient.delete(
@@ -401,7 +401,7 @@ class PolymarketOutboundWriterTest {
         publishCancel(clientOidCounter);
         writer.doWork();
 
-        final List<OrderContext> rejects = drainQueue(rejectQueue);
+        final List<OrderContext> rejects = drainQueue(writerReportQueue);
         assertEquals(1, rejects.size());
         assertEquals(ExecType.CANCEL_REJECT, rejects.get(0).execType);
         assertEquals(OrderStatus.CANCELED, rejects.get(0).orderStatus);
@@ -432,7 +432,7 @@ class PolymarketOutboundWriterTest {
         when(httpResponse.getBody()).thenReturn(successResponse("0xoriginal"));
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
-        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
+        final long clientOidCounter = drainQueue(newOrderQueue).get(0).clientOidCounter;
 
         // Modify: cancel succeeds, new submit succeeds
         when(httpClient.delete(
@@ -471,7 +471,7 @@ class PolymarketOutboundWriterTest {
                         anyString(),
                         anyString());
         // New context enqueued for the replacement order
-        final List<OrderContext> contexts = drainQueue(contextQueue);
+        final List<OrderContext> contexts = drainQueue(newOrderQueue);
         assertEquals(1, contexts.size());
     }
 
@@ -499,7 +499,7 @@ class PolymarketOutboundWriterTest {
         when(httpResponse.getBody()).thenReturn(successResponse("0xoriginal2"));
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
-        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
+        final long clientOidCounter = drainQueue(newOrderQueue).get(0).clientOidCounter;
 
         // Modify: cancel fails
         when(httpClient.delete(
@@ -521,7 +521,7 @@ class PolymarketOutboundWriterTest {
         publishModify(clientOidCounter, price("0.60"), qty("5.0"));
         writer.doWork();
 
-        final List<OrderContext> rejects = drainQueue(rejectQueue);
+        final List<OrderContext> rejects = drainQueue(writerReportQueue);
         assertEquals(1, rejects.size());
         assertEquals(ExecType.CANCEL_REJECT, rejects.get(0).execType);
     }
@@ -550,7 +550,7 @@ class PolymarketOutboundWriterTest {
         when(httpResponse.getBody()).thenReturn(successResponse("0xoriginal3"));
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
-        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
+        final long clientOidCounter = drainQueue(newOrderQueue).get(0).clientOidCounter;
 
         // Modify: cancel DELETE succeeds, replacement POST fails
         final HTTPResponse deleteSuccess = mock(HTTPResponse.class);
@@ -594,12 +594,12 @@ class PolymarketOutboundWriterTest {
         publishModify(clientOidCounter, price("0.60"), qty("5.0"));
         writer.doWork();
 
-        final List<OrderContext> rejects = drainQueue(rejectQueue);
+        final List<OrderContext> rejects = drainQueue(writerReportQueue);
         assertEquals(1, rejects.size());
         assertEquals(ExecType.REJECT, rejects.get(0).execType);
         assertEquals(OrderStatus.REJECTED, rejects.get(0).orderStatus);
         assertEquals(RejectReason.EXCHANGE_REJECTED, rejects.get(0).rejectReason);
-        assertEquals(0, drainQueue(contextQueue).size());
+        assertEquals(0, drainQueue(newOrderQueue).size());
     }
 
     @Test
@@ -632,7 +632,7 @@ class PolymarketOutboundWriterTest {
         when(httpResponse.getBody()).thenReturn(successResponse("0xsell-original"));
         publishOrder(Side.Ask, priceVal, sizeVal, OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
-        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
+        final long clientOidCounter = drainQueue(newOrderQueue).get(0).clientOidCounter;
 
         // Modify: cancel succeeds, replacement submitted
         final HTTPResponse deleteSuccess = mock(HTTPResponse.class);

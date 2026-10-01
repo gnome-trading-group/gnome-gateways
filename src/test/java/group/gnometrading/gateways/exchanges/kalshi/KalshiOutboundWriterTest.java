@@ -60,8 +60,8 @@ class KalshiOutboundWriterTest {
     }
 
     private SequencedRingBuffer<Order> orderBuffer;
-    private ManyToOneRingBuffer<OrderContext> contextQueue;
-    private ManyToOneRingBuffer<OrderContext> rejectQueue;
+    private ManyToOneRingBuffer<OrderContext> newOrderQueue;
+    private ManyToOneRingBuffer<OrderContext> writerReportQueue;
     private HTTPClient httpClient;
     private HTTPResponse httpResponse;
     private KalshiOutboundWriter writer;
@@ -69,15 +69,15 @@ class KalshiOutboundWriterTest {
     @BeforeEach
     void setUp() throws Exception {
         orderBuffer = new SequencedRingBuffer<>(Order::new, new GlobalSequence());
-        contextQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
-        rejectQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
-        final ManyToOneRingBuffer<OrderContext> completionQueue =
+        newOrderQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
+        writerReportQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
+        final ManyToOneRingBuffer<OrderContext> releasedOrderQueue =
                 new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
 
         httpClient = mock(HTTPClient.class);
         httpResponse = mock(HTTPResponse.class);
 
-        writer = makeWriter(MARKET_TICKER + ":yes", orderBuffer, completionQueue);
+        writer = makeWriter(MARKET_TICKER + ":yes", orderBuffer, releasedOrderQueue);
     }
 
     // ========== Submit order ==========
@@ -89,7 +89,7 @@ class KalshiOutboundWriterTest {
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
 
-        final List<OrderContext> contexts = drainQueue(contextQueue);
+        final List<OrderContext> contexts = drainQueue(newOrderQueue);
         assertEquals(1, contexts.size());
         assertEquals(
                 "kalshi-order-uuid-001",
@@ -107,8 +107,8 @@ class KalshiOutboundWriterTest {
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
 
-        assertEquals(0, drainQueue(contextQueue).size());
-        final List<OrderContext> rejects = drainQueue(rejectQueue);
+        assertEquals(0, drainQueue(newOrderQueue).size());
+        final List<OrderContext> rejects = drainQueue(writerReportQueue);
         assertEquals(1, rejects.size());
         assertEquals(ExecType.REJECT, rejects.get(0).execType);
         assertEquals(OrderStatus.REJECTED, rejects.get(0).orderStatus);
@@ -247,7 +247,7 @@ class KalshiOutboundWriterTest {
         mockPostSuccess(orderResponse("exchange-order-abc"));
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
-        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
+        final long clientOidCounter = drainQueue(newOrderQueue).get(0).clientOidCounter;
 
         mockDeleteSuccess();
         publishCancel(clientOidCounter);
@@ -266,7 +266,7 @@ class KalshiOutboundWriterTest {
                         eq("KALSHI-ACCESS-SIGNATURE"),
                         anyString());
         assertTrue(pathCaptor.getValue().toString().contains("exchange-order-abc"));
-        assertEquals(0, drainQueue(rejectQueue).size());
+        assertEquals(0, drainQueue(writerReportQueue).size());
     }
 
     @Test
@@ -274,13 +274,13 @@ class KalshiOutboundWriterTest {
         mockPostSuccess(orderResponse("exchange-order-xyz"));
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
-        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
+        final long clientOidCounter = drainQueue(newOrderQueue).get(0).clientOidCounter;
 
         mockDeleteFailure();
         publishCancel(clientOidCounter);
         writer.doWork();
 
-        final List<OrderContext> rejects = drainQueue(rejectQueue);
+        final List<OrderContext> rejects = drainQueue(writerReportQueue);
         assertEquals(1, rejects.size());
         assertEquals(ExecType.CANCEL_REJECT, rejects.get(0).execType);
         assertEquals(OrderStatus.CANCELED, rejects.get(0).orderStatus);
@@ -297,24 +297,26 @@ class KalshiOutboundWriterTest {
     // ========== Amend order (native) ==========
 
     @Test
-    void amendOrder_Success_NoNewContextEnqueued_OrderStillActive() throws Exception {
+    void amendOrder_Success_SendsAmendNoticeAndOrderStaysActive() throws Exception {
         mockPostSuccess(orderResponse("exchange-order-for-amend"));
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
-        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
+        final long clientOidCounter = drainQueue(newOrderQueue).get(0).clientOidCounter;
 
-        mockPostSuccess(orderResponse("not-used"));
+        mockPostSuccess(amendResponse("exchange-order-for-amend", "0.00", "5.00"));
         publishModify(clientOidCounter, price("0.60"), qty("5.0"));
         writer.doWork();
 
-        assertEquals(0, drainQueue(contextQueue).size());
-        assertEquals(0, drainQueue(rejectQueue).size());
+        assertEquals(0, drainQueue(newOrderQueue).size());
+        final List<OrderContext> notices = drainQueue(writerReportQueue);
+        assertEquals(1, notices.size());
+        assertTrue(notices.get(0).amendAccepted);
 
         // Order still active — cancel routes to exchange
         mockDeleteSuccess();
         publishCancel(clientOidCounter);
         writer.doWork();
-        assertEquals(0, drainQueue(rejectQueue).size());
+        assertEquals(0, drainQueue(writerReportQueue).size());
     }
 
     @Test
@@ -322,7 +324,7 @@ class KalshiOutboundWriterTest {
         mockPostSuccess(orderResponse("amend-path-order"));
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
-        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
+        final long clientOidCounter = drainQueue(newOrderQueue).get(0).clientOidCounter;
 
         mockPostSuccess(orderResponse("not-used"));
         publishModify(clientOidCounter, price("0.60"), qty("5.0"));
@@ -352,7 +354,7 @@ class KalshiOutboundWriterTest {
         mockPostSuccess(orderResponse("exchange-order-amend-fail"));
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
-        final long clientOidCounter = drainQueue(contextQueue).get(0).clientOidCounter;
+        final long clientOidCounter = drainQueue(newOrderQueue).get(0).clientOidCounter;
 
         final HTTPResponse amendFailure = mock(HTTPResponse.class);
         when(amendFailure.isSuccess()).thenReturn(false);
@@ -373,9 +375,50 @@ class KalshiOutboundWriterTest {
         publishModify(clientOidCounter, price("0.60"), qty("5.0"));
         writer.doWork();
 
-        final List<OrderContext> rejects = drainQueue(rejectQueue);
+        final List<OrderContext> rejects = drainQueue(writerReportQueue);
         assertEquals(1, rejects.size());
         assertEquals(ExecType.CANCEL_REJECT, rejects.get(0).execType);
+    }
+
+    @Test
+    void amendOrder_NoticeCarriesVenueCountsAndOrderIdentity() throws Exception {
+        mockPostSuccess(orderResponse("exchange-order-partial"));
+        publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
+        writer.doWork();
+        final OrderContext submitted = drainQueue(newOrderQueue).get(0);
+
+        mockPostSuccess(amendResponse("exchange-order-partial", "3.00", "2.00"));
+        publishModify(submitted.clientOidCounter, price("0.60"), qty("5.0"));
+        writer.doWork();
+
+        final List<OrderContext> notices = drainQueue(writerReportQueue);
+        assertEquals(1, notices.size());
+        final OrderContext notice = notices.get(0);
+        assertTrue(notice.amendAccepted);
+        assertEquals(qty("5.0"), notice.originalQty);
+        assertEquals(qty("3.0"), notice.cumulativeFilledQty);
+        assertEquals(qty("2.0"), notice.leavesQty);
+        assertEquals(submitted.clientOidCounter, notice.clientOidCounter);
+        assertEquals(
+                "exchange-order-partial",
+                new String(notice.exchangeOrderIdBytes, 0, notice.exchangeOrderIdLength, StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void amendOrder_ResponseWithoutCounts_NoticeMarksThemAbsent() throws Exception {
+        mockPostSuccess(orderResponse("exchange-order-nofill"));
+        publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
+        writer.doWork();
+        final long clientOidCounter = drainQueue(newOrderQueue).get(0).clientOidCounter;
+
+        mockPostSuccess(orderResponse("exchange-order-nofill"));
+        publishModify(clientOidCounter, price("0.60"), qty("5.0"));
+        writer.doWork();
+
+        final OrderContext notice = drainQueue(writerReportQueue).get(0);
+        assertTrue(notice.amendAccepted);
+        assertEquals(OrderContext.QTY_ABSENT, notice.cumulativeFilledQty);
+        assertEquals(OrderContext.QTY_ABSENT, notice.leavesQty);
     }
 
     @Test
@@ -415,7 +458,7 @@ class KalshiOutboundWriterTest {
     private KalshiOutboundWriter makeWriter(
             final String exchangeSecurityId,
             final SequencedRingBuffer<Order> buf,
-            final ManyToOneRingBuffer<OrderContext> completionQueue)
+            final ManyToOneRingBuffer<OrderContext> releasedOrderQueue)
             throws Exception {
         final KalshiAuthSigner signer = new KalshiAuthSigner("test-api-key", TEST_PRIVATE_KEY);
         final Listing listing = new Listing(
@@ -426,9 +469,9 @@ class KalshiOutboundWriterTest {
                 "KALSHI-TEST");
         return new KalshiOutboundWriter(
                 buf,
-                contextQueue,
-                rejectQueue,
-                completionQueue,
+                newOrderQueue,
+                writerReportQueue,
+                releasedOrderQueue,
                 httpClient,
                 API_HOST,
                 signer,
@@ -602,6 +645,12 @@ class KalshiOutboundWriterTest {
                 },
                 Integer.MAX_VALUE);
         return result;
+    }
+
+    private static ByteBuffer amendResponse(final String orderId, final String fillCount, final String remainingCount) {
+        final String json = "{\"order_id\":\"" + orderId + "\",\"ts_ms\":1700000000000,\"fill_count\":\"" + fillCount
+                + "\",\"remaining_count\":\"" + remainingCount + "\"}";
+        return ByteBuffer.wrap(json.getBytes(StandardCharsets.UTF_8));
     }
 
     private static ByteBuffer orderResponse(final String orderId) {

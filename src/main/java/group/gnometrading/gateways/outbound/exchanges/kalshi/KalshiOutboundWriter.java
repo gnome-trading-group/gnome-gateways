@@ -32,6 +32,8 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
     private static final String HEADER_SIGNATURE = "KALSHI-ACCESS-SIGNATURE";
 
     private static final byte[] ORDER_ID_MARKER = "\"order_id\":\"".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] FILL_COUNT_MARKER = "\"fill_count\":\"".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] REMAINING_COUNT_MARKER = "\"remaining_count\":\"".getBytes(StandardCharsets.UTF_8);
 
     // PRICE_SCALING_FACTOR / 10_000 — converts internal price to 4-decimal fractional part
     private static final long PRICE_SCALE_DIVISOR = Statics.PRICE_SCALING_FACTOR / 10_000L;
@@ -56,15 +58,15 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
 
     public KalshiOutboundWriter(
             final SequencedRingBuffer<?> orderOutboundBuffer,
-            final ManyToOneRingBuffer<OrderContext> contextQueue,
-            final ManyToOneRingBuffer<OrderContext> rejectQueue,
-            final ManyToOneRingBuffer<OrderContext> completionQueue,
+            final ManyToOneRingBuffer<OrderContext> newOrderQueue,
+            final ManyToOneRingBuffer<OrderContext> writerReportQueue,
+            final ManyToOneRingBuffer<OrderContext> releasedOrderQueue,
             final HTTPClient httpClient,
             final String apiHost,
             final KalshiAuthSigner authSigner,
             final EpochNanoClock clock,
             final Listing listing) {
-        super(orderOutboundBuffer, contextQueue, rejectQueue, completionQueue);
+        super(orderOutboundBuffer, newOrderQueue, writerReportQueue, releasedOrderQueue);
         this.httpClient = httpClient;
         this.apiHost = apiHost;
         this.authSigner = authSigner;
@@ -173,11 +175,19 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
                 this.authSigner.signature());
 
         if (response.isSuccess()) {
+            // Kalshi acknowledges an amend only in this response body, and only the reader knows the
+            // order's fills, so hand it the venue's numbers to build the acknowledgement from.
             ctx.originalQty = this.modifyOrder.decoder.size();
-            ctx.leavesQty = ctx.originalQty - ctx.cumulativeFilledQty;
+            final OrderContext notice = buildAmendAccepted(
+                    ctx,
+                    ctx.originalQty,
+                    parseFixedPointField(response, FILL_COUNT_MARKER),
+                    parseFixedPointField(response, REMAINING_COUNT_MARKER));
+            enqueueWriterReport(notice);
+            returnToPool(notice);
         } else {
             final OrderContext reject = buildCancelReject(ctx);
-            enqueueReject(reject);
+            enqueueWriterReport(reject);
             returnToPool(reject);
         }
     }
@@ -321,6 +331,61 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
             ctx.exchangeOrderIdBytes[i] = body.get(valueStart + i);
         }
         return true;
+    }
+
+    /**
+     * Reads a Kalshi FixedPointCount field (a quoted decimal such as {@code "5.00"}) out of a
+     * response body and scales it to {@link Statics#SIZE_SCALING_FACTOR}. Returns
+     * {@link #OrderContext.QTY_ABSENT} when the field is missing, null or unparseable.
+     */
+    private static long parseFixedPointField(final HTTPResponse response, final byte[] marker) {
+        final ByteBuffer body = response.getBody();
+        if (body == null || !body.hasRemaining()) {
+            return OrderContext.QTY_ABSENT;
+        }
+        final int markerPos = indexOfBytes(body, body.position(), body.limit(), marker);
+        if (markerPos < 0) {
+            return OrderContext.QTY_ABSENT;
+        }
+        return scanFixedPoint(body, markerPos + marker.length, body.limit());
+    }
+
+    private static long scanFixedPoint(final ByteBuffer body, final int start, final int to) {
+        int pos = start;
+        long whole = 0;
+        while (pos < to) {
+            final int digit = body.get(pos) - '0';
+            if (digit < 0 || digit > 9) {
+                break;
+            }
+            whole = whole * 10 + digit;
+            pos++;
+        }
+        if (pos == start) {
+            return OrderContext.QTY_ABSENT;
+        }
+
+        final long value = whole * Statics.SIZE_SCALING_FACTOR;
+        if (pos >= to || body.get(pos) != '.') {
+            return value;
+        }
+        return value + scanFraction(body, pos + 1, to);
+    }
+
+    private static long scanFraction(final ByteBuffer body, final int start, final int to) {
+        long frac = 0;
+        long place = Statics.SIZE_SCALING_FACTOR / 10;
+        int pos = start;
+        while (pos < to && place > 0) {
+            final int digit = body.get(pos) - '0';
+            if (digit < 0 || digit > 9) {
+                break;
+            }
+            frac += digit * place;
+            place /= 10;
+            pos++;
+        }
+        return frac;
     }
 
     private static int indexOfBytes(final ByteBuffer buf, final int from, final int to, final byte[] pattern) {

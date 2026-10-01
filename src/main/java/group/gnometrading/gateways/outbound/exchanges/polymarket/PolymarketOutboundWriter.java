@@ -51,15 +51,15 @@ public final class PolymarketOutboundWriter extends OutboundSocketWriter {
 
     public PolymarketOutboundWriter(
             SequencedRingBuffer<?> orderOutboundBuffer,
-            ManyToOneRingBuffer<OrderContext> contextQueue,
-            ManyToOneRingBuffer<OrderContext> rejectQueue,
-            ManyToOneRingBuffer<OrderContext> completionQueue,
+            ManyToOneRingBuffer<OrderContext> newOrderQueue,
+            ManyToOneRingBuffer<OrderContext> writerReportQueue,
+            ManyToOneRingBuffer<OrderContext> releasedOrderQueue,
             HTTPClient httpClient,
             String clobHost,
             PolymarketOrderSigner orderSigner,
             PolymarketAuthHeaders authHeaders,
             Listing listing) {
-        super(orderOutboundBuffer, contextQueue, rejectQueue, completionQueue);
+        super(orderOutboundBuffer, newOrderQueue, writerReportQueue, releasedOrderQueue);
         this.httpClient = httpClient;
         this.clobHost = clobHost;
         this.orderSigner = orderSigner;

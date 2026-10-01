@@ -5,8 +5,12 @@ import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
 import group.gnometrading.concurrent.GnomeAgent;
 import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.Logger;
+import group.gnometrading.schemas.ExecType;
+import group.gnometrading.schemas.Liquidity;
 import group.gnometrading.schemas.OrderExecutionReport;
 import group.gnometrading.schemas.OrderExecutionReportEncoder;
+import group.gnometrading.schemas.OrderStatus;
+import group.gnometrading.schemas.RejectReason;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Listing;
 import java.io.IOException;
@@ -16,16 +20,14 @@ import org.agrona.concurrent.EpochNanoClock;
 
 public abstract class OutboundSocketReader implements GnomeAgent {
 
-    private static final int DEFAULT_CONTEXT_POOL_SIZE = 1 << 7;
-
     private final Logger logger;
     private final SequencedRingBuffer<OrderExecutionReport> execReportBuffer;
-    private final ManyToOneRingBuffer<OrderContext> contextQueue;
-    private final ManyToOneRingBuffer<OrderContext> rejectQueue;
+    private final ManyToOneRingBuffer<OrderContext> newOrderQueue;
+    private final ManyToOneRingBuffer<OrderContext> writerReportQueue;
     protected final EpochNanoClock clock;
     protected final Listing listing;
 
-    private final ManyToOneRingBuffer<OrderContext> completionQueue;
+    private final ManyToOneRingBuffer<OrderContext> releasedOrderQueue;
 
     private final Long2ObjectHashMap<OrderContext> orderContexts;
     private final OrderContext[] contextPool;
@@ -40,24 +42,24 @@ public abstract class OutboundSocketReader implements GnomeAgent {
     protected OutboundSocketReader(
             Logger logger,
             SequencedRingBuffer<OrderExecutionReport> execReportBuffer,
-            ManyToOneRingBuffer<OrderContext> contextQueue,
-            ManyToOneRingBuffer<OrderContext> rejectQueue,
-            ManyToOneRingBuffer<OrderContext> completionQueue,
+            ManyToOneRingBuffer<OrderContext> newOrderQueue,
+            ManyToOneRingBuffer<OrderContext> writerReportQueue,
+            ManyToOneRingBuffer<OrderContext> releasedOrderQueue,
             EpochNanoClock clock,
             Listing listing) {
         this.logger = logger;
         this.execReportBuffer = execReportBuffer;
-        this.contextQueue = contextQueue;
-        this.rejectQueue = rejectQueue;
-        this.completionQueue = completionQueue;
+        this.newOrderQueue = newOrderQueue;
+        this.writerReportQueue = writerReportQueue;
+        this.releasedOrderQueue = releasedOrderQueue;
         this.clock = clock;
         this.listing = listing;
-        this.orderContexts = new Long2ObjectHashMap<>(DEFAULT_CONTEXT_POOL_SIZE * 2, 0.6f);
-        this.contextPool = new OrderContext[DEFAULT_CONTEXT_POOL_SIZE];
-        for (int i = 0; i < DEFAULT_CONTEXT_POOL_SIZE; i++) {
+        this.orderContexts = new Long2ObjectHashMap<>(OrderContext.MAX_IN_FLIGHT_ORDERS * 2, 0.6f);
+        this.contextPool = new OrderContext[OrderContext.MAX_IN_FLIGHT_ORDERS];
+        for (int i = 0; i < OrderContext.MAX_IN_FLIGHT_ORDERS; i++) {
             this.contextPool[i] = new OrderContext();
         }
-        this.contextPoolHead = DEFAULT_CONTEXT_POOL_SIZE;
+        this.contextPoolHead = OrderContext.MAX_IN_FLIGHT_ORDERS;
         this.execReport = new OrderExecutionReport();
         this.execReport.wrap(this.execReport.buffer);
         this.pause = true;
@@ -106,8 +108,10 @@ public abstract class OutboundSocketReader implements GnomeAgent {
             this.isPaused = false;
         }
 
-        this.rejectQueue.read(this::consumeReject, 16);
-        this.contextQueue.read(this::consumeContext, 16);
+        // New orders first: an order submitted and amended in one writer poll must exist here before
+        // its amend notice is applied.
+        this.newOrderQueue.read(this::consumeNewOrder, OrderContext.HANDOFF_QUEUE_CAPACITY);
+        this.writerReportQueue.read(this::consumeWriterReport, OrderContext.HANDOFF_QUEUE_CAPACITY);
 
         final ByteBuffer buffer = readSocket();
         if (buffer != null && buffer.hasRemaining()) {
@@ -117,7 +121,7 @@ public abstract class OutboundSocketReader implements GnomeAgent {
         return 0;
     }
 
-    private void consumeContext(final OrderContext src) {
+    private void consumeNewOrder(final OrderContext src) {
         if (this.contextPoolHead <= 0) {
             throw new RuntimeException("Order context pool exhausted");
         }
@@ -126,7 +130,11 @@ public abstract class OutboundSocketReader implements GnomeAgent {
         this.orderContexts.put(computeKey(ctx.exchangeOrderIdBytes, ctx.exchangeOrderIdLength), ctx);
     }
 
-    private void consumeReject(final OrderContext src) {
+    private void consumeWriterReport(final OrderContext src) {
+        if (src.amendAccepted) {
+            applyAcceptedAmend(src);
+            return;
+        }
         prepareExecReportHeader(src);
         this.execReport.encoder.execType(src.execType);
         this.execReport.encoder.orderStatus(src.orderStatus);
@@ -141,12 +149,71 @@ public abstract class OutboundSocketReader implements GnomeAgent {
         publishExecReport();
     }
 
+    /**
+     * Acknowledges an amend the venue accepted, using this thread's view of the order's fills.
+     *
+     * <p>The venue's numbers are a snapshot taken when it processed the amend, but fills on the
+     * stream can land on either side of that snapshot. Fills this reader has already seen beyond
+     * the snapshot are taken off the venue's remaining quantity; fills still in flight are already
+     * counted in it, and {@link OrderContext#amendFillCount} lets the venue reader recognise them.
+     * An order that has finished in the meantime needs no acknowledgement: its terminal report
+     * already settled the OMS's state.
+     */
+    private void applyAcceptedAmend(final OrderContext src) {
+        final OrderContext ctx =
+                this.orderContexts.get(computeKey(src.exchangeOrderIdBytes, src.exchangeOrderIdLength));
+        if (ctx == null) {
+            return;
+        }
+        final long venueFillCount =
+                src.cumulativeFilledQty == OrderContext.QTY_ABSENT ? ctx.cumulativeFilledQty : src.cumulativeFilledQty;
+        final long leaves;
+        if (src.leavesQty == OrderContext.QTY_ABSENT) {
+            leaves = src.originalQty - ctx.cumulativeFilledQty;
+        } else {
+            leaves = src.leavesQty - Math.max(0, ctx.cumulativeFilledQty - venueFillCount);
+        }
+
+        ctx.originalQty = src.originalQty;
+        ctx.leavesQty = Math.max(0, leaves);
+        ctx.amendFillCount = venueFillCount;
+        publishNew(
+                ctx,
+                ctx.cumulativeFilledQty,
+                ctx.leavesQty,
+                OrderExecutionReportEncoder.timestampEventNullValue(),
+                this.clock.nanoTime());
+    }
+
+    /** Publishes the order's {@link ExecType#NEW} acknowledgement and records that it was sent. */
+    protected final void publishNew(
+            final OrderContext ctx,
+            final long cumulativeQty,
+            final long leavesQty,
+            final long timestampEvent,
+            final long timestampRecv) {
+        prepareExecReportHeader(ctx);
+        this.execReport.encoder.execType(ExecType.NEW);
+        this.execReport.encoder.orderStatus(OrderStatus.NEW);
+        this.execReport.encoder.rejectReason(RejectReason.NULL_VAL);
+        this.execReport.encoder.filledQty(OrderExecutionReportEncoder.filledQtyNullValue());
+        this.execReport.encoder.fillPrice(OrderExecutionReportEncoder.fillPriceNullValue());
+        this.execReport.encoder.fee(OrderExecutionReportEncoder.feeNullValue());
+        this.execReport.encoder.cumulativeQty(cumulativeQty);
+        this.execReport.encoder.leavesQty(leavesQty);
+        this.execReport.encoder.timestampEvent(timestampEvent);
+        this.execReport.encoder.timestampRecv(timestampRecv);
+        publishExecReport();
+        ctx.acked = true;
+    }
+
     protected final void prepareExecReportHeader(final OrderContext ctx) {
         this.execReport.encoder.exchangeId(ctx.exchangeId);
         this.execReport.encoder.securityId(ctx.securityId);
         this.execReport.encoder.orderId(ctx.orderId);
         this.execReport.encodeClientOid(ctx.clientOidCounter, ctx.clientOidStrategyId);
         this.execReport.encoder.flags().clear();
+        this.execReport.encoder.liquidity(Liquidity.NULL_VAL);
     }
 
     protected final void publishExecReport() {
@@ -160,15 +227,19 @@ public abstract class OutboundSocketReader implements GnomeAgent {
 
     protected final void releaseOrderContext(final long key) {
         final OrderContext ctx = this.orderContexts.remove(key);
-        if (ctx != null) {
-            final int idx = this.completionQueue.tryClaim();
-            if (idx >= 0) {
-                this.completionQueue.indexAt(idx).clientOidCounter = ctx.clientOidCounter;
-                this.completionQueue.commit(idx);
-            }
-            ctx.reset();
-            this.contextPool[this.contextPoolHead++] = ctx;
+        if (ctx == null) {
+            return;
         }
+        // Dropping a completion would leave the order in the writer's activeOrders forever and leak
+        // a writer pool slot, so fail as loudly as the other two queues do.
+        final int idx = this.releasedOrderQueue.tryClaim();
+        if (idx < 0) {
+            throw new RuntimeException("Released order queue overflow");
+        }
+        this.releasedOrderQueue.indexAt(idx).clientOidCounter = ctx.clientOidCounter;
+        this.releasedOrderQueue.commit(idx);
+        ctx.reset();
+        this.contextPool[this.contextPoolHead++] = ctx;
     }
 
     protected final void onSocketClose() {

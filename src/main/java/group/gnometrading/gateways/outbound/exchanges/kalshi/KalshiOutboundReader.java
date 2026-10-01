@@ -8,6 +8,7 @@ import group.gnometrading.gateways.outbound.fee.PredictionMarketFees;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.schemas.ExecType;
+import group.gnometrading.schemas.Liquidity;
 import group.gnometrading.schemas.OrderExecutionReport;
 import group.gnometrading.schemas.OrderExecutionReportEncoder;
 import group.gnometrading.schemas.OrderStatus;
@@ -39,9 +40,9 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
     public KalshiOutboundReader(
             final Logger logger,
             final SequencedRingBuffer<OrderExecutionReport> execReportBuffer,
-            final ManyToOneRingBuffer<OrderContext> contextQueue,
-            final ManyToOneRingBuffer<OrderContext> rejectQueue,
-            final ManyToOneRingBuffer<OrderContext> completionQueue,
+            final ManyToOneRingBuffer<OrderContext> newOrderQueue,
+            final ManyToOneRingBuffer<OrderContext> writerReportQueue,
+            final ManyToOneRingBuffer<OrderContext> releasedOrderQueue,
             final EpochNanoClock clock,
             final Listing listing,
             final WebSocketClient socketClient,
@@ -52,9 +53,9 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
         super(
                 logger,
                 execReportBuffer,
-                contextQueue,
-                rejectQueue,
-                completionQueue,
+                newOrderQueue,
+                writerReportQueue,
+                releasedOrderQueue,
                 clock,
                 listing,
                 socketClient,
@@ -127,14 +128,27 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
                     event.fillCount = field.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR);
                 } else if (name.equals("remaining_count_fp")) {
                     event.remainingCount = field.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR);
-                } else if (name.equals("taker_fill_cost_dollars")) {
-                    event.takerFillCost = field.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR);
-                } else if (name.equals("maker_fill_cost_dollars")) {
-                    event.makerFillCost = field.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR);
                 } else if (name.equals("last_updated_ts_ms")) {
                     event.timestampMs = field.asLong();
+                } else {
+                    parseDollarField(name, field, event);
                 }
             }
+        }
+    }
+
+    private static void parseDollarField(
+            final GnomeString name, final JsonDecoder.JsonNode field, final ParsedEvent event) {
+        if (name.equals("taker_fill_cost_dollars")) {
+            event.takerFillCost = field.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR);
+        } else if (name.equals("maker_fill_cost_dollars")) {
+            event.makerFillCost = field.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR);
+        } else if (name.equals("taker_fees_dollars")) {
+            event.takerFees = field.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR);
+            event.feesReported = true;
+        } else if (name.equals("maker_fees_dollars")) {
+            event.makerFees = field.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR);
+            event.feesReported = true;
         }
     }
 
@@ -163,6 +177,17 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
         }
 
         if (event.statusFlag == STATUS_CANCELED) {
+            // An order that fills and is cancelled together, most often an IOC that partly filled, reports
+            // both in one update. The fills must be reported first or the OMS never learns it holds them.
+            if (event.fillCount > ctx.cumulativeFilledQty) {
+                final boolean fillsCompleteOrder = event.fillCount - ctx.cumulativeFilledQty >= ctx.leavesQty;
+                publishFill(
+                        ctx, event, fillsCompleteOrder, false, fillsCompleteOrder ? 0 : workingQtyAtCancel(ctx, event));
+                if (fillsCompleteOrder) {
+                    releaseOrderContext(key);
+                    return;
+                }
+            }
             prepareExecReportHeader(ctx);
             this.execReport.encoder.execType(ExecType.CANCEL);
             this.execReport.encoder.orderStatus(OrderStatus.CANCELED);
@@ -180,30 +205,58 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
             return;
         }
 
-        if (event.statusFlag == STATUS_RESTING && ctx.cumulativeFilledQty == 0) {
-            prepareExecReportHeader(ctx);
-            this.execReport.encoder.execType(ExecType.NEW);
-            this.execReport.encoder.orderStatus(OrderStatus.NEW);
-            setNullFillFields();
-            this.execReport.encoder.cumulativeQty(0);
-            this.execReport.encoder.leavesQty(ctx.originalQty);
-            setTimestamp(event.timestampMs);
-            publishExecReport();
+        // Only the first `resting` update acknowledges the order. Any later one, such as one following
+        // an amend, must not become a second NEW: amends are acknowledged from the writer's notice.
+        if (event.statusFlag == STATUS_RESTING && !ctx.acked) {
+            publishNew(ctx, 0, ctx.originalQty, event.timestampMs * NANOS_PER_MILLI, this.recvTimestamp);
         }
     }
 
     private void emitFillEvent(final OrderContext ctx, final ParsedEvent event, final long key) {
+        final boolean fullyFilled = event.remainingCount <= 0 || event.statusFlag == STATUS_EXECUTED;
+        publishFill(ctx, event, fullyFilled, !fullyFilled, fullyFilled ? 0 : workingQtyAfter(ctx, event));
+        if (fullyFilled) {
+            releaseOrderContext(key);
+        }
+    }
+
+    /**
+     * Publishes the fill that moved the order to {@code event.fillCount}, leaving {@code leavesAfter}
+     * working. The caller decides both, since a cancel update's own remaining count is already zero.
+     */
+    private void publishFill(
+            final OrderContext ctx,
+            final ParsedEvent event,
+            final boolean fullyFilled,
+            final boolean stillWorking,
+            final long leavesAfter) {
         final long fillDelta = event.fillCount - ctx.cumulativeFilledQty;
         final long totalCost = event.takerFillCost + event.makerFillCost;
         final long costDelta = totalCost - ctx.cumulativeCost;
         // fillPrice in PRICE_SCALING_FACTOR units per contract:
         // (costDelta in PRICE_SCALING_FACTOR) / (fillDelta in SIZE_SCALING_FACTOR) * SIZE_SCALING_FACTOR
         final long fillPrice = fillDelta > 0 ? costDelta * Statics.SIZE_SCALING_FACTOR / fillDelta : 0;
-        final boolean fullyFilled = event.remainingCount <= 0 || event.statusFlag == STATUS_EXECUTED;
+
+        // An order that fills on arrival has no `resting` update to acknowledge it. Without a NEW
+        // the OMS slot stays PENDING_NEW, so acknowledge it first if it is still working.
+        if (!ctx.acked && stillWorking) {
+            publishNew(
+                    ctx,
+                    ctx.cumulativeFilledQty,
+                    ctx.originalQty - ctx.cumulativeFilledQty,
+                    event.timestampMs * NANOS_PER_MILLI,
+                    this.recvTimestamp);
+        }
+        ctx.acked = true;
+
+        final long makerCostDelta = event.makerFillCost - ctx.cumulativeMakerCost;
+        final Liquidity liquidity = classifyLiquidity(costDelta, makerCostDelta);
+        final long fee = fillFee(ctx, event, fillPrice, fillDelta, costDelta, makerCostDelta);
 
         ctx.cumulativeFilledQty = event.fillCount;
         ctx.cumulativeCost = totalCost;
-        ctx.leavesQty = fullyFilled ? 0 : event.remainingCount;
+        ctx.cumulativeMakerCost = event.makerFillCost;
+        ctx.leavesQty = leavesAfter;
 
         prepareExecReportHeader(ctx);
         this.execReport.encoder.execType(fullyFilled ? ExecType.FILL : ExecType.PARTIAL_FILL);
@@ -213,12 +266,73 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
         this.execReport.encoder.cumulativeQty(ctx.cumulativeFilledQty);
         this.execReport.encoder.leavesQty(ctx.leavesQty);
         setTimestamp(event.timestampMs);
-        this.execReport.encoder.fee(PredictionMarketFees.calculateScaledFee(fillPrice, fillDelta, takerFeeRate));
+        this.execReport.encoder.fee(fee);
+        this.execReport.encoder.liquidity(liquidity);
         publishExecReport();
+    }
 
-        if (fullyFilled) {
-            releaseOrderContext(key);
+    /**
+     * What was still working when a cancel arrived together with fills. The update's own remaining
+     * count is already zero, so this comes from our working quantity less the new fills. The OMS
+     * removes it from position leaves on the CANCEL that follows, so it must not be zero here.
+     */
+    private static long workingQtyAtCancel(final OrderContext ctx, final ParsedEvent event) {
+        if (ctx.amendFillCount != OrderContext.QTY_ABSENT && event.fillCount <= ctx.amendFillCount) {
+            return ctx.leavesQty;
         }
+        return Math.max(0, ctx.leavesQty - (event.fillCount - ctx.cumulativeFilledQty));
+    }
+
+    /**
+     * A fill the venue had already counted when it accepted an amend reports the pre-amend
+     * remaining quantity, so it cannot be trusted. The amend's acknowledgement already netted that
+     * fill out of the working quantity, which therefore stands; later fills report post-amend numbers.
+     */
+    private static long workingQtyAfter(final OrderContext ctx, final ParsedEvent event) {
+        if (ctx.amendFillCount != OrderContext.QTY_ABSENT && event.fillCount <= ctx.amendFillCount) {
+            return ctx.leavesQty;
+        }
+        return event.remainingCount;
+    }
+
+    /**
+     * Kalshi reports cumulative maker and taker cost per order rather than per execution, so a single
+     * update can cover both. Such a mixed fill is reported as unknown rather than attributed to one side.
+     */
+    private static Liquidity classifyLiquidity(final long costDelta, final long makerCostDelta) {
+        if (costDelta <= 0) {
+            return Liquidity.NULL_VAL;
+        }
+        if (makerCostDelta >= costDelta) {
+            return Liquidity.MAKER;
+        }
+        return makerCostDelta <= 0 ? Liquidity.TAKER : Liquidity.NULL_VAL;
+    }
+
+    /**
+     * Fee for this fill, as a delta against the order's running total. Kalshi reports the fees it
+     * actually charged, split by liquidity, so those are used whenever present. The rate model is
+     * only a fallback for messages without them, and splits the fill by which cost bucket moved.
+     */
+    private long fillFee(
+            final OrderContext ctx,
+            final ParsedEvent event,
+            final long fillPrice,
+            final long fillDelta,
+            final long costDelta,
+            final long makerCostDelta) {
+        if (event.feesReported) {
+            final long totalFees = event.takerFees + event.makerFees;
+            final long fee = totalFees - ctx.cumulativeFees;
+            ctx.cumulativeFees = totalFees;
+            return fee;
+        }
+        final double makerShare = costDelta > 0 ? Math.min(1.0, (double) makerCostDelta / costDelta) : 0.0;
+        final long makerQty = (long) (fillDelta * makerShare);
+        final long fee = PredictionMarketFees.calculateScaledFee(fillPrice, makerQty, this.makerFeeRate)
+                + PredictionMarketFees.calculateScaledFee(fillPrice, fillDelta - makerQty, this.takerFeeRate);
+        ctx.cumulativeFees += fee;
+        return fee;
     }
 
     private void setNullFillFields() {
@@ -241,6 +355,9 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
         long remainingCount;
         long takerFillCost;
         long makerFillCost;
+        long takerFees;
+        long makerFees;
+        boolean feesReported;
         long timestampMs;
 
         void reset() {
@@ -250,6 +367,9 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
             this.remainingCount = 0;
             this.takerFillCost = 0;
             this.makerFillCost = 0;
+            this.takerFees = 0;
+            this.makerFees = 0;
+            this.feesReported = false;
             this.timestampMs = OrderExecutionReportEncoder.timestampEventNullValue();
         }
     }

@@ -13,6 +13,7 @@ import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.networking.websockets.WebSocketResponse;
 import group.gnometrading.networking.websockets.enums.Opcode;
 import group.gnometrading.schemas.ExecType;
+import group.gnometrading.schemas.Liquidity;
 import group.gnometrading.schemas.OrderExecutionReport;
 import group.gnometrading.schemas.OrderStatus;
 import group.gnometrading.schemas.RejectReason;
@@ -38,9 +39,9 @@ class PolymarketOutboundReaderTest {
     private static final long ORIG_QTY = qty("10.0");
 
     private SequencedRingBuffer<OrderExecutionReport> execReportBuffer;
-    private ManyToOneRingBuffer<OrderContext> contextQueue;
-    private ManyToOneRingBuffer<OrderContext> rejectQueue;
-    private ManyToOneRingBuffer<OrderContext> completionQueue;
+    private ManyToOneRingBuffer<OrderContext> newOrderQueue;
+    private ManyToOneRingBuffer<OrderContext> writerReportQueue;
+    private ManyToOneRingBuffer<OrderContext> releasedOrderQueue;
     private WebSocketClient client;
     private WebSocketResponse response;
     private PolymarketOutboundReader reader;
@@ -58,9 +59,9 @@ class PolymarketOutboundReaderTest {
         });
         execReportBuffer.start();
 
-        contextQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
-        rejectQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
-        completionQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
+        newOrderQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
+        writerReportQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
+        releasedOrderQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
 
         client = mock(WebSocketClient.class);
         response = mock(WebSocketResponse.class);
@@ -78,9 +79,9 @@ class PolymarketOutboundReaderTest {
         reader = new PolymarketOutboundReader(
                 new NullLogger(),
                 execReportBuffer,
-                contextQueue,
-                rejectQueue,
-                completionQueue,
+                newOrderQueue,
+                writerReportQueue,
+                releasedOrderQueue,
                 () -> FIXED_NANO,
                 listing,
                 client,
@@ -100,7 +101,7 @@ class PolymarketOutboundReaderTest {
 
     @Test
     void orderPlacementLiveEmitsNewExecReport() throws Exception {
-        enqueueContext(ORDER_HASH, ORIG_QTY, 1, 1, 2, 3L);
+        enqueueNewOrder(ORDER_HASH, ORIG_QTY, 1, 1, 2, 3L);
         process(orderEvent("PLACEMENT", "LIVE", ORDER_HASH, "1700000000000"));
         waitForReports(1);
 
@@ -115,7 +116,7 @@ class PolymarketOutboundReaderTest {
     @Test
     void orderCancellationEmitsCancelExecReport() throws Exception {
         final long cumFilled = qty("3.0");
-        enqueueContext(ORDER_HASH, ORIG_QTY, cumFilled, 1, 2, 3L);
+        enqueueNewOrder(ORDER_HASH, ORIG_QTY, cumFilled, 1, 2, 3L);
         process(orderEvent("CANCELLATION", "CANCELED", ORDER_HASH, "1700000000000"));
         waitForReports(1);
 
@@ -129,7 +130,7 @@ class PolymarketOutboundReaderTest {
 
     @Test
     void tradeMatchedEmitsFillReport() throws Exception {
-        enqueueContext(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
+        enqueueNewOrder(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
         process(tradeEvent("MATCHED", ORDER_HASH, "0.50", "10.0", "0", "1700000000000"));
         waitForReports(1);
 
@@ -143,7 +144,7 @@ class PolymarketOutboundReaderTest {
 
     @Test
     void tradeMatchedPartialFillSetsCorrectStatus() throws Exception {
-        enqueueContext(ORDER_HASH, qty("20.0"), 0, 1, 2, 3L);
+        enqueueNewOrder(ORDER_HASH, qty("20.0"), 0, 1, 2, 3L);
         process(tradeEvent("MATCHED", ORDER_HASH, "0.60", "5.0", "0", "1700000000000"));
         waitForReports(1);
 
@@ -158,7 +159,7 @@ class PolymarketOutboundReaderTest {
 
     @Test
     void tradeFailedEmitsCancelReport() throws Exception {
-        enqueueContext(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
+        enqueueNewOrder(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
         process(tradeEvent("FAILED", ORDER_HASH, "0.0", "0.0", "0", "1700000000000"));
         waitForReports(1);
 
@@ -170,7 +171,7 @@ class PolymarketOutboundReaderTest {
 
     @Test
     void tradeMinedIsNoOp() throws Exception {
-        enqueueContext(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
+        enqueueNewOrder(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
         process(tradeEvent("MINED", ORDER_HASH, "0.0", "0.0", "0", "1700000000000"));
 
         assertEquals(0, captured.size());
@@ -207,7 +208,7 @@ class PolymarketOutboundReaderTest {
 
     @Test
     void execReportTimestampsArePopulated() throws Exception {
-        enqueueContext(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
+        enqueueNewOrder(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
         final long eventMs = 1700000000000L;
         process(orderEvent("PLACEMENT", "LIVE", ORDER_HASH, Long.toString(eventMs)));
         waitForReports(1);
@@ -234,7 +235,7 @@ class PolymarketOutboundReaderTest {
 
     @Test
     void multiplePartialFills_CumulativeQtyAccumulates() throws Exception {
-        enqueueContext(ORDER_HASH, qty("20.0"), 0, 1, 2, 3L);
+        enqueueNewOrder(ORDER_HASH, qty("20.0"), 0, 1, 2, 3L);
         process(tradeEvent("MATCHED", ORDER_HASH, "0.60", "8.0", "0", "1700000000000"));
         waitForReports(1);
 
@@ -251,7 +252,7 @@ class PolymarketOutboundReaderTest {
 
     @Test
     void fullFill_ReleasesContext_SubsequentMessageIgnored() throws Exception {
-        enqueueContext(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
+        enqueueNewOrder(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
         process(tradeEvent("MATCHED", ORDER_HASH, "0.50", "10.0", "0", "1700000000000"));
         waitForReports(1);
 
@@ -262,7 +263,7 @@ class PolymarketOutboundReaderTest {
         assertEquals(1, captured.size());
     }
 
-    // --- completion queue ---
+    // --- released order queue ---
 
     @Test
     void fullFill_EnqueuesCompletion() throws Exception {
@@ -288,7 +289,7 @@ class PolymarketOutboundReaderTest {
 
     @Test
     void partialFill_DoesNotEnqueueCompletion() throws Exception {
-        enqueueContext(ORDER_HASH, ORIG_QTY, 0L, 1, 2, 3L);
+        enqueueNewOrder(ORDER_HASH, ORIG_QTY, 0L, 1, 2, 3L);
         process(tradeEvent("MATCHED", ORDER_HASH, "0.60", "5.0", "0", "1700000000000"));
         waitForReports(1);
 
@@ -308,7 +309,7 @@ class PolymarketOutboundReaderTest {
 
     @Test
     void tradeMatched_computesFeeFromExchangeProvidedFeeRateBps() throws Exception {
-        enqueueContext(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
+        enqueueNewOrder(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
         // feeRateBps=200 (2%) on 10 contracts at $0.50: fee = 10 * 0.02 * 0.50 * 0.50 * PRICE_SCALE = 50_000_000
         process(tradeEvent("MATCHED", ORDER_HASH, "0.50", "10.0", "200", "1700000000000"));
         waitForReports(1);
@@ -319,7 +320,7 @@ class PolymarketOutboundReaderTest {
 
     @Test
     void tradeMatched_fallsBackToConfiguredTakerFeeRateWhenBpsIsZero() throws Exception {
-        enqueueContext(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
+        enqueueNewOrder(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
         // feeRateBps=0, falls back to configured takerFeeRate=0.02
         process(tradeEvent("MATCHED", ORDER_HASH, "0.50", "10.0", "0", "1700000000000"));
         waitForReports(1);
@@ -328,11 +329,58 @@ class PolymarketOutboundReaderTest {
         assertEquals(expectedFee, captured.get(0).decoder.fee());
     }
 
+    @Test
+    void tradeMatched_asMaker_usesMakerRateNotTakersBpsAndReportsMaker() throws Exception {
+        enqueueNewOrder(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
+        // fee_rate_bps=200 is the taker order's rate; as maker we pay makerFeeRate=0.0
+        process(withField(
+                tradeEvent("MATCHED", ORDER_HASH, "0.50", "10.0", "200", "1700000000000"), "trader_side", "MAKER"));
+        waitForReports(1);
+
+        assertEquals(0L, captured.get(0).decoder.fee());
+        assertEquals(Liquidity.MAKER, captured.get(0).decoder.liquidity());
+    }
+
+    @Test
+    void tradeMatched_camelCaseTraderSide_isAlsoRecognised() throws Exception {
+        enqueueNewOrder(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
+        process(withField(
+                tradeEvent("MATCHED", ORDER_HASH, "0.50", "10.0", "200", "1700000000000"), "traderSide", "MAKER"));
+        waitForReports(1);
+
+        assertEquals(Liquidity.MAKER, captured.get(0).decoder.liquidity());
+    }
+
+    @Test
+    void tradeMatched_asTaker_keepsBpsFeeAndReportsTaker() throws Exception {
+        enqueueNewOrder(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
+        process(withField(
+                tradeEvent("MATCHED", ORDER_HASH, "0.50", "10.0", "200", "1700000000000"), "trader_side", "TAKER"));
+        waitForReports(1);
+
+        final long expectedFee = (long) (10.0 * 0.02 * 0.50 * 0.50 * Statics.PRICE_SCALING_FACTOR);
+        assertEquals(expectedFee, captured.get(0).decoder.fee());
+        assertEquals(Liquidity.TAKER, captured.get(0).decoder.liquidity());
+    }
+
+    @Test
+    void tradeMatched_withoutTraderSide_reportsUnknownLiquidity() throws Exception {
+        enqueueNewOrder(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
+        process(tradeEvent("MATCHED", ORDER_HASH, "0.50", "10.0", "200", "1700000000000"));
+        waitForReports(1);
+
+        assertEquals(Liquidity.NULL_VAL, captured.get(0).decoder.liquidity());
+    }
+
     // --- helpers ---
+
+    private static String withField(final String json, final String name, final String value) {
+        return json.substring(0, json.length() - 1) + ",\"" + name + "\":\"" + value + "\"}";
+    }
 
     private List<Long> drainCompletionQueue() {
         final List<Long> result = new java.util.ArrayList<>();
-        completionQueue.read(ctx -> result.add(ctx.clientOidCounter), Integer.MAX_VALUE);
+        releasedOrderQueue.read(ctx -> result.add(ctx.clientOidCounter), Integer.MAX_VALUE);
         return result;
     }
 
@@ -349,7 +397,7 @@ class PolymarketOutboundReaderTest {
         }
     }
 
-    private void enqueueContext(
+    private void enqueueNewOrder(
             final String hash,
             final long originalQty,
             final long cumulativeFilledQty,
@@ -366,8 +414,8 @@ class PolymarketOutboundReaderTest {
             final long orderId,
             final int exchangeId,
             final long securityId) {
-        final int idx = contextQueue.tryClaim();
-        final OrderContext ctx = contextQueue.indexAt(idx);
+        final int idx = newOrderQueue.tryClaim();
+        final OrderContext ctx = newOrderQueue.indexAt(idx);
         ctx.reset();
         ctx.orderId = orderId;
         ctx.clientOidCounter = orderId;
@@ -379,12 +427,12 @@ class PolymarketOutboundReaderTest {
         final byte[] hashBytes = hash.getBytes(StandardCharsets.UTF_8);
         ctx.exchangeOrderIdLength = Math.min(hashBytes.length, OrderContext.EXCHANGE_ORDER_ID_MAX_LENGTH);
         System.arraycopy(hashBytes, 0, ctx.exchangeOrderIdBytes, 0, ctx.exchangeOrderIdLength);
-        contextQueue.commit(idx);
+        newOrderQueue.commit(idx);
     }
 
     private void enqueueReject(final String hash, final ExecType execType, final OrderStatus orderStatus) {
-        final int idx = rejectQueue.tryClaim();
-        final OrderContext ctx = rejectQueue.indexAt(idx);
+        final int idx = writerReportQueue.tryClaim();
+        final OrderContext ctx = writerReportQueue.indexAt(idx);
         ctx.reset();
         ctx.execType = execType;
         ctx.orderStatus = orderStatus;
@@ -392,7 +440,7 @@ class PolymarketOutboundReaderTest {
         ctx.exchangeId = 2;
         ctx.securityId = 3L;
         ctx.orderId = 99L;
-        rejectQueue.commit(idx);
+        writerReportQueue.commit(idx);
     }
 
     private static String orderEvent(
