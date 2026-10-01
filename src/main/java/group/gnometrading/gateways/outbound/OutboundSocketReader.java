@@ -20,7 +20,7 @@ import org.agrona.concurrent.EpochNanoClock;
 
 public abstract class OutboundSocketReader implements GnomeAgent {
 
-    private final Logger logger;
+    protected final Logger logger;
     private final SequencedRingBuffer<OrderExecutionReport> execReportBuffer;
     private final ManyToOneRingBuffer<OrderContext> newOrderQueue;
     private final ManyToOneRingBuffer<OrderContext> writerReportQueue;
@@ -127,13 +127,17 @@ public abstract class OutboundSocketReader implements GnomeAgent {
         }
         final OrderContext ctx = this.contextPool[--this.contextPoolHead];
         ctx.copyFrom(src);
-        this.orderContexts.put(computeKey(ctx.exchangeOrderIdBytes, ctx.exchangeOrderIdLength), ctx);
+        this.orderContexts.put(computeKey(ctx.correlationIdBytes, ctx.correlationIdLength), ctx);
     }
 
     private void consumeWriterReport(final OrderContext src) {
         if (src.amendAccepted) {
             applyAcceptedAmend(src);
             return;
+        }
+        if (src.execType == ExecType.REJECT) {
+            // The writer registers an order before sending it, and frees its own copy on a reject.
+            discardOrderContext(computeKey(src.correlationIdBytes, src.correlationIdLength));
         }
         prepareExecReportHeader(src);
         this.execReport.encoder.execType(src.execType);
@@ -160,8 +164,7 @@ public abstract class OutboundSocketReader implements GnomeAgent {
      * already settled the OMS's state.
      */
     private void applyAcceptedAmend(final OrderContext src) {
-        final OrderContext ctx =
-                this.orderContexts.get(computeKey(src.exchangeOrderIdBytes, src.exchangeOrderIdLength));
+        final OrderContext ctx = this.orderContexts.get(computeKey(src.correlationIdBytes, src.correlationIdLength));
         if (ctx == null) {
             return;
         }
@@ -223,6 +226,14 @@ public abstract class OutboundSocketReader implements GnomeAgent {
 
     protected final OrderContext findOrderContext(final long key) {
         return this.orderContexts.get(key);
+    }
+
+    private void discardOrderContext(final long key) {
+        final OrderContext ctx = this.orderContexts.remove(key);
+        if (ctx != null) {
+            ctx.reset();
+            this.contextPool[this.contextPoolHead++] = ctx;
+        }
     }
 
     protected final void releaseOrderContext(final long key) {

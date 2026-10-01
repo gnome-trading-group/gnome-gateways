@@ -50,6 +50,10 @@ public final class OrderContext {
     public RejectReason rejectReason;
     public final byte[] exchangeOrderIdBytes = new byte[EXCHANGE_ORDER_ID_MAX_LENGTH];
     public int exchangeOrderIdLength;
+    // An id we choose before sending the order, which the venue echoes on every event for it, so the
+    // reader can match events even if the submit's response never arrives.
+    public final byte[] correlationIdBytes = new byte[EXCHANGE_ORDER_ID_MAX_LENGTH];
+    public int correlationIdLength;
 
     public void reset() {
         this.orderId = 0;
@@ -72,6 +76,7 @@ public final class OrderContext {
         this.orderStatus = null;
         this.rejectReason = null;
         this.exchangeOrderIdLength = 0;
+        this.correlationIdLength = 0;
     }
 
     public void copyFrom(final OrderContext src) {
@@ -96,5 +101,7 @@ public final class OrderContext {
         this.rejectReason = src.rejectReason;
         this.exchangeOrderIdLength = src.exchangeOrderIdLength;
         System.arraycopy(src.exchangeOrderIdBytes, 0, this.exchangeOrderIdBytes, 0, src.exchangeOrderIdLength);
+        this.correlationIdLength = src.correlationIdLength;
+        System.arraycopy(src.correlationIdBytes, 0, this.correlationIdBytes, 0, src.correlationIdLength);
     }
 }

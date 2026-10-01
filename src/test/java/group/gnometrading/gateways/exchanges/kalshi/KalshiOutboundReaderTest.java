@@ -685,8 +685,8 @@ class KalshiOutboundReaderTest {
         ctx.cumulativeFilledQty = cumulativeFilledQty;
         ctx.leavesQty = originalQty - cumulativeFilledQty;
         final byte[] idBytes = orderId.getBytes(StandardCharsets.UTF_8);
-        ctx.exchangeOrderIdLength = Math.min(idBytes.length, OrderContext.EXCHANGE_ORDER_ID_MAX_LENGTH);
-        System.arraycopy(idBytes, 0, ctx.exchangeOrderIdBytes, 0, ctx.exchangeOrderIdLength);
+        ctx.correlationIdLength = Math.min(idBytes.length, OrderContext.EXCHANGE_ORDER_ID_MAX_LENGTH);
+        System.arraycopy(idBytes, 0, ctx.correlationIdBytes, 0, ctx.correlationIdLength);
         newOrderQueue.commit(idx);
     }
 
@@ -702,8 +702,8 @@ class KalshiOutboundReaderTest {
         ctx.cumulativeFilledQty = venueFillCount;
         ctx.leavesQty = venueRemaining;
         final byte[] idBytes = orderId.getBytes(StandardCharsets.UTF_8);
-        ctx.exchangeOrderIdLength = idBytes.length;
-        System.arraycopy(idBytes, 0, ctx.exchangeOrderIdBytes, 0, idBytes.length);
+        ctx.correlationIdLength = idBytes.length;
+        System.arraycopy(idBytes, 0, ctx.correlationIdBytes, 0, idBytes.length);
         writerReportQueue.commit(idx);
     }
 
@@ -756,7 +756,8 @@ class KalshiOutboundReaderTest {
             final String makerFillCost,
             final long timestampMs) {
         return "{\"type\":\"user_order\",\"msg\":{"
-                + "\"order_id\":\"" + orderId + "\","
+                + "\"order_id\":\"venue-" + orderId + "\","
+                + "\"client_order_id\":\"" + orderId + "\","
                 + "\"status\":\"" + status + "\","
                 + "\"fill_count_fp\":\"" + fillCountFp + "\","
                 + "\"remaining_count_fp\":\"" + remainingCountFp + "\","
@@ -777,7 +778,8 @@ class KalshiOutboundReaderTest {
             final String makerFees,
             final long timestampMs) {
         return "{\"type\":\"user_order\",\"msg\":{"
-                + "\"order_id\":\"" + orderId + "\","
+                + "\"order_id\":\"venue-" + orderId + "\","
+                + "\"client_order_id\":\"" + orderId + "\","
                 + "\"status\":\"" + status + "\","
                 + "\"fill_count_fp\":\"" + fillCountFp + "\","
                 + "\"remaining_count_fp\":\"" + remainingCountFp + "\","

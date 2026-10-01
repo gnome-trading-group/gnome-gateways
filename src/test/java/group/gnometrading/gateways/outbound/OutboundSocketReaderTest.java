@@ -121,6 +121,32 @@ class OutboundSocketReaderTest {
     }
 
     @Test
+    void submitReject_DropsTheRegisteredOrderWithoutReleasingItToTheWriter() throws Exception {
+        final String correlation = "corr-rejected";
+        enqueueNewOrder(correlation, 1L, 2, 3L, 10L);
+        reader.doWork();
+        final int idx = writerReportQueue.tryClaim();
+        final OrderContext reject = writerReportQueue.indexAt(idx);
+        reject.reset();
+        reject.orderId = 1L;
+        reject.execType = ExecType.REJECT;
+        reject.orderStatus = OrderStatus.REJECTED;
+        reject.rejectReason = RejectReason.EXCHANGE_REJECTED;
+        final byte[] bytes = correlation.getBytes(StandardCharsets.UTF_8);
+        System.arraycopy(bytes, 0, reject.correlationIdBytes, 0, bytes.length);
+        reject.correlationIdLength = bytes.length;
+        writerReportQueue.commit(idx);
+
+        reader.doWork();
+
+        final long key = TestOutboundSocketReader.testComputeKey(bytes, bytes.length);
+        assertNull(reader.testFindOrderContext(key));
+        assertEquals(List.of(), drainCompletionQueue(), "the writer frees its own copy of a rejected order");
+        waitForReports(1);
+        assertEquals(ExecType.REJECT, captured.get(0).decoder.execType());
+    }
+
+    @Test
     void doWork_ConsumesContextQueue_FieldsPreserved() throws Exception {
         final String hash = "order-abc";
         enqueueNewOrder(hash, 42L, 5, 99L, 200L);
@@ -152,7 +178,7 @@ class OutboundSocketReaderTest {
 
     @Test
     void doWork_RejectStillReportsZeroQuantities() throws Exception {
-        // buildCancelReject resets the context, so a reject must stay at zero quantities.
+        // enqueueCancelReject resets the context, so a reject must stay at zero quantities.
         enqueueReject(99L, 2, 3L, ExecType.CANCEL_REJECT, OrderStatus.CANCELED);
 
         reader.doWork();
@@ -402,8 +428,8 @@ class OutboundSocketReaderTest {
         ctx.originalQty = originalQty;
         ctx.leavesQty = originalQty;
         final byte[] hashBytes = hash.getBytes(StandardCharsets.UTF_8);
-        ctx.exchangeOrderIdLength = Math.min(hashBytes.length, OrderContext.EXCHANGE_ORDER_ID_MAX_LENGTH);
-        System.arraycopy(hashBytes, 0, ctx.exchangeOrderIdBytes, 0, ctx.exchangeOrderIdLength);
+        ctx.correlationIdLength = Math.min(hashBytes.length, OrderContext.EXCHANGE_ORDER_ID_MAX_LENGTH);
+        System.arraycopy(hashBytes, 0, ctx.correlationIdBytes, 0, ctx.correlationIdLength);
         newOrderQueue.commit(idx);
     }
 

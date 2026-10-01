@@ -1,12 +1,14 @@
 package group.gnometrading.gateways.exchanges.polymarket.intl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
 import group.gnometrading.gateways.outbound.OrderContext;
+import group.gnometrading.gateways.outbound.exchanges.polymarket.intl.PolymarketIntlMarketInfo;
 import group.gnometrading.gateways.outbound.exchanges.polymarket.intl.PolymarketIntlOutboundReader;
 import group.gnometrading.logging.NullLogger;
 import group.gnometrading.networking.websockets.WebSocketClient;
@@ -24,19 +26,29 @@ import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Exchange;
 import group.gnometrading.sm.Listing;
 import group.gnometrading.sm.Security;
+import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+/** Payloads follow the user-channel shapes in Polymarket's docs (order and trade events). */
 class PolymarketIntlOutboundReaderTest {
 
-    private static final String ORDER_HASH = "0xdeadbeef1234567890abcdef";
+    private static final String ORDER_A = "0x" + "aa".repeat(32);
+    private static final String ORDER_B = "0x" + "bb".repeat(32);
+    private static final String SOMEONE_ELSE = "0x" + "ee".repeat(32);
+    private static final String SENTINEL = "0x" + "99".repeat(32);
+    private static final long SENTINEL_ORDER_ID = 99L;
+
     private static final long FIXED_NANO = 1_700_000_000_000_000_000L;
-    private static final long ORIG_QTY = qty("10.0");
+    private static final long ORIG_QTY = qty("10");
+    private static final PolymarketIntlMarketInfo TAKER_ONLY_FEES = new PolymarketIntlMarketInfo(
+            Statics.PRICE_SCALING_FACTOR / 100, qty("5"), false, 0.05, 1.0, true, false, 0);
 
     private SequencedRingBuffer<OrderExecutionReport> execReportBuffer;
     private ManyToOneRingBuffer<OrderContext> newOrderQueue;
@@ -69,14 +81,286 @@ class PolymarketIntlOutboundReaderTest {
         when(response.isClosed()).thenReturn(false);
         when(response.getOpcode()).thenReturn(Opcode.TEXT);
 
+        reader = buildReader(TAKER_ONLY_FEES);
+    }
+
+    @AfterEach
+    void tearDown() {
+        execReportBuffer.shutdown();
+    }
+
+    // ========== Order events ==========
+
+    @Test
+    void placementLive_PublishesNew() throws Exception {
+        enqueueOrder(ORDER_A, 1L);
+
+        process(orderEvent("PLACEMENT", "LIVE", ORDER_A));
+
+        final OrderExecutionReport report = awaitReport(0);
+        assertEquals(ExecType.NEW, report.decoder.execType());
+        assertEquals(OrderStatus.NEW, report.decoder.orderStatus());
+        assertEquals(0, report.decoder.cumulativeQty());
+        assertEquals(ORIG_QTY, report.decoder.leavesQty());
+        assertEquals(1L, report.decoder.orderId());
+        assertEquals(FIXED_NANO, report.decoder.timestampRecv());
+    }
+
+    @Test
+    void repeatedPlacement_IsNotAcknowledgedTwice() throws Exception {
+        enqueueOrder(ORDER_A, 1L);
+        process(orderEvent("PLACEMENT", "LIVE", ORDER_A));
+        awaitReport(0);
+
+        process(orderEvent("PLACEMENT", "LIVE", ORDER_A));
+
+        assertNoFurtherReports();
+    }
+
+    @Test
+    void cancellation_PublishesCancelWithFillsSoFar_AndReleasesTheOrder() throws Exception {
+        enqueueOrder(ORDER_A, 1L);
+        process(orderEvent("PLACEMENT", "LIVE", ORDER_A));
+        process(trade("MATCHED", ORDER_A, "0.55", "3", "[]"));
+
+        process(orderEvent("CANCELLATION", "CANCELED", ORDER_A));
+
+        final OrderExecutionReport cancel = awaitReport(2);
+        assertEquals(ExecType.CANCEL, cancel.decoder.execType());
+        assertEquals(qty("3"), cancel.decoder.cumulativeQty());
+        assertEquals(0, cancel.decoder.leavesQty());
+        assertEquals(List.of(1L), drainReleased());
+    }
+
+    @Test
+    void eventsForOrdersWeDoNotHaveAreIgnored() throws Exception {
+        process(orderEvent("PLACEMENT", "LIVE", SOMEONE_ELSE));
+        process(trade("MATCHED", SOMEONE_ELSE, "0.55", "3", "[]"));
+
+        assertNoFurtherReports();
+    }
+
+    // ========== Trades ==========
+
+    @Test
+    void takerFill_UsesTopLevelSizeAndPrice() throws Exception {
+        enqueueOrder(ORDER_A, 1L);
+        process(orderEvent("PLACEMENT", "LIVE", ORDER_A));
+
+        process(trade("MATCHED", ORDER_A, "0.55", "4", makerLeg(SOMEONE_ELSE, "4", "0.55")));
+
+        final OrderExecutionReport fill = awaitReport(1);
+        assertEquals(ExecType.PARTIAL_FILL, fill.decoder.execType());
+        assertEquals(OrderStatus.PARTIALLY_FILLED, fill.decoder.orderStatus());
+        assertEquals(qty("4"), fill.decoder.filledQty());
+        assertEquals(price("0.55"), fill.decoder.fillPrice());
+        assertEquals(qty("4"), fill.decoder.cumulativeQty());
+        assertEquals(qty("6"), fill.decoder.leavesQty());
+        assertEquals(Liquidity.TAKER, fill.decoder.liquidity());
+        assertEquals(RejectReason.NULL_VAL, fill.decoder.rejectReason());
+    }
+
+    @Test
+    void makerFill_UsesOurLegNotTheTakersSizeAndPrice() throws Exception {
+        enqueueOrder(ORDER_A, 1L);
+        process(orderEvent("PLACEMENT", "LIVE", ORDER_A));
+
+        process(trade(
+                "MATCHED",
+                SOMEONE_ELSE,
+                "0.57",
+                "10",
+                makerLeg(SOMEONE_ELSE, "6", "0.57") + "," + makerLeg(ORDER_A, "4", "0.55")));
+
+        final OrderExecutionReport fill = awaitReport(1);
+        assertEquals(qty("4"), fill.decoder.filledQty());
+        assertEquals(price("0.55"), fill.decoder.fillPrice());
+        assertEquals(Liquidity.MAKER, fill.decoder.liquidity());
+        assertEquals(0L, fill.decoder.fee(), "makers pay no fee on a taker-only market");
+        assertNoFurtherReports();
+    }
+
+    @Test
+    void oneTradeFillingTwoOfOurOrders_ReportsEach() throws Exception {
+        enqueueOrder(ORDER_A, 1L);
+        enqueueOrder(ORDER_B, 2L);
+        process(orderEvent("PLACEMENT", "LIVE", ORDER_A));
+        process(orderEvent("PLACEMENT", "LIVE", ORDER_B));
+
+        process(trade(
+                "MATCHED",
+                SOMEONE_ELSE,
+                "0.55",
+                "13",
+                makerLeg(ORDER_A, "10", "0.55") + "," + makerLeg(ORDER_B, "3", "0.55")));
+
+        final OrderExecutionReport first = awaitReport(2);
+        final OrderExecutionReport second = awaitReport(3);
+        assertEquals(1L, first.decoder.orderId());
+        assertEquals(ExecType.FILL, first.decoder.execType());
+        assertEquals(2L, second.decoder.orderId());
+        assertEquals(ExecType.PARTIAL_FILL, second.decoder.execType());
+        assertEquals(qty("3"), second.decoder.filledQty());
+        assertEquals(List.of(1L), drainReleased());
+    }
+
+    @Test
+    void fullFill_PublishesFillAndReleasesTheOrder() throws Exception {
+        enqueueOrder(ORDER_A, 1L);
+        process(orderEvent("PLACEMENT", "LIVE", ORDER_A));
+
+        process(trade("MATCHED", ORDER_A, "0.55", "10", "[]"));
+
+        final OrderExecutionReport fill = awaitReport(1);
+        assertEquals(ExecType.FILL, fill.decoder.execType());
+        assertEquals(OrderStatus.FILLED, fill.decoder.orderStatus());
+        assertEquals(0, fill.decoder.leavesQty());
+        assertEquals(List.of(1L), drainReleased());
+    }
+
+    @Test
+    void fillBeforeAnyPlacement_IsAcknowledgedFirst() throws Exception {
+        enqueueOrder(ORDER_A, 1L);
+
+        process(trade("MATCHED", ORDER_A, "0.55", "10", "[]"));
+
+        assertEquals(ExecType.NEW, awaitReport(0).decoder.execType());
+        assertEquals(ExecType.FILL, awaitReport(1).decoder.execType());
+    }
+
+    @Test
+    void settlementStages_AreNotFillsAgain() throws Exception {
+        enqueueOrder(ORDER_A, 1L);
+        process(orderEvent("PLACEMENT", "LIVE", ORDER_A));
+        process(trade("MATCHED", ORDER_A, "0.55", "4", "[]"));
+        awaitReport(1);
+
+        process(trade("MINED", ORDER_A, "0.55", "4", "[]"));
+        process(trade("CONFIRMED", ORDER_A, "0.55", "4", "[]"));
+
+        assertNoFurtherReports();
+    }
+
+    @Test
+    void failedSettlement_DoesNotCancelTheOrder() throws Exception {
+        enqueueOrder(ORDER_A, 1L);
+        process(orderEvent("PLACEMENT", "LIVE", ORDER_A));
+        awaitReport(0);
+
+        process(trade("FAILED", ORDER_A, "0.55", "4", "[]"));
+
+        assertNoFurtherReports();
+        assertEquals(List.of(), drainReleased());
+    }
+
+    // ========== Fees ==========
+
+    @Test
+    void takerFee_FollowsTheMarketsCurve() throws Exception {
+        enqueueOrder(ORDER_A, 1L);
+        process(orderEvent("PLACEMENT", "LIVE", ORDER_A));
+
+        process(trade("MATCHED", ORDER_A, "0.50", "10", "[]"));
+
+        // 10 × 0.05 × (0.5 × 0.5) = 0.125
+        assertEquals(125_000_000L, awaitReport(1).decoder.fee());
+    }
+
+    @Test
+    void takerFee_AppliesTheExponent() throws Exception {
+        reader = buildReader(new PolymarketIntlMarketInfo(
+                Statics.PRICE_SCALING_FACTOR / 100, qty("5"), false, 0.02, 2.0, true, false, 0));
+        enqueueOrder(ORDER_A, 1L);
+        process(orderEvent("PLACEMENT", "LIVE", ORDER_A));
+
+        process(trade("MATCHED", ORDER_A, "0.50", "10", "[]"));
+
+        // 10 × 0.02 × (0.5 × 0.5)^2 = 0.0125
+        assertEquals(12_500_000L, awaitReport(1).decoder.fee());
+    }
+
+    @Test
+    void makerFee_ChargedWhenTheMarketIsNotTakerOnly() throws Exception {
+        reader = buildReader(new PolymarketIntlMarketInfo(
+                Statics.PRICE_SCALING_FACTOR / 100, qty("5"), false, 0.05, 1.0, false, false, 0));
+        enqueueOrder(ORDER_A, 1L);
+        process(orderEvent("PLACEMENT", "LIVE", ORDER_A));
+
+        process(trade("MATCHED", SOMEONE_ELSE, "0.50", "10", makerLeg(ORDER_A, "10", "0.50")));
+
+        assertEquals(125_000_000L, awaitReport(1).decoder.fee());
+    }
+
+    @Test
+    void takerFee_RoundsToTheVenuesFiveDecimals() throws Exception {
+        enqueueOrder(ORDER_A, 1L);
+        process(orderEvent("PLACEMENT", "LIVE", ORDER_A));
+
+        process(trade("MATCHED", ORDER_A, "0.97", "1.37", "[]"));
+
+        // 1.37 × 0.05 × (0.97 × 0.03) = 0.00199335 → 0.00199
+        assertEquals(1_990_000L, awaitReport(1).decoder.fee());
+    }
+
+    @Test
+    void takerFee_BelowTheSmallestUnitIsFree() throws Exception {
+        enqueueOrder(ORDER_A, 1L);
+        process(orderEvent("PLACEMENT", "LIVE", ORDER_A));
+
+        process(trade("MATCHED", ORDER_A, "0.999", "0.01", "[]"));
+
+        // 0.01 × 0.05 × (0.999 × 0.001) ≈ 0.0000005 → rounds to zero
+        assertEquals(0L, awaitReport(1).decoder.fee());
+    }
+
+    // ========== Framing ==========
+
+    @Test
+    void batchedFrame_HandlesEveryEvent() throws Exception {
+        enqueueOrder(ORDER_A, 1L);
+        enqueueOrder(ORDER_B, 2L);
+
+        process("[" + orderEvent("PLACEMENT", "LIVE", ORDER_A) + "," + orderEvent("PLACEMENT", "LIVE", ORDER_B) + "]");
+
+        assertEquals(1L, awaitReport(0).decoder.orderId());
+        assertEquals(2L, awaitReport(1).decoder.orderId());
+    }
+
+    @Test
+    void pong_IsIgnored() throws Exception {
+        process("PONG");
+
+        assertNoFurtherReports();
+    }
+
+    @Test
+    void writerReject_IsPublished() throws Exception {
+        final int idx = writerReportQueue.tryClaim();
+        final OrderContext ctx = writerReportQueue.indexAt(idx);
+        ctx.reset();
+        ctx.execType = ExecType.REJECT;
+        ctx.orderStatus = OrderStatus.REJECTED;
+        ctx.rejectReason = RejectReason.EXCHANGE_REJECTED;
+        ctx.orderId = 5L;
+        writerReportQueue.commit(idx);
+
+        process("PONG");
+
+        final OrderExecutionReport report = awaitReport(0);
+        assertEquals(ExecType.REJECT, report.decoder.execType());
+        assertEquals(RejectReason.EXCHANGE_REJECTED, report.decoder.rejectReason());
+    }
+
+    // ========== helpers ==========
+
+    private PolymarketIntlOutboundReader buildReader(final PolymarketIntlMarketInfo marketInfo) {
         final Listing listing = new Listing(
                 7,
                 new Exchange(2, "Polymarket", "global", SchemaType.MBP_10),
                 new Security(3, "TEST", 3),
                 "condition-1:token-yes",
                 "TEST-YES");
-
-        reader = new PolymarketIntlOutboundReader(
+        final PolymarketIntlOutboundReader built = new PolymarketIntlOutboundReader(
                 new NullLogger(),
                 execReportBuffer,
                 newOrderQueue,
@@ -89,299 +373,18 @@ class PolymarketIntlOutboundReaderTest {
                 "test-key",
                 "test-secret",
                 "test-passphrase",
-                0.02,
-                0.0);
-        reader.pause = false;
+                marketInfo);
+        built.pause = false;
+        return built;
     }
 
-    @AfterEach
-    void tearDown() {
-        execReportBuffer.shutdown();
-    }
-
-    @Test
-    void orderPlacementLiveEmitsNewExecReport() throws Exception {
-        enqueueNewOrder(ORDER_HASH, ORIG_QTY, 1, 1, 2, 3L);
-        process(orderEvent("PLACEMENT", "LIVE", ORDER_HASH, "1700000000000"));
-        waitForReports(1);
-
-        assertEquals(1, captured.size());
-        final OrderExecutionReport report = captured.get(0);
-        assertEquals(ExecType.NEW, report.decoder.execType());
-        assertEquals(OrderStatus.NEW, report.decoder.orderStatus());
-        assertEquals(0, report.decoder.cumulativeQty());
-        assertEquals(ORIG_QTY, report.decoder.leavesQty());
-    }
-
-    @Test
-    void orderCancellationEmitsCancelExecReport() throws Exception {
-        final long cumFilled = qty("3.0");
-        enqueueNewOrder(ORDER_HASH, ORIG_QTY, cumFilled, 1, 2, 3L);
-        process(orderEvent("CANCELLATION", "CANCELED", ORDER_HASH, "1700000000000"));
-        waitForReports(1);
-
-        assertEquals(1, captured.size());
-        final OrderExecutionReport report = captured.get(0);
-        assertEquals(ExecType.CANCEL, report.decoder.execType());
-        assertEquals(OrderStatus.CANCELED, report.decoder.orderStatus());
-        assertEquals(cumFilled, report.decoder.cumulativeQty());
-        assertEquals(0, report.decoder.leavesQty());
-    }
-
-    @Test
-    void tradeMatchedEmitsFillReport() throws Exception {
-        enqueueNewOrder(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
-        process(tradeEvent("MATCHED", ORDER_HASH, "0.50", "10.0", "0", "1700000000000"));
-        waitForReports(1);
-
-        assertEquals(1, captured.size());
-        final OrderExecutionReport report = captured.get(0);
-        assertEquals(ExecType.FILL, report.decoder.execType());
-        assertEquals(OrderStatus.FILLED, report.decoder.orderStatus());
-        assertEquals(qty("10.0"), report.decoder.filledQty());
-        assertEquals(price("0.50"), report.decoder.fillPrice());
-    }
-
-    @Test
-    void tradeMatchedPartialFillSetsCorrectStatus() throws Exception {
-        enqueueNewOrder(ORDER_HASH, qty("20.0"), 0, 1, 2, 3L);
-        process(tradeEvent("MATCHED", ORDER_HASH, "0.60", "5.0", "0", "1700000000000"));
-        waitForReports(1);
-
-        assertEquals(1, captured.size());
-        final OrderExecutionReport report = captured.get(0);
-        assertEquals(ExecType.PARTIAL_FILL, report.decoder.execType());
-        assertEquals(OrderStatus.PARTIALLY_FILLED, report.decoder.orderStatus());
-        assertEquals(qty("5.0"), report.decoder.filledQty());
-        assertEquals(qty("5.0"), report.decoder.cumulativeQty());
-        assertEquals(qty("15.0"), report.decoder.leavesQty());
-    }
-
-    @Test
-    void tradeFailedEmitsCancelReport() throws Exception {
-        enqueueNewOrder(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
-        process(tradeEvent("FAILED", ORDER_HASH, "0.0", "0.0", "0", "1700000000000"));
-        waitForReports(1);
-
-        assertEquals(1, captured.size());
-        final OrderExecutionReport report = captured.get(0);
-        assertEquals(ExecType.CANCEL, report.decoder.execType());
-        assertEquals(OrderStatus.CANCELED, report.decoder.orderStatus());
-    }
-
-    @Test
-    void tradeMinedIsNoOp() throws Exception {
-        enqueueNewOrder(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
-        process(tradeEvent("MINED", ORDER_HASH, "0.0", "0.0", "0", "1700000000000"));
-
-        assertEquals(0, captured.size());
-    }
-
-    @Test
-    void unknownOrderHashIsIgnored() throws Exception {
-        // No order context in queue — reader should silently skip
-        process(orderEvent("PLACEMENT", "LIVE", "0xunknownhash", "1700000000000"));
-        assertEquals(0, captured.size());
-    }
-
-    @Test
-    void pongMessageIsIgnored() throws Exception {
-        when(client.read()).thenReturn(response);
-        when(response.getBody()).thenReturn(ByteBuffer.wrap("PONG".getBytes(StandardCharsets.US_ASCII)));
-        reader.doWork();
-        assertEquals(0, captured.size());
-    }
-
-    @Test
-    void rejectQueuePublishesExecReport() throws Exception {
-        enqueueReject(ORDER_HASH, ExecType.REJECT, OrderStatus.REJECTED);
-        when(client.read()).thenReturn(response);
-        when(response.getBody()).thenReturn(ByteBuffer.wrap(new byte[0]));
-        reader.doWork();
-        waitForReports(1);
-
-        assertEquals(1, captured.size());
-        final OrderExecutionReport report = captured.get(0);
-        assertEquals(ExecType.REJECT, report.decoder.execType());
-        assertEquals(OrderStatus.REJECTED, report.decoder.orderStatus());
-    }
-
-    @Test
-    void execReportTimestampsArePopulated() throws Exception {
-        enqueueNewOrder(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
-        final long eventMs = 1700000000000L;
-        process(orderEvent("PLACEMENT", "LIVE", ORDER_HASH, Long.toString(eventMs)));
-        waitForReports(1);
-
-        final OrderExecutionReport report = captured.get(0);
-        assertEquals(eventMs * 1_000_000L, report.decoder.timestampEvent());
-        assertEquals(FIXED_NANO, report.decoder.timestampRecv());
-    }
-
-    @Test
-    void execReportHeaderFieldsMatchContext() throws Exception {
-        final int exchangeId = 2;
-        final long securityId = 3L;
-        final long orderId = 42L;
-        enqueueContextWithOrderId(ORDER_HASH, ORIG_QTY, 0, orderId, exchangeId, securityId);
-        process(orderEvent("PLACEMENT", "LIVE", ORDER_HASH, "1700000000000"));
-        waitForReports(1);
-
-        final OrderExecutionReport report = captured.get(0);
-        assertEquals(exchangeId, report.decoder.exchangeId());
-        assertEquals(securityId, report.decoder.securityId());
-        assertEquals(orderId, report.decoder.orderId());
-    }
-
-    @Test
-    void multiplePartialFills_CumulativeQtyAccumulates() throws Exception {
-        enqueueNewOrder(ORDER_HASH, qty("20.0"), 0, 1, 2, 3L);
-        process(tradeEvent("MATCHED", ORDER_HASH, "0.60", "8.0", "0", "1700000000000"));
-        waitForReports(1);
-
-        process(tradeEvent("MATCHED", ORDER_HASH, "0.55", "7.0", "0", "1700000000001"));
-        waitForReports(2);
-
-        assertEquals(2, captured.size());
-        final OrderExecutionReport second = captured.get(1);
-        assertEquals(ExecType.PARTIAL_FILL, second.decoder.execType());
-        assertEquals(qty("15.0"), second.decoder.cumulativeQty());
-        assertEquals(qty("5.0"), second.decoder.leavesQty());
-        assertEquals(qty("7.0"), second.decoder.filledQty());
-    }
-
-    @Test
-    void fullFill_ReleasesContext_SubsequentMessageIgnored() throws Exception {
-        enqueueNewOrder(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
-        process(tradeEvent("MATCHED", ORDER_HASH, "0.50", "10.0", "0", "1700000000000"));
-        waitForReports(1);
-
-        assertEquals(ExecType.FILL, captured.get(0).decoder.execType());
-
-        // Context released — a second message for the same hash must be silently ignored
-        process(tradeEvent("MATCHED", ORDER_HASH, "0.50", "10.0", "0", "1700000000001"));
-        assertEquals(1, captured.size());
-    }
-
-    // --- released order queue ---
-
-    @Test
-    void fullFill_EnqueuesCompletion() throws Exception {
-        enqueueContextWithOrderId(ORDER_HASH, ORIG_QTY, 0L, 42L, 2, 3L);
-        process(tradeEvent("MATCHED", ORDER_HASH, "0.60", "10.0", "0", "1700000000000"));
-        waitForReports(1);
-
-        final List<Long> completions = drainCompletionQueue();
-        assertEquals(1, completions.size());
-        assertEquals(42L, completions.get(0));
-    }
-
-    @Test
-    void cancelEvent_EnqueuesCompletion() throws Exception {
-        enqueueContextWithOrderId(ORDER_HASH, ORIG_QTY, 0L, 55L, 2, 3L);
-        process(orderEvent("CANCELLATION", "CANCELED", ORDER_HASH, "1700000000000"));
-        waitForReports(1);
-
-        final List<Long> completions = drainCompletionQueue();
-        assertEquals(1, completions.size());
-        assertEquals(55L, completions.get(0));
-    }
-
-    @Test
-    void partialFill_DoesNotEnqueueCompletion() throws Exception {
-        enqueueNewOrder(ORDER_HASH, ORIG_QTY, 0L, 1, 2, 3L);
-        process(tradeEvent("MATCHED", ORDER_HASH, "0.60", "5.0", "0", "1700000000000"));
-        waitForReports(1);
-
-        assertEquals(0, drainCompletionQueue().size());
-    }
-
-    @Test
-    void tradeFailed_EnqueuesCompletion() throws Exception {
-        enqueueContextWithOrderId(ORDER_HASH, ORIG_QTY, 0L, 77L, 2, 3L);
-        process(tradeEvent("FAILED", ORDER_HASH, "0.0", "0.0", "0", "1700000000000"));
-        waitForReports(1);
-
-        final List<Long> completions = drainCompletionQueue();
-        assertEquals(1, completions.size());
-        assertEquals(77L, completions.get(0));
-    }
-
-    @Test
-    void tradeMatched_computesFeeFromExchangeProvidedFeeRateBps() throws Exception {
-        enqueueNewOrder(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
-        // feeRateBps=200 (2%) on 10 contracts at $0.50: fee = 10 * 0.02 * 0.50 * 0.50 * PRICE_SCALE = 50_000_000
-        process(tradeEvent("MATCHED", ORDER_HASH, "0.50", "10.0", "200", "1700000000000"));
-        waitForReports(1);
-
-        final long expectedFee = (long) (10.0 * 0.02 * 0.50 * 0.50 * Statics.PRICE_SCALING_FACTOR);
-        assertEquals(expectedFee, captured.get(0).decoder.fee());
-    }
-
-    @Test
-    void tradeMatched_fallsBackToConfiguredTakerFeeRateWhenBpsIsZero() throws Exception {
-        enqueueNewOrder(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
-        // feeRateBps=0, falls back to configured takerFeeRate=0.02
-        process(tradeEvent("MATCHED", ORDER_HASH, "0.50", "10.0", "0", "1700000000000"));
-        waitForReports(1);
-
-        final long expectedFee = (long) (10.0 * 0.02 * 0.50 * 0.50 * Statics.PRICE_SCALING_FACTOR);
-        assertEquals(expectedFee, captured.get(0).decoder.fee());
-    }
-
-    @Test
-    void tradeMatched_asMaker_usesMakerRateNotTakersBpsAndReportsMaker() throws Exception {
-        enqueueNewOrder(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
-        // fee_rate_bps=200 is the taker order's rate; as maker we pay makerFeeRate=0.0
-        process(withField(
-                tradeEvent("MATCHED", ORDER_HASH, "0.50", "10.0", "200", "1700000000000"), "trader_side", "MAKER"));
-        waitForReports(1);
-
-        assertEquals(0L, captured.get(0).decoder.fee());
-        assertEquals(Liquidity.MAKER, captured.get(0).decoder.liquidity());
-    }
-
-    @Test
-    void tradeMatched_camelCaseTraderSide_isAlsoRecognised() throws Exception {
-        enqueueNewOrder(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
-        process(withField(
-                tradeEvent("MATCHED", ORDER_HASH, "0.50", "10.0", "200", "1700000000000"), "traderSide", "MAKER"));
-        waitForReports(1);
-
-        assertEquals(Liquidity.MAKER, captured.get(0).decoder.liquidity());
-    }
-
-    @Test
-    void tradeMatched_asTaker_keepsBpsFeeAndReportsTaker() throws Exception {
-        enqueueNewOrder(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
-        process(withField(
-                tradeEvent("MATCHED", ORDER_HASH, "0.50", "10.0", "200", "1700000000000"), "trader_side", "TAKER"));
-        waitForReports(1);
-
-        final long expectedFee = (long) (10.0 * 0.02 * 0.50 * 0.50 * Statics.PRICE_SCALING_FACTOR);
-        assertEquals(expectedFee, captured.get(0).decoder.fee());
-        assertEquals(Liquidity.TAKER, captured.get(0).decoder.liquidity());
-    }
-
-    @Test
-    void tradeMatched_withoutTraderSide_reportsUnknownLiquidity() throws Exception {
-        enqueueNewOrder(ORDER_HASH, ORIG_QTY, 0, 1, 2, 3L);
-        process(tradeEvent("MATCHED", ORDER_HASH, "0.50", "10.0", "200", "1700000000000"));
-        waitForReports(1);
-
-        assertEquals(Liquidity.NULL_VAL, captured.get(0).decoder.liquidity());
-    }
-
-    // --- helpers ---
-
-    private static String withField(final String json, final String name, final String value) {
-        return json.substring(0, json.length() - 1) + ",\"" + name + "\":\"" + value + "\"}";
-    }
-
-    private List<Long> drainCompletionQueue() {
-        final List<Long> result = new java.util.ArrayList<>();
-        releasedOrderQueue.read(ctx -> result.add(ctx.clientOidCounter), Integer.MAX_VALUE);
-        return result;
+    /** Publishes a sentinel order's NEW and checks it is the only report after the ones already seen. */
+    private void assertNoFurtherReports() throws Exception {
+        final int seen = captured.size();
+        enqueueOrder(SENTINEL, SENTINEL_ORDER_ID);
+        process(orderEvent("PLACEMENT", "LIVE", SENTINEL));
+        assertEquals(SENTINEL_ORDER_ID, awaitReport(seen).decoder.orderId());
+        assertEquals(seen + 1, captured.size());
     }
 
     private void process(final String json) throws Exception {
@@ -390,87 +393,72 @@ class PolymarketIntlOutboundReaderTest {
         reader.doWork();
     }
 
-    private void waitForReports(final int count) {
+    private OrderExecutionReport awaitReport(final int index) {
         final long deadline = System.currentTimeMillis() + 2_000;
-        while (captured.size() < count && System.currentTimeMillis() < deadline) {
+        while (captured.size() <= index && System.currentTimeMillis() < deadline) {
             Thread.yield();
         }
+        assertTrue(captured.size() > index, "expected report #" + index + ", got " + captured.size());
+        return captured.get(index);
     }
 
-    private void enqueueNewOrder(
-            final String hash,
-            final long originalQty,
-            final long cumulativeFilledQty,
-            final int clientOidStrategyId,
-            final int exchangeId,
-            final long securityId) {
-        enqueueContextWithOrderId(hash, originalQty, cumulativeFilledQty, 1L, exchangeId, securityId);
-    }
-
-    private void enqueueContextWithOrderId(
-            final String hash,
-            final long originalQty,
-            final long cumulativeFilledQty,
-            final long orderId,
-            final int exchangeId,
-            final long securityId) {
+    private void enqueueOrder(final String orderHash, final long orderId) {
         final int idx = newOrderQueue.tryClaim();
         final OrderContext ctx = newOrderQueue.indexAt(idx);
         ctx.reset();
         ctx.orderId = orderId;
         ctx.clientOidCounter = orderId;
-        ctx.exchangeId = exchangeId;
-        ctx.securityId = securityId;
-        ctx.originalQty = originalQty;
-        ctx.cumulativeFilledQty = cumulativeFilledQty;
-        ctx.leavesQty = originalQty - cumulativeFilledQty;
-        final byte[] hashBytes = hash.getBytes(StandardCharsets.UTF_8);
-        ctx.exchangeOrderIdLength = Math.min(hashBytes.length, OrderContext.EXCHANGE_ORDER_ID_MAX_LENGTH);
-        System.arraycopy(hashBytes, 0, ctx.exchangeOrderIdBytes, 0, ctx.exchangeOrderIdLength);
+        ctx.exchangeId = 2;
+        ctx.securityId = 3L;
+        ctx.originalQty = ORIG_QTY;
+        ctx.leavesQty = ORIG_QTY;
+        final byte[] hashBytes = orderHash.getBytes(StandardCharsets.US_ASCII);
+        ctx.exchangeOrderIdLength = hashBytes.length;
+        System.arraycopy(hashBytes, 0, ctx.exchangeOrderIdBytes, 0, hashBytes.length);
+        ctx.correlationIdLength = hashBytes.length;
+        System.arraycopy(hashBytes, 0, ctx.correlationIdBytes, 0, hashBytes.length);
         newOrderQueue.commit(idx);
     }
 
-    private void enqueueReject(final String hash, final ExecType execType, final OrderStatus orderStatus) {
-        final int idx = writerReportQueue.tryClaim();
-        final OrderContext ctx = writerReportQueue.indexAt(idx);
-        ctx.reset();
-        ctx.execType = execType;
-        ctx.orderStatus = orderStatus;
-        ctx.rejectReason = RejectReason.EXCHANGE_REJECTED;
-        ctx.exchangeId = 2;
-        ctx.securityId = 3L;
-        ctx.orderId = 99L;
-        writerReportQueue.commit(idx);
+    private List<Long> drainReleased() {
+        final List<Long> result = new ArrayList<>();
+        releasedOrderQueue.read(ctx -> result.add(ctx.clientOidCounter), Integer.MAX_VALUE);
+        return result;
     }
 
-    private static String orderEvent(
-            final String type, final String status, final String hash, final String timestamp) {
-        return "{\"event_type\":\"order\",\"type\":\"" + type
-                + "\",\"status\":\"" + status
-                + "\",\"order_hash\":\"" + hash
-                + "\",\"timestamp\":\"" + timestamp + "\"}";
+    private static String orderEvent(final String type, final String status, final String orderHash) {
+        return "{\"asset_id\":\"token-yes\",\"associate_trades\":null,\"event_type\":\"order\",\"id\":\""
+                + orderHash + "\",\"market\":\"condition-1\",\"original_size\":\"10\",\"outcome\":\"YES\","
+                + "\"owner\":\"test-key\",\"price\":\"0.55\",\"side\":\"BUY\",\"size_matched\":\"0\","
+                + "\"status\":\"" + status + "\",\"timestamp\":\"1700000000000\",\"type\":\"" + type + "\"}";
     }
 
-    private static String tradeEvent(
-            final String status,
-            final String hash,
-            final String price,
-            final String size,
-            final String feeRateBps,
-            final String timestamp) {
-        return "{\"event_type\":\"trade\",\"status\":\"" + status
-                + "\",\"hash\":\"" + hash
-                + "\",\"price\":\"" + price
-                + "\",\"size\":\"" + size
-                + "\",\"fee_rate_bps\":\"" + feeRateBps
-                + "\",\"timestamp\":\"" + timestamp + "\"}";
+    private static String trade(
+            final String status, final String takerOrderId, final String price, final String size, String makers) {
+        if (!makers.startsWith("[")) {
+            makers = "[" + makers + "]";
+        }
+        return "{\"asset_id\":\"token-yes\",\"event_type\":\"trade\",\"fee_rate_bps\":\"0\",\"id\":\"trade-1\","
+                + "\"maker_orders\":" + makers + ",\"market\":\"condition-1\",\"outcome\":\"YES\","
+                + "\"owner\":\"test-key\",\"price\":\"" + price + "\",\"side\":\"BUY\",\"size\":\"" + size + "\","
+                + "\"status\":\"" + status + "\",\"taker_order_id\":\"" + takerOrderId + "\","
+                + "\"timestamp\":\"1700000000000\",\"trader_side\":\"TAKER\",\"type\":\"TRADE\"}";
+    }
+
+    private static String makerLeg(final String orderId, final String matchedAmount, final String price) {
+        return "{\"asset_id\":\"token-yes\",\"matched_amount\":\"" + matchedAmount + "\",\"order_id\":\"" + orderId
+                + "\",\"outcome\":\"YES\",\"owner\":\"other\",\"price\":\"" + price + "\"}";
     }
 
     private static long price(final String val) {
-        return (long) (Double.parseDouble(val) * Statics.PRICE_SCALING_FACTOR);
+        return new BigDecimal(val)
+                .multiply(BigDecimal.valueOf(Statics.PRICE_SCALING_FACTOR))
+                .longValueExact();
     }
 
     private static long qty(final String val) {
-        return (long) (Double.parseDouble(val) * Statics.SIZE_SCALING_FACTOR);
+        return new BigDecimal(val)
+                .multiply(BigDecimal.valueOf(Statics.SIZE_SCALING_FACTOR))
+                .longValueExact();
     }
 }

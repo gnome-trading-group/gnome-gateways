@@ -120,7 +120,9 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
         while (msgObj.hasNextKey()) {
             try (var field = msgObj.nextKey()) {
                 final GnomeString name = field.getName();
-                if (name.equals("order_id")) {
+                // Orders are registered under the client order id the writer sent, before Kalshi's
+                // order_id is known.
+                if (name.equals("client_order_id")) {
                     copyOrderId(field.asString(), event);
                 } else if (name.equals("status")) {
                     parseStatus(field.asString(), event);
@@ -329,8 +331,8 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
         }
         final double makerShare = costDelta > 0 ? Math.min(1.0, (double) makerCostDelta / costDelta) : 0.0;
         final long makerQty = (long) (fillDelta * makerShare);
-        final long fee = PredictionMarketFees.calculateScaledFee(fillPrice, makerQty, this.makerFeeRate)
-                + PredictionMarketFees.calculateScaledFee(fillPrice, fillDelta - makerQty, this.takerFeeRate);
+        final long fee = PredictionMarketFees.calculateScaledFee(fillPrice, makerQty, this.makerFeeRate, 1.0)
+                + PredictionMarketFees.calculateScaledFee(fillPrice, fillDelta - makerQty, this.takerFeeRate, 1.0);
         ctx.cumulativeFees += fee;
         return fee;
     }

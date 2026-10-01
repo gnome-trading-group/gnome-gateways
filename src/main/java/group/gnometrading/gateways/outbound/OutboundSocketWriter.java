@@ -12,13 +12,15 @@ import group.gnometrading.schemas.Order;
 import group.gnometrading.schemas.OrderDecoder;
 import group.gnometrading.schemas.OrderStatus;
 import group.gnometrading.schemas.RejectReason;
-import group.gnometrading.schemas.Side;
 import group.gnometrading.sequencer.SequencedPoller;
 import group.gnometrading.sequencer.SequencedRingBuffer;
+import java.io.IOException;
 import org.agrona.collections.Long2ObjectHashMap;
 import org.agrona.concurrent.UnsafeBuffer;
 
 public abstract class OutboundSocketWriter implements GnomeAgent {
+
+    private static final int MAX_RESOLVE_ATTEMPTS = 2;
 
     private final SequencedPoller orderPoller;
     protected final ManyToOneRingBuffer<OrderContext> newOrderQueue;
@@ -106,16 +108,71 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         ctx.side = this.order.decoder.side();
         ctx.flags = (short) this.order.decoder.flags().getRaw();
 
-        if (submitOrder(ctx)) {
-            this.activeOrders.put(ctx.clientOidCounter, ctx);
-            enqueueNewOrder(ctx);
-        } else {
-            ctx.execType = ExecType.REJECT;
-            ctx.orderStatus = OrderStatus.REJECTED;
-            ctx.rejectReason = RejectReason.EXCHANGE_REJECTED;
-            enqueueWriterReport(ctx);
-            returnToPool(ctx);
+        if (!prepareOrder(ctx)) {
+            rejectSubmit(ctx);
+            return;
         }
+
+        // Registered with the reader before anything is sent, so venue events that beat the submit's
+        // response, or arrive when that response is lost, still find the order.
+        this.activeOrders.put(ctx.clientOidCounter, ctx);
+        enqueueNewOrder(ctx);
+
+        SubmitResult result = send(ctx);
+        if (result == SubmitResult.UNKNOWN) {
+            result = resolveUnknownSubmit(ctx);
+        }
+        if (result == SubmitResult.REJECTED) {
+            this.activeOrders.remove(ctx.clientOidCounter);
+            rejectSubmit(ctx);
+        }
+        // Still UNKNOWN: the order may be live, so it stays registered and the venue's events settle it.
+    }
+
+    /**
+     * Settles a submit that got no clear answer. The prepared request is sent again first: both venues
+     * deduplicate it, so it cannot place a second order, and looking the order up straight away could
+     * miss one the venue is still processing. Only a refusal, which may mean "already exists", is
+     * checked against the venue's records.
+     */
+    private SubmitResult resolveUnknownSubmit(final OrderContext ctx) throws Exception {
+        for (int attempt = 0; attempt < MAX_RESOLVE_ATTEMPTS; attempt++) {
+            final SubmitResult resent = send(ctx);
+            if (resent == SubmitResult.ACCEPTED) {
+                return resent;
+            }
+            if (resent == SubmitResult.REJECTED) {
+                final SubmitResult found = find(ctx);
+                if (found != SubmitResult.UNKNOWN) {
+                    return found;
+                }
+            }
+        }
+        return SubmitResult.UNKNOWN;
+    }
+
+    private SubmitResult send(final OrderContext ctx) throws Exception {
+        try {
+            return submitOrder(ctx);
+        } catch (final IOException e) {
+            return SubmitResult.UNKNOWN;
+        }
+    }
+
+    private SubmitResult find(final OrderContext ctx) throws Exception {
+        try {
+            return findOrder(ctx);
+        } catch (final IOException e) {
+            return SubmitResult.UNKNOWN;
+        }
+    }
+
+    private void rejectSubmit(final OrderContext ctx) {
+        ctx.execType = ExecType.REJECT;
+        ctx.orderStatus = OrderStatus.REJECTED;
+        ctx.rejectReason = RejectReason.EXCHANGE_REJECTED;
+        enqueueWriterReport(ctx);
+        returnToPool(ctx);
     }
 
     private void handleCancelOrder() throws Exception {
@@ -125,9 +182,7 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
             return;
         }
         if (!cancelOrder(ctx)) {
-            final OrderContext reject = buildCancelReject(ctx);
-            enqueueWriterReport(reject);
-            returnToPool(reject);
+            enqueueCancelReject(ctx);
         } else {
             this.activeOrders.remove(clientOidCounter);
             returnToPool(ctx);
@@ -135,68 +190,46 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
     }
 
     /**
-     * Subclasses may override to implement native amend instead of cancel-replace.
-     * The default implementation cancels the existing order and re-submits via {@link #submitForModify}.
+     * Venues that can amend a working order override this. The OMS cancels and resubmits instead of
+     * modifying on every other venue ({@code VenueCapabilities}), so a modify reaching one of those
+     * means the capability table and the gateway disagree, and it is refused.
      */
     protected void handleModifyOrder() throws Exception {
-        final long clientOidCounter = this.modifyOrder.getClientOidCounter();
-        final OrderContext oldCtx = this.activeOrders.get(clientOidCounter);
-        if (oldCtx == null) {
-            return;
-        }
-
-        if (!cancelOrder(oldCtx)) {
-            final OrderContext reject = buildCancelReject(oldCtx);
-            enqueueWriterReport(reject);
-            returnToPool(reject);
-            return;
-        }
-
-        this.activeOrders.remove(clientOidCounter);
-
-        // Save fields needed for the new order before returning the old slot
-        final int oldExchangeId = oldCtx.exchangeId;
-        final long oldSecurityId = oldCtx.securityId;
-        final Side oldSide = oldCtx.side;
-        final short oldFlags = oldCtx.flags;
-        returnToPool(oldCtx);
-
-        if (this.writerPoolHead <= 0) {
-            throw new RuntimeException("Writer order context pool exhausted");
-        }
-        final OrderContext newCtx = this.writerPool[--this.writerPoolHead];
-        newCtx.reset();
-        newCtx.orderId = this.nextOrderId++;
-        newCtx.clientOidCounter = this.modifyOrder.getClientOidCounter();
-        newCtx.clientOidStrategyId = this.modifyOrder.getClientOidStrategyId();
-        newCtx.exchangeId = oldExchangeId;
-        newCtx.securityId = oldSecurityId;
-        newCtx.side = oldSide;
-        newCtx.originalQty = this.modifyOrder.decoder.size();
-        newCtx.leavesQty = newCtx.originalQty;
-        final short modifyFlags = (short) this.modifyOrder.decoder.flags().getRaw();
-        newCtx.flags = modifyFlags != 0 ? modifyFlags : oldFlags;
-
-        if (submitForModify(newCtx)) {
-            this.activeOrders.put(newCtx.clientOidCounter, newCtx);
-            enqueueNewOrder(newCtx);
-        } else {
-            newCtx.execType = ExecType.REJECT;
-            newCtx.orderStatus = OrderStatus.REJECTED;
-            newCtx.rejectReason = RejectReason.EXCHANGE_REJECTED;
-            enqueueWriterReport(newCtx);
-            returnToPool(newCtx);
+        final OrderContext ctx = this.activeOrders.get(this.modifyOrder.getClientOidCounter());
+        if (ctx != null) {
+            enqueueCancelReject(ctx);
         }
     }
 
+    /** How a venue answered an order submission. */
+    protected enum SubmitResult {
+        ACCEPTED,
+        REJECTED,
+        /** No clear answer (timeout, dropped connection, 5xx, unreadable reply): it may be live. */
+        UNKNOWN
+    }
+
     /**
-     * Submit a new order to the exchange.
-     * Implementations must populate {@code ctx.exchangeOrderIdBytes} and {@code ctx.exchangeOrderIdLength}
-     * on success.
+     * Builds the order's request and sets {@code ctx}'s correlation id, without sending anything.
      *
-     * @return true if the order was successfully submitted
+     * @return false to reject the order without sending it
      */
-    protected abstract boolean submitOrder(OrderContext ctx) throws Exception;
+    protected abstract boolean prepareOrder(OrderContext ctx) throws Exception;
+
+    /**
+     * Sends the request {@link #prepareOrder} built. May be called again with the same request when
+     * an earlier send got no clear answer, so the request must be one the venue deduplicates. On
+     * acceptance, sets {@code ctx.exchangeOrderIdBytes} for later cancels.
+     */
+    protected abstract SubmitResult submitOrder(OrderContext ctx) throws Exception;
+
+    /** Whether the venue has the order: ACCEPTED if so, REJECTED if not, UNKNOWN if it could not tell. */
+    protected abstract SubmitResult findOrder(OrderContext ctx) throws Exception;
+
+    /** The usual reading of an HTTP status: a 4xx refused the request; anything else unclear is unknown. */
+    protected static SubmitResult classifyFailure(final int statusCode) {
+        return statusCode >= 400 && statusCode < 500 ? SubmitResult.REJECTED : SubmitResult.UNKNOWN;
+    }
 
     /**
      * Cancel an existing order on the exchange.
@@ -204,15 +237,6 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
      * @return true if the cancel request was accepted
      */
     protected abstract boolean cancelOrder(OrderContext ctx) throws Exception;
-
-    /**
-     * Submit the replacement order for a cancel-replace modify.
-     * Implementations must populate {@code ctx.exchangeOrderIdBytes} and {@code ctx.exchangeOrderIdLength}
-     * on success. Called by the base class only after the original order has been successfully cancelled.
-     *
-     * @return true if the replacement order was successfully submitted
-     */
-    protected abstract boolean submitForModify(OrderContext ctx) throws Exception;
 
     protected final void enqueueNewOrder(final OrderContext ctx) {
         final int idx = this.newOrderQueue.tryClaim();
@@ -232,11 +256,16 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         this.writerReportQueue.commit(idx);
     }
 
-    protected final OrderContext buildCancelReject(final OrderContext existing) {
-        if (this.writerPoolHead <= 0) {
-            throw new RuntimeException("Writer order context pool exhausted");
+    /**
+     * Reports that a cancel or modify of {@code existing} was refused. Written straight into the queue
+     * so it needs no pool slot, which matters when every slot is held by a working order.
+     */
+    protected final void enqueueCancelReject(final OrderContext existing) {
+        final int idx = this.writerReportQueue.tryClaim();
+        if (idx < 0) {
+            throw new RuntimeException("Writer report queue overflow");
         }
-        final OrderContext reject = this.writerPool[--this.writerPoolHead];
+        final OrderContext reject = this.writerReportQueue.indexAt(idx);
         reject.reset();
         reject.orderId = existing.orderId;
         reject.clientOidCounter = existing.clientOidCounter;
@@ -246,7 +275,7 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         reject.execType = ExecType.CANCEL_REJECT;
         reject.orderStatus = OrderStatus.CANCELED;
         reject.rejectReason = RejectReason.EXCHANGE_REJECTED;
-        return reject;
+        this.writerReportQueue.commit(idx);
     }
 
     /**
@@ -271,9 +300,8 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         notice.originalQty = newSize;
         notice.cumulativeFilledQty = venueFillCount;
         notice.leavesQty = venueRemaining;
-        notice.exchangeOrderIdLength = existing.exchangeOrderIdLength;
-        System.arraycopy(
-                existing.exchangeOrderIdBytes, 0, notice.exchangeOrderIdBytes, 0, existing.exchangeOrderIdLength);
+        notice.correlationIdLength = existing.correlationIdLength;
+        System.arraycopy(existing.correlationIdBytes, 0, notice.correlationIdBytes, 0, existing.correlationIdLength);
         return notice;
     }
 

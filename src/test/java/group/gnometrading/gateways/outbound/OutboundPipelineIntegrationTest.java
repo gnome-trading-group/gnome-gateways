@@ -82,6 +82,25 @@ class OutboundPipelineIntegrationTest {
     }
 
     @Test
+    void fillArrivingBeforeTheSubmitResponse_IsStillMatched() throws Exception {
+        writer.duringSubmit = () -> {
+            reader.simulatedMessages.add(fillMessage("hash-1"));
+            try {
+                reader.doWork();
+            } catch (final Exception e) {
+                throw new IllegalStateException(e);
+            }
+        };
+
+        publishOrder(Side.Bid, price("0.50"), qty("10.0"), 2, 3L, 1L, 1);
+        writer.doWork();
+
+        waitForReports(1);
+        assertEquals(ExecType.FILL, captured.get(0).decoder.execType());
+        assertEquals(1L, captured.get(0).decoder.orderId());
+    }
+
+    @Test
     void submitSuccess_ContextFlowsThroughQueues_ExecReportPublished() throws Exception {
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), 2, 3L, 1L, 1);
         writer.doWork();
@@ -384,26 +403,33 @@ class OutboundPipelineIntegrationTest {
         }
 
         @Override
-        protected boolean submitOrder(final OrderContext ctx) {
-            submitCallCount++;
-            if (!submitResult) {
-                return false;
-            }
-            final String hash = "hash-" + submitCallCount;
-            final byte[] hashBytes = hash.getBytes(StandardCharsets.UTF_8);
+        protected boolean prepareOrder(final OrderContext ctx) {
+            final byte[] hashBytes = ("hash-" + ctx.orderId).getBytes(StandardCharsets.UTF_8);
+            System.arraycopy(hashBytes, 0, ctx.correlationIdBytes, 0, hashBytes.length);
+            ctx.correlationIdLength = hashBytes.length;
             System.arraycopy(hashBytes, 0, ctx.exchangeOrderIdBytes, 0, hashBytes.length);
             ctx.exchangeOrderIdLength = hashBytes.length;
             return true;
         }
 
+        // Runs while the submit is "on the wire", standing in for venue events that beat its response.
+        Runnable duringSubmit = () -> {};
+
         @Override
-        protected boolean cancelOrder(final OrderContext ctx) {
-            return cancelResult;
+        protected SubmitResult submitOrder(final OrderContext ctx) {
+            submitCallCount++;
+            duringSubmit.run();
+            return submitResult ? SubmitResult.ACCEPTED : SubmitResult.REJECTED;
         }
 
         @Override
-        protected boolean submitForModify(final OrderContext ctx) {
-            return true;
+        protected SubmitResult findOrder(final OrderContext ctx) {
+            return SubmitResult.REJECTED;
+        }
+
+        @Override
+        protected boolean cancelOrder(final OrderContext ctx) {
+            return cancelResult;
         }
 
         boolean nativeAmend = false;

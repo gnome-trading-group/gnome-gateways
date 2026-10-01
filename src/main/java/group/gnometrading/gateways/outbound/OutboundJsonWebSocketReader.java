@@ -47,10 +47,31 @@ public abstract class OutboundJsonWebSocketReader extends OutboundWebSocketReade
         if (skipNonJsonMessage(buffer)) {
             return;
         }
+        // Some venues batch several events into one frame as a JSON array.
+        final boolean batched = buffer.get(buffer.position()) == '[';
         try (var node = this.jsonDecoder.wrap(buffer)) {
-            try (var obj = node.asObject()) {
-                handleJsonMessage(obj);
+            if (batched) {
+                handleBatch(node);
+            } else {
+                try (var obj = node.asObject()) {
+                    handleJsonMessage(obj);
+                }
             }
+        }
+    }
+
+    private void handleBatch(final JsonDecoder.JsonNode node) throws Exception {
+        try (var items = node.asArray()) {
+            while (items.hasNextItem()) {
+                handleBatchItem(items.nextItem());
+            }
+        }
+    }
+
+    private void handleBatchItem(final JsonDecoder.JsonNode item) throws Exception {
+        try (item;
+                var obj = item.asObject()) {
+            handleJsonMessage(obj);
         }
     }
 

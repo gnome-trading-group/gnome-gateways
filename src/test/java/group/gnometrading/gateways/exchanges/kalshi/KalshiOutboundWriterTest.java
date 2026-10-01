@@ -45,6 +45,7 @@ class KalshiOutboundWriterTest {
     private static final String MARKET_TICKER = "KALSHI-MARKET";
     private static final String API_HOST = "external-api.kalshi.com";
     private static final long FIXED_NANO = 1_700_000_000_000_000_000L;
+    private static final String SESSION_PREFIX = Long.toString(FIXED_NANO / 1_000_000L, Character.MAX_RADIX);
     private static final String ORDER_PATH = "/trade-api/v2/portfolio/events/orders";
 
     private static final PrivateKey TEST_PRIVATE_KEY;
@@ -83,31 +84,101 @@ class KalshiOutboundWriterTest {
     // ========== Submit order ==========
 
     @Test
-    void submitOrder_Success_ExtractsOrderIdFromResponse() throws Exception {
+    void submitOrder_RegistersClientOrderIdBeforeSending_AndSendsIt() throws Exception {
         mockPostSuccess(orderResponse("kalshi-order-uuid-001"));
 
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
 
-        final List<OrderContext> contexts = drainQueue(newOrderQueue);
-        assertEquals(1, contexts.size());
-        assertEquals(
-                "kalshi-order-uuid-001",
-                new String(
-                        contexts.get(0).exchangeOrderIdBytes,
-                        0,
-                        contexts.get(0).exchangeOrderIdLength,
-                        StandardCharsets.UTF_8));
+        final OrderContext registered = drainQueue(newOrderQueue).get(0);
+        final String clientOrderId = SESSION_PREFIX + "-1-1";
+        assertEquals(clientOrderId, correlationId(registered));
+        assertTrue(captureLastPostBody().contains("\"client_order_id\":\"" + clientOrderId + "\""));
     }
 
     @Test
-    void submitOrder_HttpFailure_EnqueuesReject() throws Exception {
-        mockPostFailure();
+    void clientOrderIds_DifferAcrossProcessRestarts() throws Exception {
+        final SequencedRingBuffer<Order> laterBuffer = new SequencedRingBuffer<>(Order::new, new GlobalSequence());
+        final KalshiOutboundWriter laterRun = makeWriter(
+                MARKET_TICKER + ":yes",
+                laterBuffer,
+                new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64),
+                FIXED_NANO + 60_000_000_000L);
+        mockPostSuccess(orderResponse("kalshi-order-uuid-002"));
+
+        publishTo(laterBuffer, Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
+        laterRun.doWork();
+
+        final String laterId = correlationId(drainQueue(newOrderQueue).get(0));
+        assertTrue(laterId.endsWith("-1-1"));
+        assertTrue(!laterId.equals(SESSION_PREFIX + "-1-1"), "same strategy and counter, new process");
+    }
+
+    @Test
+    void lostResponse_DuplicateRefusal_FoundInOpenOrders_IsAcceptedWithVenueId() throws Exception {
+        mockPostStatuses(0, 409);
+        mockGetOrders("{\"orders\":[{\"order_id\":\"someone-else\",\"client_order_id\":\"other\"},"
+                + "{\"order_id\":\"kalshi-order-found\",\"client_order_id\":\"" + SESSION_PREFIX + "-1-1\"}],"
+                + "\"cursor\":\"\"}");
+        publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
+        writer.doWork();
+        final long clientOidCounter = drainQueue(newOrderQueue).get(0).clientOidCounter;
+
+        mockDeleteSuccess();
+        publishCancel(clientOidCounter);
+        writer.doWork();
+
+        assertEquals(0, drainQueue(writerReportQueue).size());
+        final ArgumentCaptor<String> lookup = ArgumentCaptor.forClass(String.class);
+        verify(httpClient)
+                .get(
+                        any(),
+                        anyString(),
+                        lookup.capture(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString());
+        assertTrue(lookup.getValue().startsWith("/trade-api/v2/portfolio/orders?ticker=" + MARKET_TICKER + "&min_ts="));
+        final ArgumentCaptor<GnomeString> cancelPath = ArgumentCaptor.forClass(GnomeString.class);
+        verify(httpClient)
+                .delete(
+                        any(),
+                        anyString(),
+                        cancelPath.capture(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString());
+        assertTrue(cancelPath.getValue().toString().contains("kalshi-order-found"));
+    }
+
+    @Test
+    void lostResponse_RefusalAndNotInOpenOrders_IsRejected() throws Exception {
+        mockPostStatuses(502, 400);
+        mockGetOrders("{\"orders\":[],\"cursor\":\"\"}");
 
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
 
-        assertEquals(0, drainQueue(newOrderQueue).size());
+        final List<OrderContext> reports = drainQueue(writerReportQueue);
+        assertEquals(1, reports.size());
+        assertEquals(ExecType.REJECT, reports.get(0).execType);
+    }
+
+    @Test
+    void submitOrder_ClientError_RegisteredThenRejected() throws Exception {
+        mockPostFailure();
+        when(httpResponse.getStatusCode()).thenReturn(400);
+
+        publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
+        writer.doWork();
+
+        assertEquals(1, drainQueue(newOrderQueue).size());
         final List<OrderContext> rejects = drainQueue(writerReportQueue);
         assertEquals(1, rejects.size());
         assertEquals(ExecType.REJECT, rejects.get(0).execType);
@@ -399,9 +470,7 @@ class KalshiOutboundWriterTest {
         assertEquals(qty("3.0"), notice.cumulativeFilledQty);
         assertEquals(qty("2.0"), notice.leavesQty);
         assertEquals(submitted.clientOidCounter, notice.clientOidCounter);
-        assertEquals(
-                "exchange-order-partial",
-                new String(notice.exchangeOrderIdBytes, 0, notice.exchangeOrderIdLength, StandardCharsets.UTF_8));
+        assertEquals(correlationId(submitted), correlationId(notice), "the reader finds the order by this id");
     }
 
     @Test
@@ -460,6 +529,15 @@ class KalshiOutboundWriterTest {
             final SequencedRingBuffer<Order> buf,
             final ManyToOneRingBuffer<OrderContext> releasedOrderQueue)
             throws Exception {
+        return makeWriter(exchangeSecurityId, buf, releasedOrderQueue, FIXED_NANO);
+    }
+
+    private KalshiOutboundWriter makeWriter(
+            final String exchangeSecurityId,
+            final SequencedRingBuffer<Order> buf,
+            final ManyToOneRingBuffer<OrderContext> releasedOrderQueue,
+            final long startNanos)
+            throws Exception {
         final KalshiAuthSigner signer = new KalshiAuthSigner("test-api-key", TEST_PRIVATE_KEY);
         final Listing listing = new Listing(
                 1,
@@ -475,7 +553,7 @@ class KalshiOutboundWriterTest {
                 httpClient,
                 API_HOST,
                 signer,
-                () -> FIXED_NANO,
+                () -> startNanos,
                 listing);
     }
 
@@ -495,6 +573,37 @@ class KalshiOutboundWriterTest {
                 .thenReturn(httpResponse);
         when(httpResponse.isSuccess()).thenReturn(true);
         when(httpResponse.getBody()).thenReturn(body);
+    }
+
+    /** Each POST answers with the next status; a non-2xx status is a failed response. */
+    private void mockPostStatuses(final int... statuses) throws Exception {
+        mockPostFailure();
+        final Integer[] rest = new Integer[statuses.length - 1];
+        for (int i = 1; i < statuses.length; i++) {
+            rest[i - 1] = statuses[i];
+        }
+        when(httpResponse.getStatusCode()).thenReturn(statuses[0], rest);
+    }
+
+    private void mockGetOrders(final String json) throws Exception {
+        final HTTPResponse lookup = mock(HTTPResponse.class);
+        when(lookup.isSuccess()).thenReturn(true);
+        when(lookup.getBody()).thenReturn(ByteBuffer.wrap(json.getBytes(StandardCharsets.UTF_8)));
+        when(httpClient.get(
+                        any(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString()))
+                .thenReturn(lookup);
+    }
+
+    private static String correlationId(final OrderContext ctx) {
+        return new String(ctx.correlationIdBytes, 0, ctx.correlationIdLength, StandardCharsets.UTF_8);
     }
 
     private void mockPostFailure() throws Exception {

@@ -1,5 +1,6 @@
 package group.gnometrading.gateways.outbound.exchanges.kalshi;
 
+import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.codecs.json.JsonEncoder;
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
 import group.gnometrading.gateways.outbound.OrderContext;
@@ -13,6 +14,7 @@ import group.gnometrading.schemas.Statics;
 import group.gnometrading.schemas.TimeInForce;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Listing;
+import group.gnometrading.strings.GnomeString;
 import group.gnometrading.strings.MutableString;
 import group.gnometrading.strings.ViewString;
 import group.gnometrading.utils.ByteBufferUtils;
@@ -23,6 +25,9 @@ import org.agrona.concurrent.EpochNanoClock;
 public final class KalshiOutboundWriter extends OutboundSocketWriter {
 
     private static final String ORDER_PATH = "/trade-api/v2/portfolio/events/orders";
+    private static final String ORDERS_LOOKUP_PATH = "/trade-api/v2/portfolio/orders";
+    private static final long LOOKUP_WINDOW_SECONDS = 60L;
+    private static final int LOOKUP_LIMIT = 200;
     private static final ViewString ORDER_PATH_GS = new ViewString(ORDER_PATH);
     private static final String AMEND_SUFFIX = "/amend";
     private static final byte[] AMEND_SUFFIX_BYTES = AMEND_SUFFIX.getBytes(StandardCharsets.US_ASCII);
@@ -51,7 +56,13 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
     private final byte[] jsonBodyBuf = new byte[1 << 11]; // 2 KiB
     private final ByteBuffer jsonBodyBuffer = ByteBuffer.wrap(jsonBodyBuf);
     private final JsonEncoder jsonEncoder = new JsonEncoder();
+    private final JsonDecoder jsonDecoder = new JsonDecoder();
     private int jsonBodyLength;
+
+    private final byte[] sessionPrefix;
+    private long preparedAtMillis;
+    private final byte[] lookupOrderId = new byte[OrderContext.EXCHANGE_ORDER_ID_MAX_LENGTH];
+    private int lookupOrderIdLength;
 
     private final MutableString cancelPath = new MutableString(
             ORDER_PATH.length() + 1 + OrderContext.EXCHANGE_ORDER_ID_MAX_LENGTH + AMEND_SUFFIX.length());
@@ -72,6 +83,8 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
         this.authSigner = authSigner;
         this.clock = clock;
         this.jsonEncoder.wrap(this.jsonBodyBuffer);
+        this.sessionPrefix = Long.toString(clock.nanoTime() / NANOS_PER_MILLI, Character.MAX_RADIX)
+                .getBytes(StandardCharsets.US_ASCII);
 
         final String exchangeSecurityId = listing.exchangeSecurityId();
         final int colonIdx = exchangeSecurityId.indexOf(':');
@@ -86,20 +99,28 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
     }
 
     @Override
-    protected boolean submitOrder(final OrderContext ctx) throws Exception {
+    protected boolean prepareOrder(final OrderContext ctx) {
         long price = this.order.decoder.price();
-        long size = this.order.decoder.size();
         Side side = this.order.decoder.side();
-        final OrderType orderType = this.order.decoder.orderType();
-        final TimeInForce tif = this.order.decoder.timeInForce();
-
         if (this.isNoListing) {
             side = (side == Side.Bid) ? Side.Ask : Side.Bid;
             price = Statics.PRICE_SCALING_FACTOR - price;
         }
-
+        writeClientOrderId(ctx);
+        this.preparedAtMillis = epochMillis();
         buildOrderJson(
-                price, size, side, orderType, tif, this.order.decoder.flags().postOnly());
+                price,
+                this.order.decoder.size(),
+                side,
+                this.order.decoder.orderType(),
+                this.order.decoder.timeInForce(),
+                this.order.decoder.flags().postOnly(),
+                ctx);
+        return true;
+    }
+
+    @Override
+    protected SubmitResult submitOrder(final OrderContext ctx) throws Exception {
         this.authSigner.sign(epochMillis(), "POST", ORDER_PATH);
 
         final HTTPResponse response = this.httpClient.post(
@@ -116,9 +137,122 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
                 this.authSigner.signature());
 
         if (!response.isSuccess()) {
+            return classifyFailure(response.getStatusCode());
+        }
+        return parseOrderId(response, ctx) ? SubmitResult.ACCEPTED : SubmitResult.UNKNOWN;
+    }
+
+    /**
+     * Looks for the order among this market's recent orders. Kalshi cannot filter by client order id,
+     * so the listing is narrowed to the ticker and to orders created since shortly before the submit.
+     */
+    @Override
+    protected SubmitResult findOrder(final OrderContext ctx) throws Exception {
+        final long minTimestampSeconds = this.preparedAtMillis / 1000L - LOOKUP_WINDOW_SECONDS;
+        final String path = ORDERS_LOOKUP_PATH + "?ticker=" + this.marketTicker + "&min_ts=" + minTimestampSeconds
+                + "&limit=" + LOOKUP_LIMIT;
+        // Kalshi signs the path without its query string.
+        this.authSigner.sign(epochMillis(), "GET", ORDERS_LOOKUP_PATH);
+
+        final HTTPResponse response = this.httpClient.get(
+                HTTPProtocol.HTTPS,
+                this.apiHost,
+                path,
+                HEADER_KEY,
+                this.authSigner.apiKey(),
+                HEADER_TIMESTAMP,
+                this.authSigner.timestamp(),
+                HEADER_SIGNATURE,
+                this.authSigner.signature());
+
+        if (!response.isSuccess() || response.getBody() == null) {
+            return SubmitResult.UNKNOWN;
+        }
+        return findInOrderList(response.getBody(), ctx) ? SubmitResult.ACCEPTED : SubmitResult.REJECTED;
+    }
+
+    /** Scans {@code {"orders":[...]}} for our client order id, taking the venue's order_id if found. */
+    private boolean findInOrderList(final ByteBuffer body, final OrderContext ctx) {
+        boolean found = false;
+        try (var root = this.jsonDecoder.wrap(body);
+                var obj = root.asObject()) {
+            while (obj.hasNextKey()) {
+                try (var entry = obj.nextKey()) {
+                    if (entry.getName().equals("orders")) {
+                        found = scanOrders(entry, ctx);
+                    }
+                }
+            }
+        }
+        return found;
+    }
+
+    private boolean scanOrders(final JsonDecoder.JsonNode orders, final OrderContext ctx) {
+        boolean found = false;
+        try (var list = orders.asArray()) {
+            while (list.hasNextItem()) {
+                try (var item = list.nextItem();
+                        var order = item.asObject()) {
+                    found |= !found && readOrderIfOurs(order, ctx);
+                }
+            }
+        }
+        return found;
+    }
+
+    private boolean readOrderIfOurs(final JsonDecoder.JsonObject order, final OrderContext ctx) {
+        boolean ours = false;
+        this.lookupOrderIdLength = 0;
+        while (order.hasNextKey()) {
+            try (var field = order.nextKey()) {
+                final GnomeString name = field.getName();
+                if (name.equals("client_order_id")) {
+                    ours = equalsCorrelationId(field.asString(), ctx);
+                } else if (name.equals("order_id")) {
+                    this.lookupOrderIdLength = copyBytes(field.asString(), this.lookupOrderId);
+                }
+            }
+        }
+        if (ours && this.lookupOrderIdLength > 0) {
+            ctx.exchangeOrderIdLength = this.lookupOrderIdLength;
+            System.arraycopy(this.lookupOrderId, 0, ctx.exchangeOrderIdBytes, 0, this.lookupOrderIdLength);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * {@code {sessionPrefix}-{strategyId}-{counter}}. The OMS's counter restarts with the process, and
+     * Kalshi deduplicates on this id, so the process's start time keeps ids from one run unique.
+     */
+    private void writeClientOrderId(final OrderContext ctx) {
+        final ByteBuffer out = ByteBuffer.wrap(ctx.correlationIdBytes);
+        out.put(this.sessionPrefix);
+        out.put((byte) '-');
+        ByteBufferUtils.putLongAscii(out, ctx.clientOidStrategyId);
+        out.put((byte) '-');
+        ByteBufferUtils.putLongAscii(out, ctx.clientOidCounter);
+        ctx.correlationIdLength = out.position();
+    }
+
+    private static boolean equalsCorrelationId(final GnomeString value, final OrderContext ctx) {
+        if (value.length() != ctx.correlationIdLength) {
             return false;
         }
-        return parseOrderId(response, ctx);
+        for (int i = 0; i < ctx.correlationIdLength; i++) {
+            if (value.byteAt(i) != ctx.correlationIdBytes[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static int copyBytes(final GnomeString value, final byte[] dest) {
+        final int length = Math.min(value.length(), dest.length);
+        for (int i = 0; i < length; i++) {
+            dest[i] = value.byteAt(i);
+        }
+        return length;
     }
 
     @Override
@@ -186,51 +320,8 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
             enqueueWriterReport(notice);
             returnToPool(notice);
         } else {
-            final OrderContext reject = buildCancelReject(ctx);
-            enqueueWriterReport(reject);
-            returnToPool(reject);
+            enqueueCancelReject(ctx);
         }
-    }
-
-    @Override
-    protected boolean submitForModify(final OrderContext ctx) throws Exception {
-        long price = this.modifyOrder.decoder.price();
-        long size = this.modifyOrder.decoder.size();
-        Side side = ctx.side;
-        final OrderType orderType = this.modifyOrder.decoder.orderType();
-        final TimeInForce tif = this.modifyOrder.decoder.timeInForce();
-
-        if (this.isNoListing) {
-            side = (side == Side.Bid) ? Side.Ask : Side.Bid;
-            price = Statics.PRICE_SCALING_FACTOR - price;
-        }
-
-        buildOrderJson(
-                price,
-                size,
-                side,
-                orderType,
-                tif,
-                this.modifyOrder.decoder.flags().postOnly());
-        this.authSigner.sign(epochMillis(), "POST", ORDER_PATH);
-
-        final HTTPResponse response = this.httpClient.post(
-                HTTPProtocol.HTTPS,
-                this.apiHost,
-                ORDER_PATH_GS,
-                this.jsonBodyBuf,
-                this.jsonBodyLength,
-                HEADER_KEY,
-                this.authSigner.apiKey(),
-                HEADER_TIMESTAMP,
-                this.authSigner.timestamp(),
-                HEADER_SIGNATURE,
-                this.authSigner.signature());
-
-        if (!response.isSuccess()) {
-            return false;
-        }
-        return parseOrderId(response, ctx);
     }
 
     private void buildOrderJson(
@@ -239,10 +330,16 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
             final Side side,
             final OrderType orderType,
             final TimeInForce tif,
-            final boolean postOnly) {
+            final boolean postOnly,
+            final OrderContext ctx) {
         this.jsonBodyBuffer.clear();
         this.jsonEncoder.writeObjectStart();
         this.jsonEncoder.writeObjectEntry("ticker", this.marketTicker);
+        this.jsonEncoder.writeComma();
+        this.jsonEncoder.writeString("client_order_id").writeColon();
+        this.jsonBodyBuffer.put((byte) '"');
+        this.jsonBodyBuffer.put(ctx.correlationIdBytes, 0, ctx.correlationIdLength);
+        this.jsonBodyBuffer.put((byte) '"');
         this.jsonEncoder.writeComma();
         this.jsonEncoder.writeObjectEntry("side", side == Side.Bid ? "bid" : "ask");
         this.jsonEncoder.writeComma();
