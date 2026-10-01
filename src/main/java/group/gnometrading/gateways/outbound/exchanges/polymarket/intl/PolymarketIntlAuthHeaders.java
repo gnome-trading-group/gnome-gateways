@@ -31,7 +31,8 @@ public final class PolymarketIntlAuthHeaders {
         this.address = address;
         try {
             this.mac = Mac.getInstance(HMAC_ALGORITHM);
-            this.mac.init(new SecretKeySpec(Base64.getDecoder().decode(base64Secret), HMAC_ALGORITHM));
+            // Polymarket issues the secret, and expects the signature, in URL-safe base64.
+            this.mac.init(new SecretKeySpec(Base64.getUrlDecoder().decode(base64Secret), HMAC_ALGORITHM));
         } catch (final Exception ex) {
             throw new RuntimeException("Failed to initialize HMAC-SHA256", ex);
         }
@@ -39,8 +40,18 @@ public final class PolymarketIntlAuthHeaders {
 
     public void sign(
             final String method, final String path, final byte[] body, final int bodyOffset, final int bodyLength) {
-        final long ts = System.currentTimeMillis() / 1000L;
-        this.timestamp = Long.toString(ts);
+        sign(System.currentTimeMillis() / 1000L, method, path, body, bodyOffset, bodyLength);
+    }
+
+    /** Signs {@code timestamp + method + path + body} with HMAC-SHA256, as the CLOB's L2 auth requires. */
+    public void sign(
+            final long timestampSeconds,
+            final String method,
+            final String path,
+            final byte[] body,
+            final int bodyOffset,
+            final int bodyLength) {
+        this.timestamp = Long.toString(timestampSeconds);
         try {
             this.mac.reset();
             this.mac.update(this.timestamp.getBytes(StandardCharsets.UTF_8));
@@ -50,7 +61,7 @@ public final class PolymarketIntlAuthHeaders {
                 this.mac.update(body, bodyOffset, bodyLength);
             }
             this.mac.doFinal(this.hmacBuf, 0);
-            this.signature = Base64.getEncoder().encodeToString(this.hmacBuf);
+            this.signature = Base64.getUrlEncoder().encodeToString(this.hmacBuf);
         } catch (final Exception ex) {
             throw new RuntimeException("Failed to sign request", ex);
         }
