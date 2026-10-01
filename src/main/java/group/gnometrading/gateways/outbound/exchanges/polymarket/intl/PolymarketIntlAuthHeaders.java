@@ -1,11 +1,11 @@
-package group.gnometrading.gateways.outbound.exchanges.polymarket;
+package group.gnometrading.gateways.outbound.exchanges.polymarket.intl;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 
-public final class PolymarketAuthHeaders {
+public final class PolymarketIntlAuthHeaders {
 
     static final String API_KEY_HEADER = "POLY_API_KEY";
     static final String SIGNATURE_HEADER = "POLY_SIGNATURE";
@@ -24,7 +24,7 @@ public final class PolymarketAuthHeaders {
     private String signature;
     private String timestamp;
 
-    public PolymarketAuthHeaders(
+    public PolymarketIntlAuthHeaders(
             final String apiKey, final String base64Secret, final String passphrase, final String address) {
         this.apiKey = apiKey;
         this.passphrase = passphrase;

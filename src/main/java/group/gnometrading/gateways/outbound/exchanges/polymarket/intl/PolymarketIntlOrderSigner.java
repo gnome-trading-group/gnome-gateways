@@ -1,4 +1,4 @@
-package group.gnometrading.gateways.outbound.exchanges.polymarket;
+package group.gnometrading.gateways.outbound.exchanges.polymarket.intl;
 
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
@@ -12,7 +12,7 @@ import org.bouncycastle.jce.spec.ECNamedCurveParameterSpec;
 import org.bouncycastle.math.ec.ECCurve;
 import org.bouncycastle.math.ec.ECPoint;
 
-public final class PolymarketOrderSigner {
+public final class PolymarketIntlOrderSigner {
 
     // Polymarket CTF Exchange on Polygon mainnet.
     // IMPORTANT: verify this address against https://docs.polymarket.com before deploying.
@@ -66,7 +66,7 @@ public final class PolymarketOrderSigner {
     private final byte[] fixedXBuf = new byte[32];
     private final byte[] compressedPointBuf = new byte[33];
 
-    public PolymarketOrderSigner(final byte[] privateKeyBytes, final String signerAddress) {
+    public PolymarketIntlOrderSigner(final byte[] privateKeyBytes, final String signerAddress) {
         this.signerAddress = signerAddress;
         this.makerAddress = signerAddress; // maker = signer for EOA orders
         this.saltCounter = System.nanoTime();

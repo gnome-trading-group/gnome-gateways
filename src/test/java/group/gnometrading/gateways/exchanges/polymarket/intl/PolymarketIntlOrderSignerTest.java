@@ -1,16 +1,16 @@
-package group.gnometrading.gateways.exchanges.polymarket;
+package group.gnometrading.gateways.exchanges.polymarket.intl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
-import group.gnometrading.gateways.outbound.exchanges.polymarket.PolymarketOrderSigner;
+import group.gnometrading.gateways.outbound.exchanges.polymarket.intl.PolymarketIntlOrderSigner;
 import java.math.BigInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-class PolymarketOrderSignerTest {
+class PolymarketIntlOrderSignerTest {
 
     // Well-known secp256k1 test key (NOT for production use)
     private static final byte[] TEST_PRIVATE_KEY =
@@ -20,7 +20,7 @@ class PolymarketOrderSignerTest {
     private static final long PRICE_SCALE = 1_000_000_000L;
     private static final long SIZE_SCALE = 1_000_000L;
 
-    private PolymarketOrderSigner signer;
+    private PolymarketIntlOrderSigner signer;
 
     @BeforeEach
     void setUp() {
@@ -30,12 +30,12 @@ class PolymarketOrderSignerTest {
             System.arraycopy(keyBytes, 1, trimmed, 0, 32);
             keyBytes = trimmed;
         }
-        signer = new PolymarketOrderSigner(keyBytes, TEST_SIGNER);
+        signer = new PolymarketIntlOrderSigner(keyBytes, TEST_SIGNER);
     }
 
     @Test
     void signOrderReturnsMakerAndSigner() {
-        final PolymarketOrderSigner.SignedOrder order =
+        final PolymarketIntlOrderSigner.SignedOrder order =
                 signer.signOrder(BigInteger.valueOf(12345), 500_000L, 1_000_000L, 0, 0L);
 
         assertEquals(TEST_SIGNER, order.maker());
@@ -45,7 +45,7 @@ class PolymarketOrderSignerTest {
     @Test
     void signOrderTokenIdMatchesInput() {
         final BigInteger tokenId = BigInteger.valueOf(9876543210L);
-        final PolymarketOrderSigner.SignedOrder order = signer.signOrder(tokenId, 100L, 200L, 0, 0L);
+        final PolymarketIntlOrderSigner.SignedOrder order = signer.signOrder(tokenId, 100L, 200L, 0, 0L);
 
         assertEquals(tokenId, order.tokenId());
     }
@@ -54,7 +54,7 @@ class PolymarketOrderSignerTest {
     void signOrderMakerAndTakerAmountsMatchInput() {
         final long makerAmount = 500_000L;
         final long takerAmount = 1_000_000L;
-        final PolymarketOrderSigner.SignedOrder order =
+        final PolymarketIntlOrderSigner.SignedOrder order =
                 signer.signOrder(BigInteger.ONE, makerAmount, takerAmount, 0, 0L);
 
         assertEquals(makerAmount, order.makerAmount());
@@ -63,7 +63,7 @@ class PolymarketOrderSignerTest {
 
     @Test
     void signatureHexIs65BytesWithPrefix() {
-        final PolymarketOrderSigner.SignedOrder order = signer.signOrder(BigInteger.ONE, 100L, 200L, 0, 0L);
+        final PolymarketIntlOrderSigner.SignedOrder order = signer.signOrder(BigInteger.ONE, 100L, 200L, 0, 0L);
 
         final String sig = order.signatureHex();
         assertNotNull(sig);
@@ -74,7 +74,7 @@ class PolymarketOrderSignerTest {
 
     @Test
     void signatureRAndSArePositive() {
-        final PolymarketOrderSigner.SignedOrder order = signer.signOrder(BigInteger.ONE, 100L, 200L, 0, 0L);
+        final PolymarketIntlOrderSigner.SignedOrder order = signer.signOrder(BigInteger.ONE, 100L, 200L, 0, 0L);
 
         assertTrue(order.r().signum() > 0, "r must be positive");
         assertTrue(order.s().signum() > 0, "s must be positive");
@@ -82,8 +82,8 @@ class PolymarketOrderSignerTest {
 
     @Test
     void saltIncreasesMonotonically() {
-        final PolymarketOrderSigner.SignedOrder first = signer.signOrder(BigInteger.ONE, 100L, 200L, 0, 0L);
-        final PolymarketOrderSigner.SignedOrder second = signer.signOrder(BigInteger.ONE, 100L, 200L, 0, 0L);
+        final PolymarketIntlOrderSigner.SignedOrder first = signer.signOrder(BigInteger.ONE, 100L, 200L, 0, 0L);
+        final PolymarketIntlOrderSigner.SignedOrder second = signer.signOrder(BigInteger.ONE, 100L, 200L, 0, 0L);
 
         assertTrue(second.salt() > first.salt(), "Salt must increase with each signing");
     }
@@ -92,7 +92,7 @@ class PolymarketOrderSignerTest {
     void keccak256ProducesCorrectDigest() {
         // SHA3/Keccak256 of empty string: c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470
         final byte[] empty = new byte[0];
-        final byte[] digest = PolymarketOrderSigner.keccak256(empty);
+        final byte[] digest = PolymarketIntlOrderSigner.keccak256(empty);
         assertEquals(32, digest.length);
         assertEquals((byte) 0xc5, digest[0]);
         assertEquals((byte) 0xd2, digest[1]);
@@ -103,7 +103,7 @@ class PolymarketOrderSignerTest {
     void keccak256OfKnownString() {
         // Keccak256 of "hello" = 1c8aff950685c2ed4bc3174f3472287b56d9517b9c948127319a09a7a36deac8
         final byte[] input = "hello".getBytes();
-        final byte[] digest = PolymarketOrderSigner.keccak256(input);
+        final byte[] digest = PolymarketIntlOrderSigner.keccak256(input);
         assertEquals(32, digest.length);
         assertEquals((byte) 0x1c, digest[0]);
         assertEquals((byte) 0x8a, digest[1]);
@@ -113,19 +113,19 @@ class PolymarketOrderSignerTest {
 
     @Test
     void signOrderBuySideIsZero() {
-        final PolymarketOrderSigner.SignedOrder order = signer.signOrder(BigInteger.ONE, 100L, 200L, 0, 0L);
+        final PolymarketIntlOrderSigner.SignedOrder order = signer.signOrder(BigInteger.ONE, 100L, 200L, 0, 0L);
         assertEquals(0, order.side());
     }
 
     @Test
     void signOrderSellSideIsOne() {
-        final PolymarketOrderSigner.SignedOrder order = signer.signOrder(BigInteger.ONE, 100L, 200L, 1, 0L);
+        final PolymarketIntlOrderSigner.SignedOrder order = signer.signOrder(BigInteger.ONE, 100L, 200L, 1, 0L);
         assertEquals(1, order.side());
     }
 
     @Test
     void signOrderReturnsValidV() {
-        final PolymarketOrderSigner.SignedOrder order = signer.signOrder(BigInteger.ONE, 100L, 200L, 0, 0L);
+        final PolymarketIntlOrderSigner.SignedOrder order = signer.signOrder(BigInteger.ONE, 100L, 200L, 0, 0L);
         assertTrue(order.v() == 27 || order.v() == 28, "v must be 27 or 28, got " + order.v());
     }
 
@@ -134,7 +134,7 @@ class PolymarketOrderSignerTest {
         int v27Count = 0;
         int v28Count = 0;
         for (int i = 0; i < 20; i++) {
-            final PolymarketOrderSigner.SignedOrder order =
+            final PolymarketIntlOrderSigner.SignedOrder order =
                     signer.signOrder(BigInteger.valueOf(i + 1), (long) (i + 1) * 100, (long) (i + 1) * 200, i % 2, 0L);
             if (order.v() == 27) {
                 v27Count++;
@@ -155,7 +155,7 @@ class PolymarketOrderSignerTest {
         // Real Polymarket token ID — 77-digit uint256 that overflows long
         final BigInteger realTokenId =
                 new BigInteger("21742633143463906290569050155826241533067272736897614950488156847949938836455");
-        final PolymarketOrderSigner.SignedOrder order = signer.signOrder(realTokenId, 500_000L, 1_000_000L, 0, 0L);
+        final PolymarketIntlOrderSigner.SignedOrder order = signer.signOrder(realTokenId, 500_000L, 1_000_000L, 0, 0L);
 
         assertEquals(realTokenId, order.tokenId());
         assertNotNull(order.signatureHex());

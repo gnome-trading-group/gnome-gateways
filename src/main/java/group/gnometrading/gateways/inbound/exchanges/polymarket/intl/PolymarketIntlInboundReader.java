@@ -1,4 +1,4 @@
-package group.gnometrading.gateways.inbound.exchanges.polymarket;
+package group.gnometrading.gateways.inbound.exchanges.polymarket.intl;
 
 import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.codecs.json.JsonEncoder;
@@ -24,7 +24,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import org.agrona.concurrent.EpochNanoClock;
 
-public final class PolymarketInboundReader extends InboundJsonWebSocketReader<Mbp10Schema>
+public final class PolymarketIntlInboundReader extends InboundJsonWebSocketReader<Mbp10Schema>
         implements MbpBufferSchemaFactory {
 
     private static final int MAX_BOOK_LEVELS = 1 << 10;
@@ -60,7 +60,7 @@ public final class PolymarketInboundReader extends InboundJsonWebSocketReader<Mb
     private long lastTradePrice;
     private long lastTradeSize;
 
-    public PolymarketInboundReader(
+    public PolymarketIntlInboundReader(
             Logger logger,
             SequencedRingBuffer<Mbp10Schema> outputBuffer,
             EpochNanoClock clock,

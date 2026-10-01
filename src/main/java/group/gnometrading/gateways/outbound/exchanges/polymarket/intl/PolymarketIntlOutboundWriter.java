@@ -1,4 +1,4 @@
-package group.gnometrading.gateways.outbound.exchanges.polymarket;
+package group.gnometrading.gateways.outbound.exchanges.polymarket.intl;
 
 import group.gnometrading.codecs.json.JsonEncoder;
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
@@ -21,7 +21,7 @@ import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 
-public final class PolymarketOutboundWriter extends OutboundSocketWriter {
+public final class PolymarketIntlOutboundWriter extends OutboundSocketWriter {
 
     private static final String ORDER_PATH = "/order";
     private static final GnomeString ORDER_PATH_GS = new ViewString(ORDER_PATH);
@@ -35,8 +35,8 @@ public final class PolymarketOutboundWriter extends OutboundSocketWriter {
 
     private final HTTPClient httpClient;
     private final String clobHost;
-    private final PolymarketOrderSigner orderSigner;
-    private final PolymarketAuthHeaders authHeaders;
+    private final PolymarketIntlOrderSigner orderSigner;
+    private final PolymarketIntlAuthHeaders authHeaders;
     private final Listing listing;
     private final String tokenId;
     private final BigInteger tokenIdBigInt;
@@ -49,15 +49,15 @@ public final class PolymarketOutboundWriter extends OutboundSocketWriter {
     private final MutableString cancelPath =
             new MutableString(ORDER_PATH.length() + 1 + OrderContext.EXCHANGE_ORDER_ID_MAX_LENGTH);
 
-    public PolymarketOutboundWriter(
+    public PolymarketIntlOutboundWriter(
             SequencedRingBuffer<?> orderOutboundBuffer,
             ManyToOneRingBuffer<OrderContext> newOrderQueue,
             ManyToOneRingBuffer<OrderContext> writerReportQueue,
             ManyToOneRingBuffer<OrderContext> releasedOrderQueue,
             HTTPClient httpClient,
             String clobHost,
-            PolymarketOrderSigner orderSigner,
-            PolymarketAuthHeaders authHeaders,
+            PolymarketIntlOrderSigner orderSigner,
+            PolymarketIntlAuthHeaders authHeaders,
             Listing listing) {
         super(orderOutboundBuffer, newOrderQueue, writerReportQueue, releasedOrderQueue);
         this.httpClient = httpClient;
@@ -97,7 +97,7 @@ public final class PolymarketOutboundWriter extends OutboundSocketWriter {
             takerAmount = price * size / Statics.PRICE_SCALING_FACTOR;
         }
 
-        final PolymarketOrderSigner.SignedOrder signed =
+        final PolymarketIntlOrderSigner.SignedOrder signed =
                 this.orderSigner.signOrder(this.tokenIdBigInt, makerAmount, takerAmount, pmSide, 0L);
 
         buildOrderJson(
@@ -112,15 +112,15 @@ public final class PolymarketOutboundWriter extends OutboundSocketWriter {
                 ORDER_PATH_GS,
                 this.jsonBodyBuf,
                 this.jsonBodyLength,
-                PolymarketAuthHeaders.API_KEY_HEADER,
+                PolymarketIntlAuthHeaders.API_KEY_HEADER,
                 this.authHeaders.apiKey(),
-                PolymarketAuthHeaders.SIGNATURE_HEADER,
+                PolymarketIntlAuthHeaders.SIGNATURE_HEADER,
                 this.authHeaders.signature(),
-                PolymarketAuthHeaders.TIMESTAMP_HEADER,
+                PolymarketIntlAuthHeaders.TIMESTAMP_HEADER,
                 this.authHeaders.timestamp(),
-                PolymarketAuthHeaders.PASSPHRASE_HEADER,
+                PolymarketIntlAuthHeaders.PASSPHRASE_HEADER,
                 this.authHeaders.passphrase(),
-                PolymarketAuthHeaders.ADDRESS_HEADER,
+                PolymarketIntlAuthHeaders.ADDRESS_HEADER,
                 this.authHeaders.address());
 
         if (!response.isSuccess()) {
@@ -145,15 +145,15 @@ public final class PolymarketOutboundWriter extends OutboundSocketWriter {
                 HTTPProtocol.HTTPS,
                 this.clobHost,
                 this.cancelPath,
-                PolymarketAuthHeaders.API_KEY_HEADER,
+                PolymarketIntlAuthHeaders.API_KEY_HEADER,
                 this.authHeaders.apiKey(),
-                PolymarketAuthHeaders.SIGNATURE_HEADER,
+                PolymarketIntlAuthHeaders.SIGNATURE_HEADER,
                 this.authHeaders.signature(),
-                PolymarketAuthHeaders.TIMESTAMP_HEADER,
+                PolymarketIntlAuthHeaders.TIMESTAMP_HEADER,
                 this.authHeaders.timestamp(),
-                PolymarketAuthHeaders.PASSPHRASE_HEADER,
+                PolymarketIntlAuthHeaders.PASSPHRASE_HEADER,
                 this.authHeaders.passphrase(),
-                PolymarketAuthHeaders.ADDRESS_HEADER,
+                PolymarketIntlAuthHeaders.ADDRESS_HEADER,
                 this.authHeaders.address());
 
         return response.isSuccess();
@@ -174,7 +174,7 @@ public final class PolymarketOutboundWriter extends OutboundSocketWriter {
             takerAmount = price * size / Statics.PRICE_SCALING_FACTOR;
         }
 
-        final PolymarketOrderSigner.SignedOrder signed =
+        final PolymarketIntlOrderSigner.SignedOrder signed =
                 this.orderSigner.signOrder(this.tokenIdBigInt, makerAmount, takerAmount, pmSide, 0L);
 
         buildOrderJson(
@@ -189,15 +189,15 @@ public final class PolymarketOutboundWriter extends OutboundSocketWriter {
                 ORDER_PATH_GS,
                 this.jsonBodyBuf,
                 this.jsonBodyLength,
-                PolymarketAuthHeaders.API_KEY_HEADER,
+                PolymarketIntlAuthHeaders.API_KEY_HEADER,
                 this.authHeaders.apiKey(),
-                PolymarketAuthHeaders.SIGNATURE_HEADER,
+                PolymarketIntlAuthHeaders.SIGNATURE_HEADER,
                 this.authHeaders.signature(),
-                PolymarketAuthHeaders.TIMESTAMP_HEADER,
+                PolymarketIntlAuthHeaders.TIMESTAMP_HEADER,
                 this.authHeaders.timestamp(),
-                PolymarketAuthHeaders.PASSPHRASE_HEADER,
+                PolymarketIntlAuthHeaders.PASSPHRASE_HEADER,
                 this.authHeaders.passphrase(),
-                PolymarketAuthHeaders.ADDRESS_HEADER,
+                PolymarketIntlAuthHeaders.ADDRESS_HEADER,
                 this.authHeaders.address());
 
         if (!response.isSuccess()) {
@@ -208,7 +208,7 @@ public final class PolymarketOutboundWriter extends OutboundSocketWriter {
     }
 
     private void buildOrderJson(
-            final PolymarketOrderSigner.SignedOrder signed, final String orderType, final boolean postOnly) {
+            final PolymarketIntlOrderSigner.SignedOrder signed, final String orderType, final boolean postOnly) {
         this.jsonBodyBuffer.clear();
 
         this.jsonEncoder.writeObjectStart();

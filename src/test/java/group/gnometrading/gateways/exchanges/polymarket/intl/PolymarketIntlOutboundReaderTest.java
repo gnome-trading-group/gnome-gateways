@@ -1,4 +1,4 @@
-package group.gnometrading.gateways.exchanges.polymarket;
+package group.gnometrading.gateways.exchanges.polymarket.intl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.Mockito.mock;
@@ -7,7 +7,7 @@ import static org.mockito.Mockito.when;
 import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
 import group.gnometrading.gateways.outbound.OrderContext;
-import group.gnometrading.gateways.outbound.exchanges.polymarket.PolymarketOutboundReader;
+import group.gnometrading.gateways.outbound.exchanges.polymarket.intl.PolymarketIntlOutboundReader;
 import group.gnometrading.logging.NullLogger;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.networking.websockets.WebSocketResponse;
@@ -32,7 +32,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-class PolymarketOutboundReaderTest {
+class PolymarketIntlOutboundReaderTest {
 
     private static final String ORDER_HASH = "0xdeadbeef1234567890abcdef";
     private static final long FIXED_NANO = 1_700_000_000_000_000_000L;
@@ -44,7 +44,7 @@ class PolymarketOutboundReaderTest {
     private ManyToOneRingBuffer<OrderContext> releasedOrderQueue;
     private WebSocketClient client;
     private WebSocketResponse response;
-    private PolymarketOutboundReader reader;
+    private PolymarketIntlOutboundReader reader;
     private List<OrderExecutionReport> captured;
 
     @BeforeEach
@@ -76,7 +76,7 @@ class PolymarketOutboundReaderTest {
                 "condition-1:token-yes",
                 "TEST-YES");
 
-        reader = new PolymarketOutboundReader(
+        reader = new PolymarketIntlOutboundReader(
                 new NullLogger(),
                 execReportBuffer,
                 newOrderQueue,

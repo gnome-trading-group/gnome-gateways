@@ -1,9 +1,9 @@
-package group.gnometrading.gateways.exchanges.polymarket;
+package group.gnometrading.gateways.exchanges.polymarket.intl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
-import group.gnometrading.gateways.outbound.exchanges.polymarket.PolymarketAuthHeaders;
+import group.gnometrading.gateways.outbound.exchanges.polymarket.intl.PolymarketIntlAuthHeaders;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import javax.crypto.Mac;
@@ -11,7 +11,7 @@ import javax.crypto.spec.SecretKeySpec;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-class PolymarketAuthHeadersTest {
+class PolymarketIntlAuthHeadersTest {
 
     private static final String API_KEY = "test-api-key";
     private static final String PASSPHRASE = "test-passphrase";
@@ -21,11 +21,11 @@ class PolymarketAuthHeadersTest {
     private static final String BASE64_SECRET = "dGVzdC1zZWNyZXQ=";
     private static final byte[] DECODED_SECRET = Base64.getDecoder().decode(BASE64_SECRET);
 
-    private PolymarketAuthHeaders headers;
+    private PolymarketIntlAuthHeaders headers;
 
     @BeforeEach
     void setUp() {
-        headers = new PolymarketAuthHeaders(API_KEY, BASE64_SECRET, PASSPHRASE, ADDRESS);
+        headers = new PolymarketIntlAuthHeaders(API_KEY, BASE64_SECRET, PASSPHRASE, ADDRESS);
     }
 
     @Test

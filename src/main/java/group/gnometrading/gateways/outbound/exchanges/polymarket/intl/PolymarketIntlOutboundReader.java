@@ -1,4 +1,4 @@
-package group.gnometrading.gateways.outbound.exchanges.polymarket;
+package group.gnometrading.gateways.outbound.exchanges.polymarket.intl;
 
 import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
@@ -21,7 +21,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import org.agrona.concurrent.EpochNanoClock;
 
-public final class PolymarketOutboundReader extends OutboundJsonWebSocketReader {
+public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketReader {
 
     private static final long NANOS_PER_MILLI = 1_000_000L;
     private static final byte[] PING = "PING".getBytes(StandardCharsets.US_ASCII);
@@ -50,7 +50,7 @@ public final class PolymarketOutboundReader extends OutboundJsonWebSocketReader 
     // Scratch space for parsing — reused each message
     private final ParsedEvent parsedEvent = new ParsedEvent();
 
-    public PolymarketOutboundReader(
+    public PolymarketIntlOutboundReader(
             Logger logger,
             SequencedRingBuffer<OrderExecutionReport> execReportBuffer,
             ManyToOneRingBuffer<OrderContext> newOrderQueue,

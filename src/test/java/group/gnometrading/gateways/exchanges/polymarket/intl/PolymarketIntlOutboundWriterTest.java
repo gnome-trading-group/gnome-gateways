@@ -1,4 +1,4 @@
-package group.gnometrading.gateways.exchanges.polymarket;
+package group.gnometrading.gateways.exchanges.polymarket.intl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -17,9 +17,9 @@ import static org.mockito.Mockito.when;
 
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
 import group.gnometrading.gateways.outbound.OrderContext;
-import group.gnometrading.gateways.outbound.exchanges.polymarket.PolymarketAuthHeaders;
-import group.gnometrading.gateways.outbound.exchanges.polymarket.PolymarketOrderSigner;
-import group.gnometrading.gateways.outbound.exchanges.polymarket.PolymarketOutboundWriter;
+import group.gnometrading.gateways.outbound.exchanges.polymarket.intl.PolymarketIntlAuthHeaders;
+import group.gnometrading.gateways.outbound.exchanges.polymarket.intl.PolymarketIntlOrderSigner;
+import group.gnometrading.gateways.outbound.exchanges.polymarket.intl.PolymarketIntlOutboundWriter;
 import group.gnometrading.networking.http.HTTPClient;
 import group.gnometrading.networking.http.HTTPProtocol;
 import group.gnometrading.networking.http.HTTPResponse;
@@ -51,7 +51,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
-class PolymarketOutboundWriterTest {
+class PolymarketIntlOutboundWriterTest {
 
     private static final String CONDITION_ID = "0xcondition";
     // Use a realistic 77-digit Polymarket token ID (uint256) to verify no overflow
@@ -64,10 +64,10 @@ class PolymarketOutboundWriterTest {
     private ManyToOneRingBuffer<OrderContext> newOrderQueue;
     private ManyToOneRingBuffer<OrderContext> writerReportQueue;
     private HTTPClient httpClient;
-    private PolymarketOrderSigner orderSigner;
-    private PolymarketAuthHeaders authHeaders;
+    private PolymarketIntlOrderSigner orderSigner;
+    private PolymarketIntlAuthHeaders authHeaders;
     private HTTPResponse httpResponse;
-    private PolymarketOutboundWriter writer;
+    private PolymarketIntlOutboundWriter writer;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -78,8 +78,8 @@ class PolymarketOutboundWriterTest {
                 new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
 
         httpClient = mock(HTTPClient.class);
-        orderSigner = mock(PolymarketOrderSigner.class);
-        authHeaders = mock(PolymarketAuthHeaders.class);
+        orderSigner = mock(PolymarketIntlOrderSigner.class);
+        authHeaders = mock(PolymarketIntlAuthHeaders.class);
         httpResponse = mock(HTTPResponse.class);
 
         when(authHeaders.apiKey()).thenReturn("test-api-key");
@@ -88,7 +88,7 @@ class PolymarketOutboundWriterTest {
         when(authHeaders.passphrase()).thenReturn("test-passphrase");
         when(authHeaders.address()).thenReturn("0xTestAddress");
 
-        final PolymarketOrderSigner.SignedOrder signedOrder = new PolymarketOrderSigner.SignedOrder(
+        final PolymarketIntlOrderSigner.SignedOrder signedOrder = new PolymarketIntlOrderSigner.SignedOrder(
                 1L, "0xmaker", "0xsigner", TOKEN_ID, 500_000L, 1_000_000L, 0L, 0, BigInteger.ONE, BigInteger.TWO, (byte)
                         27);
         when(orderSigner.signOrder(any(BigInteger.class), anyLong(), anyLong(), anyInt(), anyLong()))
@@ -101,7 +101,7 @@ class PolymarketOutboundWriterTest {
                 EXCHANGE_SECURITY_ID,
                 "TEST-YES");
 
-        writer = new PolymarketOutboundWriter(
+        writer = new PolymarketIntlOutboundWriter(
                 orderBuffer,
                 newOrderQueue,
                 writerReportQueue,

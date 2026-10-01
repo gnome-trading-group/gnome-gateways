@@ -1,11 +1,11 @@
-package group.gnometrading.gateways.exchanges.polymarket;
+package group.gnometrading.gateways.exchanges.polymarket.intl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import group.gnometrading.codecs.json.JsonDecoder;
-import group.gnometrading.gateways.inbound.exchanges.polymarket.PolymarketInboundReader;
+import group.gnometrading.gateways.inbound.exchanges.polymarket.intl.PolymarketIntlInboundReader;
 import group.gnometrading.logging.NullLogger;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.networking.websockets.WebSocketResponse;
@@ -29,12 +29,12 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-class PolymarketInboundReaderTest {
+class PolymarketIntlInboundReaderTest {
 
     private static final String TOKEN_ID = "token-yes";
 
     private SequencedRingBuffer<Mbp10Schema> ringBuffer;
-    private PolymarketInboundReader reader;
+    private PolymarketIntlInboundReader reader;
     private WebSocketClient client;
     private WebSocketResponse response;
     private List<Mbp10Schema> captured;
@@ -62,7 +62,7 @@ class PolymarketInboundReaderTest {
                 new Security(3, "TEST", 3),
                 "condition-1:" + TOKEN_ID,
                 "TEST-YES");
-        reader = new PolymarketInboundReader(
+        reader = new PolymarketIntlInboundReader(
                 new NullLogger(), ringBuffer, () -> 9_000_000_000L, null, listing, client, new JsonDecoder());
         reader.buffer = false;
         reader.pause = false;
