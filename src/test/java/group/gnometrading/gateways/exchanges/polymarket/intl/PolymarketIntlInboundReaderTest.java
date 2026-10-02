@@ -94,6 +94,23 @@ class PolymarketIntlInboundReaderTest {
         assertEquals(Action.Modify, schema.decoder.action());
     }
 
+    /** Levels past the old 32-bit size limit (~4,295 shares) were recorded wrapped; a live book had 11,971. */
+    @Test
+    void largeBookLevelsAreRecordedExactly() throws Exception {
+        process(
+                """
+                [{"market":"condition-1","asset_id":"token-yes",\
+                "timestamp":"1782753357257",\
+                "bids":[{"price":"0.74","size":"11971.08"}],\
+                "asks":[{"price":"0.76","size":"250000"}],\
+                "event_type":"book","last_trade_price":"0.75"}]
+                """);
+
+        Mbp10Schema schema = captured.get(0);
+        assertEquals(size("11971.08"), schema.decoder.bidSize0());
+        assertEquals(size("250000"), schema.decoder.askSize0());
+    }
+
     @Test
     void priceChangeUpdatesRemovesAndFiltersLevels() throws Exception {
         process(
