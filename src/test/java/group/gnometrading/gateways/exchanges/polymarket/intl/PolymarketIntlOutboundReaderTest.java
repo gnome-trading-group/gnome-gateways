@@ -205,6 +205,53 @@ class PolymarketIntlOutboundReaderTest {
     }
 
     @Test
+    void redeliveredMatchedTrade_IsReportedOnce() throws Exception {
+        enqueueOrder(ORDER_A, 1L);
+        process(orderEvent("PLACEMENT", "LIVE", ORDER_A));
+        process(trade("trade-1", "MATCHED", ORDER_A, "0.55", "4", "[]"));
+        assertEquals(qty("4"), awaitReport(1).decoder.cumulativeQty());
+
+        process(trade("trade-1", "MATCHED", ORDER_A, "0.55", "4", "[]"));
+        assertNoFurtherReports();
+
+        process(trade("trade-2", "MATCHED", ORDER_A, "0.55", "1", "[]"));
+        final OrderExecutionReport next = awaitReport(3);
+        assertEquals(qty("1"), next.decoder.filledQty());
+        assertEquals(qty("5"), next.decoder.cumulativeQty(), "the redelivered trade must not be counted");
+    }
+
+    @Test
+    void distinctMatchedTrades_AreEachReported() throws Exception {
+        enqueueOrder(ORDER_A, 1L);
+        process(orderEvent("PLACEMENT", "LIVE", ORDER_A));
+
+        process(trade("trade-1", "MATCHED", ORDER_A, "0.55", "4", "[]"));
+        process(trade("trade-2", "MATCHED", ORDER_A, "0.56", "3", "[]"));
+
+        assertEquals(qty("4"), awaitReport(1).decoder.cumulativeQty());
+        final OrderExecutionReport second = awaitReport(2);
+        assertEquals(qty("3"), second.decoder.filledQty());
+        assertEquals(qty("7"), second.decoder.cumulativeQty());
+        assertNoFurtherReports();
+    }
+
+    @Test
+    void tradeEvictedFromTheDedupWindow_IsAcceptedAgain() throws Exception {
+        enqueueOrder(ORDER_A, 1L);
+        process(orderEvent("PLACEMENT", "LIVE", ORDER_A));
+        process(trade("trade-first", "MATCHED", ORDER_A, "0.55", "1", "[]"));
+        awaitReport(1);
+
+        final int dedupWindow = 4096;
+        for (int i = 0; i < dedupWindow; i++) {
+            process(trade("other-" + i, "MATCHED", SOMEONE_ELSE, "0.55", "1", "[]"));
+        }
+
+        process(trade("trade-first", "MATCHED", ORDER_A, "0.55", "1", "[]"));
+        assertEquals(qty("2"), awaitReport(2).decoder.cumulativeQty());
+    }
+
+    @Test
     void fullFill_PublishesFillAndReleasesTheOrder() throws Exception {
         enqueueOrder(ORDER_A, 1L);
         process(orderEvent("PLACEMENT", "LIVE", ORDER_A));
@@ -435,11 +482,21 @@ class PolymarketIntlOutboundReaderTest {
 
     private static String trade(
             final String status, final String takerOrderId, final String price, final String size, String makers) {
+        return trade("trade-1", status, takerOrderId, price, size, makers);
+    }
+
+    private static String trade(
+            final String tradeId,
+            final String status,
+            final String takerOrderId,
+            final String price,
+            final String size,
+            String makers) {
         if (!makers.startsWith("[")) {
             makers = "[" + makers + "]";
         }
-        return "{\"asset_id\":\"token-yes\",\"event_type\":\"trade\",\"fee_rate_bps\":\"0\",\"id\":\"trade-1\","
-                + "\"maker_orders\":" + makers + ",\"market\":\"condition-1\",\"outcome\":\"YES\","
+        return "{\"asset_id\":\"token-yes\",\"event_type\":\"trade\",\"fee_rate_bps\":\"0\",\"id\":\""
+                + tradeId + "\",\"maker_orders\":" + makers + ",\"market\":\"condition-1\",\"outcome\":\"YES\","
                 + "\"owner\":\"test-key\",\"price\":\"" + price + "\",\"side\":\"BUY\",\"size\":\"" + size + "\","
                 + "\"status\":\"" + status + "\",\"taker_order_id\":\"" + takerOrderId + "\","
                 + "\"timestamp\":\"1700000000000\",\"trader_side\":\"TAKER\",\"type\":\"TRADE\"}";

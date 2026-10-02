@@ -192,6 +192,20 @@ class KalshiOutboundReaderTest {
         assertEquals(price("0.50"), second.decoder.fillPrice());
     }
 
+    @Test
+    void largeFill_CostBeyondLongProductRange_ReportsExactFillPrice() throws Exception {
+        // $12,000 at 1e9 times the 1e6 size scale overflows a long before the divide.
+        enqueueLiveOrder(ORDER_ID, qty("20000.0"), 0);
+        process(userOrderEvent(ORDER_ID, "executed", "20000.00", "0.00", "12000.0000", "0.0000", EVENT_MS));
+        waitForReports(1);
+
+        assertNoFurtherReports(1);
+        final OrderExecutionReport report = captured.get(0);
+        assertEquals(ExecType.FILL, report.decoder.execType());
+        assertEquals(qty("20000.0"), report.decoder.filledQty());
+        assertEquals(600_000_000L, report.decoder.fillPrice());
+    }
+
     // ========== Full fill ==========
 
     @Test

@@ -17,6 +17,7 @@ import group.gnometrading.schemas.Statics;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Listing;
 import group.gnometrading.strings.GnomeString;
+import group.gnometrading.utils.ScaledMath;
 import java.io.IOException;
 import org.agrona.concurrent.EpochNanoClock;
 
@@ -235,9 +236,8 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
         final long fillDelta = event.fillCount - ctx.cumulativeFilledQty;
         final long totalCost = event.takerFillCost + event.makerFillCost;
         final long costDelta = totalCost - ctx.cumulativeCost;
-        // fillPrice in PRICE_SCALING_FACTOR units per contract:
-        // (costDelta in PRICE_SCALING_FACTOR) / (fillDelta in SIZE_SCALING_FACTOR) * SIZE_SCALING_FACTOR
-        final long fillPrice = fillDelta > 0 ? costDelta * Statics.SIZE_SCALING_FACTOR / fillDelta : 0;
+        final long fillPrice =
+                fillDelta > 0 ? ScaledMath.multiplyDivide(costDelta, Statics.SIZE_SCALING_FACTOR, fillDelta) : 0;
 
         // An order that fills on arrival has no `resting` update to acknowledge it. Without a NEW
         // the OMS slot stays PENDING_NEW, so acknowledge it first if it is still working.

@@ -21,6 +21,7 @@ import group.gnometrading.strings.GnomeString;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import org.agrona.collections.LongHashSet;
 import org.agrona.concurrent.EpochNanoClock;
 
 /**
@@ -39,6 +40,9 @@ public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketRea
 
     // More maker orders than this in one trade are dropped; a market maker has at most one per side.
     private static final int MAX_MAKER_LEGS = 32;
+
+    // The venue redelivers MATCHED trades (e.g. on reconnect); a redelivery lands well inside this window.
+    private static final int SEEN_TRADE_CAPACITY = 4096;
 
     private static final int EVENT_TYPE_ORDER = 1;
     private static final int EVENT_TYPE_TRADE = 2;
@@ -60,6 +64,12 @@ public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketRea
     private final ByteBuffer pingBuffer;
 
     private final ParsedEvent parsedEvent = new ParsedEvent();
+
+    // Doubled so the set's load-factor threshold stays above the window and it never rehashes.
+    private final LongHashSet seenTradeKeys = new LongHashSet(2 * SEEN_TRADE_CAPACITY);
+    private final long[] seenTradeRing = new long[SEEN_TRADE_CAPACITY];
+    private int seenTradeHead;
+    private int seenTradeCount;
 
     public PolymarketIntlOutboundReader(
             Logger logger,
@@ -173,7 +183,7 @@ public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketRea
                     new String(event.idBytes, 0, event.idLength, StandardCharsets.US_ASCII));
             return;
         }
-        if (event.status != STATUS_MATCHED) {
+        if (event.status != STATUS_MATCHED || !markTradeSeen(computeKey(event.idBytes, event.idLength))) {
             return;
         }
         final long takerKey = computeKey(event.takerOrderIdBytes, event.takerOrderIdLength);
@@ -189,6 +199,21 @@ public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketRea
                 emitFill(maker, makerKey, leg.matchedAmount, leg.price, Liquidity.MAKER, event.timestampEvent);
             }
         }
+    }
+
+    /** Records the trade, evicting the oldest once full; false if it was already recorded. */
+    private boolean markTradeSeen(final long tradeKey) {
+        if (!this.seenTradeKeys.add(tradeKey)) {
+            return false;
+        }
+        if (this.seenTradeCount == SEEN_TRADE_CAPACITY) {
+            this.seenTradeKeys.remove(this.seenTradeRing[this.seenTradeHead]);
+        } else {
+            this.seenTradeCount++;
+        }
+        this.seenTradeRing[this.seenTradeHead] = tradeKey;
+        this.seenTradeHead = (this.seenTradeHead + 1) % SEEN_TRADE_CAPACITY;
+        return true;
     }
 
     private void emitFill(

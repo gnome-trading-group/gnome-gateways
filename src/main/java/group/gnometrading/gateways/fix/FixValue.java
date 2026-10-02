@@ -183,51 +183,48 @@ public final class FixValue {
     }
 
     /**
-     * Get the value as a float.
+     * Get the value as a fixed-point long, i.e. the decimal value multiplied by {@code scale}.
      *
-     * <p><strong>Note.</strong> The value is a string representation of
-     * a decimal number. As converting an arbitrary decimal number into a
-     * floating point number requires arbitrary-precision arithmetic, this
-     * method only works with the subset of decimal numbers that can be
-     * converted into floating point numbers using floating-point
-     * arithmetic.</p>
+     * <p>{@code scale} must be a power of ten. Fraction digits beyond its precision are truncated
+     * toward zero rather than rounded. A leading {@code '-'} is honoured.</p>
      *
-     * <p>If we represent a decimal number in the form
+     * <p>Fraction digits are scaled up to {@code scale} rather than the whole significand being
+     * multiplied by it, so the result only overflows if the scaled value itself exceeds a long.</p>
      *
-     *     &plusmn;<i>s</i>&nbsp;&times;&nbsp;10<sup><i>e</i></sup>,
-     *
-     * where <i>s</i> is an integer significand and <i>e</i> is an integer
-     * exponent, this method works for decimal numbers having
-     *
-     *     0&nbsp;&le;&nbsp;<i>s</i>&nbsp;&le;&nbsp;2<sup>53</sup>&nbsp;-&nbsp;1
-     *
-     * and
-     *
-     *     -17&nbsp;&le;&nbsp;<i>e</i>&nbsp;&le;&nbsp;2.</p>
-     *
-     * @return the value as a decimal
-     * @see <a href="https://www.exploringbinary.com/fast-path-decimal-to-floating-point-conversion/">Fast Path Decimal to Floating-Point Conversion</a>
+     * @param scale the fixed-point scaling factor, a power of ten
+     * @return the value multiplied by {@code scale}
      */
     public long toFixedPointLong(final long scale) {
+        int scaleDigits = 0;
+        while (AsciiEncoding.LONG_POW_10[scaleDigits] < scale) {
+            scaleDigits++;
+        }
+
         int idx = offset;
+        final int end = offset + length;
+        boolean negative = false;
+        if (idx < end && this.parent.get(idx) == '-') {
+            negative = true;
+            idx++;
+        }
+
         long significand = 0;
         int decimalPlaces = 0;
         boolean seenDecimal = false;
-
-        while (idx < offset + length) {
+        while (idx < end) {
             final byte byteVal = this.parent.get(idx++);
             if (byteVal == '.') {
                 seenDecimal = true;
-            } else {
+            } else if (!seenDecimal) {
                 significand = 10 * significand + byteVal - '0';
-                if (seenDecimal) {
-                    decimalPlaces++;
-                }
+            } else if (decimalPlaces < scaleDigits) {
+                significand = 10 * significand + byteVal - '0';
+                decimalPlaces++;
             }
         }
 
-        final long divisor = AsciiEncoding.LONG_POW_10[decimalPlaces];
-        return significand * scale / divisor;
+        final long value = significand * AsciiEncoding.LONG_POW_10[scaleDigits - decimalPlaces];
+        return negative ? -value : value;
     }
 
     public double asDecimal() {

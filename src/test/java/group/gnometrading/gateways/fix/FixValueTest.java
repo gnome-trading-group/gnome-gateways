@@ -199,6 +199,27 @@ class FixValueTest {
         assertEquals(expected, value.asDecimal());
     }
 
+    private static Stream<Arguments> testFixedPointLongArguments() {
+        return Stream.of(
+                Arguments.of("65000.01000000", 1_000_000_000L, 65_000_010_000_000L),
+                Arguments.of("0.00000001", 1_000_000_000L, 10L),
+                Arguments.of("123456789.12345678", 1_000_000L, 123_456_789_123_456L),
+                Arguments.of("50000.00", 1_000_000_000L, 50_000_000_000_000L),
+                Arguments.of("-1.5", 1_000_000_000L, -1_500_000_000L),
+                Arguments.of("42", 1_000_000L, 42_000_000L),
+                Arguments.of("0.0000000019", 1_000_000_000L, 1L),
+                Arguments.of("-0.0000000019", 1_000_000_000L, -1L),
+                Arguments.of("1700000000123", 1L, 1_700_000_000_123L));
+    }
+
+    @ParameterizedTest
+    @MethodSource("testFixedPointLongArguments")
+    void testFixedPointLong(String input, long scale, long expected) {
+        final var value = new FixValue(0);
+        value.parseBuffer(ByteBuffer.wrap(input.getBytes()));
+        assertEquals(expected, value.toFixedPointLong(scale));
+    }
+
     private static Stream<Arguments> testWriteBufferArguments() {
         return Stream.of(
                 Arguments.of((Consumer<FixValue>) (value) -> value.setString(""), fix("|"), 1),
