@@ -123,6 +123,15 @@ class InboundWebSocketReaderTest {
         assertEquals(0, reader.handleMessageCallCount);
     }
 
+    @Test
+    void readSocket_PongOpcode_UpdatesRecvTimestamp() throws Exception {
+        when(response.getOpcode()).thenReturn(Opcode.PONG);
+
+        reader.doWork();
+
+        assertTrue(reader.recvTimestamp > 0);
+    }
+
     // ========== attachSocket ==========
 
     @Test

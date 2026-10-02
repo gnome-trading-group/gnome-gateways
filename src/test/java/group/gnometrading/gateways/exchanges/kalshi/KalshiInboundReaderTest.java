@@ -1,10 +1,15 @@
 package group.gnometrading.gateways.exchanges.kalshi;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import group.gnometrading.codecs.json.JsonDecoder;
+import group.gnometrading.codecs.json.JsonEncoder;
+import group.gnometrading.gateways.inbound.InboundJsonWebSocketWriter;
 import group.gnometrading.gateways.inbound.exchanges.kalshi.KalshiInboundReader;
 import group.gnometrading.logging.NullLogger;
 import group.gnometrading.networking.websockets.WebSocketClient;
@@ -21,10 +26,12 @@ import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Exchange;
 import group.gnometrading.sm.Listing;
 import group.gnometrading.sm.Security;
+import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPairGenerator;
 import java.security.PrivateKey;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import org.junit.jupiter.api.AfterEach;
@@ -114,7 +121,7 @@ class KalshiInboundReaderTest {
         // Second bid: 50 cents YES
         assertEquals(price("0.50"), schema.decoder.bidPrice1());
         assertEquals(size("200"), schema.decoder.bidSize1());
-        // Best ask: NO at 50 cents → YES ask at 50 cents (100-50), ahead of NO at 46 cents → ask at 54 cents
+        // Best ask: NO level at 50 cents (YES-leg priced) ahead of the NO level at 54 cents
         assertEquals(price("0.50"), schema.decoder.askPrice0());
         assertEquals(size("75"), schema.decoder.askSize0());
         assertEquals(price("0.54"), schema.decoder.askPrice1());
@@ -229,23 +236,57 @@ class KalshiInboundReaderTest {
     }
 
     @Test
-    void noLevelsMapsToAscendingYesAsks() throws Exception {
+    void subscribeOptsIntoYesLegPricing() throws Exception {
+        final List<String> sent = new ArrayList<>();
+        doAnswer(inv -> {
+                    final ByteBuffer payload = inv.getArgument(2);
+                    sent.add(StandardCharsets.UTF_8.decode(payload.duplicate()).toString());
+                    return null;
+                })
+                .when(client)
+                .wrapMessage(any(), eq(Opcode.TEXT), any());
+        final KalshiInboundReader subscriber = new KalshiInboundReader(
+                new NullLogger(),
+                ringBuffer,
+                () -> 9_000_000_000L,
+                new InboundJsonWebSocketWriter(client, new JsonEncoder()),
+                new Listing(
+                        1,
+                        new Exchange(2, "Kalshi", "global", SchemaType.MBP_10),
+                        new Security(3, "TEST", 3),
+                        MARKET_TICKER + ":no",
+                        "TEST-NO"),
+                client,
+                new JsonDecoder(),
+                "test-api-key",
+                TEST_PRIVATE_KEY);
+
+        final Method subscribe = KalshiInboundReader.class.getDeclaredMethod("subscribe");
+        subscribe.setAccessible(true);
+        subscribe.invoke(subscriber);
+
+        assertEquals(
+                List.of("{\"id\":1,\"cmd\":\"subscribe\",\"params\":{\"channels\":[\"orderbook_delta\",\"trade\"],"
+                        + "\"market_tickers\":[\"TEST-TICKER\"],\"use_yes_price\":true}}"),
+                sent);
+    }
+
+    @Test
+    void yesPricedNoLevelsMapToAscendingAsks() throws Exception {
         processNoEmit(
                 """
                 {"type":"orderbook_snapshot","sid":1,"seq":1,"msg":{"market_ticker":"TEST-TICKER",\
                 "yes_dollars_fp":[],\
-                "no_dollars_fp":[["0.4000","40.00"],["0.5000","50.00"],["0.6000","60.00"]]}}
+                "no_dollars_fp":[["0.6000","40.00"],["0.5000","50.00"],["0.4000","60.00"]]}}
                 """);
         process(
                 """
                 {"type":"orderbook_delta","sid":1,"seq":2,"msg":{"market_ticker":"TEST-TICKER",\
-                "price_dollars":"0.400","delta_fp":"0.00","side":"no","ts_ms":1700000000000}}
+                "price_dollars":"0.600","delta_fp":"0.00","side":"no","ts_ms":1700000000000}}
                 """);
 
         Mbp10Schema schema = captured.get(0);
-        // NO at 60 cents → YES ask at 40 cents (best ask, since lowest YES ask price)
-        // NO at 50 cents → YES ask at 50 cents
-        // NO at 40 cents → YES ask at 60 cents
+        // use_yes_price: NO levels are already YES-priced asks, sorted ascending
         assertEquals(price("0.40"), schema.decoder.askPrice0());
         assertEquals(price("0.50"), schema.decoder.askPrice1());
         assertEquals(price("0.60"), schema.decoder.askPrice2());
@@ -307,7 +348,7 @@ class KalshiInboundReaderTest {
                 """
                 {"type":"orderbook_snapshot","sid":1,"seq":1,"msg":{"market_ticker":"TEST-TICKER",\
                 "yes_dollars_fp":[["0.5500","100.00"],["0.5000","200.00"]],\
-                "no_dollars_fp":[["0.4600","50.00"],["0.5000","75.00"]]}}
+                "no_dollars_fp":[["0.5400","50.00"],["0.5000","75.00"]]}}
                 """);
     }
 

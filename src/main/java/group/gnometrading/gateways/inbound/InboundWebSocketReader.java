@@ -38,6 +38,11 @@ public abstract class InboundWebSocketReader<T extends Schema> extends InboundSo
             this.recvTimestamp = clock.nanoTime();
             pong();
             return null;
+        } else if (result.getOpcode() == Opcode.PONG) {
+            // A pong answers our own keep-alive ping, so it proves the connection is alive on feeds
+            // that can stay quiet for longer than the silence timeout.
+            this.recvTimestamp = clock.nanoTime();
+            return null;
         } else {
             return null;
         }

@@ -37,8 +37,11 @@ import org.agrona.concurrent.EpochNanoClock;
  * internally (indexed by integer cent price 1–99) and extracts top-10 levels into Mbp10Schema on
  * each book update.
  *
- * <p>YES levels map to bids. NO levels map to asks: a NO bid at price P implies a YES ask at price
- * (100 - P) cents.
+ * <p>YES levels map to bids and NO levels map to asks. The subscription sets {@code use_yes_price}
+ * so NO levels arrive in YES-leg pricing: a NO level at P is a YES ask at P. Kalshi's default is
+ * NO-leg pricing (a NO level at P is a YES ask at 100 - P), but it has announced that the default
+ * will flip and the flag will then be removed, so the reader opts in explicitly rather than
+ * depending on the default.
  *
  * <p>Prices arrive as dollar strings (e.g., {@code "0.0800"} for 8 cents) and quantities as
  * fixed-point strings (e.g., {@code "300.00"} for 300 contracts). Deltas may be negative.
@@ -131,7 +134,7 @@ public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10S
     @Override
     protected void subscribe() throws IOException {
         // {"id": 1, "cmd": "subscribe", "params": {"channels": ["orderbook_delta", "trade"], "market_tickers":
-        // ["<ticker>"]}}
+        // ["<ticker>"], "use_yes_price": true}}
         final InboundJsonWebSocketWriter jsonInboundWebSocketWriter = (InboundJsonWebSocketWriter) this.socketWriter;
         final JsonEncoder jsonEncoder = jsonInboundWebSocketWriter.getJsonEncoder();
 
@@ -156,6 +159,8 @@ public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10S
         jsonEncoder.writeArrayStart();
         jsonEncoder.writeString(marketTicker);
         jsonEncoder.writeArrayEnd();
+        jsonEncoder.writeComma();
+        jsonEncoder.writeObjectEntry("use_yes_price", true);
         jsonEncoder.writeObjectEnd();
         jsonEncoder.writeObjectEnd();
 
@@ -344,13 +349,11 @@ public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10S
             book.bids[bidIdx].reset();
         }
 
-        // Asks: derived from NO levels. NO bid at P → YES ask at (100 - P).
-        // Highest NO price → lowest YES ask, so iterate NO from high to low for ascending asks.
+        // Asks: NO levels in YES-leg pricing, ascending by price (lowest = best ask first).
         int askIdx = 0;
-        for (int p = PRICE_ARRAY_SIZE - 1; p >= 1 && askIdx < MAX_LEVEL_DEPTH; p--) {
+        for (int p = 1; p < PRICE_ARRAY_SIZE && askIdx < MAX_LEVEL_DEPTH; p++) {
             if (noQty[p] > 0) {
-                long askPriceCents = PRICE_ARRAY_SIZE - p;
-                book.asks[askIdx].update(askPriceCents * CENTS_TO_PRICE_SCALE, noQty[p] * CENT_DOLLAR_TO_SIZE, 1L);
+                book.asks[askIdx].update((long) p * CENTS_TO_PRICE_SCALE, noQty[p] * CENT_DOLLAR_TO_SIZE, 1L);
                 askIdx++;
             }
         }
