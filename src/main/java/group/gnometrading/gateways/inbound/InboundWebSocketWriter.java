@@ -14,6 +14,11 @@ public class InboundWebSocketWriter extends InboundSocketWriter {
         this.socketClient = socketClient;
     }
 
+    @Override
+    protected final boolean isOpen() {
+        return this.socketClient.isConnected();
+    }
+
     public final void writePong() {
         final int controlWriteSequence = this.claimControlWriteBuffer();
         final ByteBuffer buffer = this.getControlWriteBuffer(controlWriteSequence);

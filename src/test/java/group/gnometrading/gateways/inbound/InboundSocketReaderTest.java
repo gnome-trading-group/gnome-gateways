@@ -3,6 +3,7 @@ package group.gnometrading.gateways.inbound;
 import static org.junit.jupiter.api.Assertions.*;
 
 import group.gnometrading.concurrent.GnomeAgentRunner;
+import group.gnometrading.gateways.SocketClosedException;
 import group.gnometrading.gateways.inbound.mbp.Mbp10Book;
 import group.gnometrading.gateways.inbound.mbp.Mbp10SchemaFactory;
 import group.gnometrading.logging.NullLogger;
@@ -642,6 +643,166 @@ class InboundSocketReaderTest {
     /**
      * Test implementation of SocketReader for testing purposes.
      */
+    // ========== Connection Failure Tests ==========
+
+    @Test
+    void readErrorIsTreatedAsASocketClose() throws Exception {
+        socketReader = new TestSocketReader(sequencedRingBuffer, clock);
+        socketReader.pause = false;
+        final IOException cause = new IOException("Connection reset by peer");
+        socketReader.nextReadError = cause;
+
+        final RuntimeException thrown = assertThrows(RuntimeException.class, socketReader::doWork);
+
+        assertEquals("Socket closed", thrown.getMessage());
+        assertSame(cause, thrown.getCause());
+        // Paused, so the reader stops touching the broken socket until it is reconnected.
+        assertTrue(socketReader.pause);
+    }
+
+    @Test
+    @Timeout(30)
+    void connectReturnsOnlyOnceTheReaderIsRunningAgain() throws Exception {
+        socketReader = new TestSocketReader(sequencedRingBuffer, clock);
+        final GnomeAgentRunner runner = new GnomeAgentRunner(socketReader, null);
+        GnomeAgentRunner.startOnThread(runner);
+        try {
+            for (int i = 0; i < 200; i++) {
+                socketReader.connect();
+                // Left true, the next pause would read it as an acknowledgement while the reader is still running.
+                assertFalse(socketReader.isPaused, "isPaused was still set after connect " + i);
+            }
+        } finally {
+            runner.close();
+        }
+    }
+
+    @Test
+    @Timeout(10)
+    void disconnectWaitsForAnInFlightWrite() throws Exception {
+        final BlockingWriter writer = new BlockingWriter();
+        socketReader = new TestSocketReader(sequencedRingBuffer, clock, writer);
+        final GnomeAgentRunner readerRunner = new GnomeAgentRunner(socketReader, null);
+        final GnomeAgentRunner writerRunner = new GnomeAgentRunner(writer, null);
+        GnomeAgentRunner.startOnThread(readerRunner);
+        GnomeAgentRunner.startOnThread(writerRunner);
+        try {
+            socketReader.connect();
+            final int sequence = writer.claimWriteBuffer();
+            writer.getWriteBuffer(sequence).put((byte) 1);
+            writer.publishWriteBuffer(sequence);
+            assertTrue(writer.entered.await(5, TimeUnit.SECONDS));
+
+            final Thread disconnecting = new Thread(() -> {
+                try {
+                    socketReader.disconnect();
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            });
+            disconnecting.start();
+            Thread.sleep(200);
+            assertFalse(socketReader.disconnectSocketCalled.get(), "the socket was closed under an in-flight write");
+
+            writer.release.countDown();
+            disconnecting.join(5_000);
+            assertTrue(socketReader.disconnectSocketCalled.get());
+            assertFalse(socketReader.closedWhileWriting.get());
+        } finally {
+            writer.release.countDown();
+            socketReader.pause = false; // a paused reader spins in doWork, so its runner could never stop
+            readerRunner.close();
+            writerRunner.close();
+        }
+    }
+
+    @Test
+    void oversizedMessageIsTreatedAsASocketCloseNotARepeatingError() throws Exception {
+        socketReader = new TestSocketReader(sequencedRingBuffer, clock);
+        socketReader.pause = false;
+        // What the WebSocket client throws for a frame larger than the read buffer. It throws again on every read
+        // until the connection is replaced, so left unpaused the reader would fail on every pass.
+        final RuntimeException cause = new RuntimeException("Read buffer overflowed");
+        socketReader.nextReadRuntimeError = cause;
+
+        final RuntimeException thrown = assertThrows(RuntimeException.class, socketReader::doWork);
+
+        assertEquals("Socket closed", thrown.getMessage());
+        assertSame(cause, thrown.getCause());
+        assertTrue(socketReader.pause);
+    }
+
+    @Test
+    @Timeout(10)
+    void reconnectWaitsForAnInFlightWrite() throws Exception {
+        final BlockingWriter writer = new BlockingWriter();
+        socketReader = new TestSocketReader(sequencedRingBuffer, clock, writer);
+        final GnomeAgentRunner readerRunner = new GnomeAgentRunner(socketReader, null);
+        final GnomeAgentRunner writerRunner = new GnomeAgentRunner(writer, null);
+        GnomeAgentRunner.startOnThread(readerRunner);
+        GnomeAgentRunner.startOnThread(writerRunner);
+        try {
+            socketReader.connect();
+            final int sequence = writer.claimWriteBuffer();
+            writer.getWriteBuffer(sequence).put((byte) 1);
+            writer.publishWriteBuffer(sequence);
+            assertTrue(writer.entered.await(5, TimeUnit.SECONDS));
+
+            // Connecting again closes the old connection, as a retry after a failed subscribe does.
+            final int attachesBefore = socketReader.connectCallCount.get();
+            final Thread reconnecting = new Thread(() -> {
+                try {
+                    socketReader.connect();
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            });
+            reconnecting.start();
+            Thread.sleep(200);
+            assertEquals(attachesBefore, socketReader.connectCallCount.get(), "reconnected under an in-flight write");
+
+            writer.release.countDown();
+            reconnecting.join(5_000);
+            assertEquals(attachesBefore + 1, socketReader.connectCallCount.get());
+        } finally {
+            writer.release.countDown();
+            socketReader.pause = false;
+            readerRunner.close();
+            writerRunner.close();
+        }
+    }
+
+    @Test
+    void closeSeenByTheReaderIsReportedOnce() throws Exception {
+        socketReader = new TestSocketReader(sequencedRingBuffer, clock);
+        socketReader.pause = false;
+        socketReader.closeOnNextRead = true;
+
+        final SocketClosedException thrown = assertThrows(SocketClosedException.class, socketReader::doWork);
+
+        // Passed through as is, not wrapped in a second close (which also logged the disconnect twice).
+        assertNull(thrown.getCause());
+        assertTrue(socketReader.pause);
+    }
+
+    static final class BlockingWriter extends InboundSocketWriter {
+        final CountDownLatch entered = new CountDownLatch(1);
+        final CountDownLatch release = new CountDownLatch(1);
+        final AtomicBoolean writing = new AtomicBoolean(false);
+
+        @Override
+        protected void write(ByteBuffer buffer) throws IOException {
+            writing.set(true);
+            entered.countDown();
+            try {
+                release.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            writing.set(false);
+        }
+    }
+
     static class TestSocketReader extends InboundSocketReader<Mbp10Schema> implements Mbp10SchemaFactory {
 
         final AtomicInteger readSocketCallCount = new AtomicInteger(0);
@@ -650,6 +811,11 @@ class InboundSocketReaderTest {
         final AtomicBoolean attachSocketCalled = new AtomicBoolean(false);
         final AtomicBoolean fetchSnapshotCalled = new AtomicBoolean(false);
         final AtomicBoolean pendingReads = new AtomicBoolean(false);
+        final AtomicBoolean disconnectSocketCalled = new AtomicBoolean(false);
+        final AtomicBoolean closedWhileWriting = new AtomicBoolean(false);
+        volatile IOException nextReadError;
+        volatile RuntimeException nextReadRuntimeError;
+        volatile boolean closeOnNextRead;
 
         private final Deque<ByteBuffer> readResults = new ArrayDeque<>();
         private Book<Mbp10Schema> snapshot;
@@ -663,6 +829,12 @@ class InboundSocketReaderTest {
                 SequencedRingBuffer<Mbp10Schema> outputBuffer, EpochNanoClock clock, boolean shouldOfferBuffer) {
             super(new NullLogger(), outputBuffer, clock, null, null);
             this.shouldOfferBuffer = shouldOfferBuffer;
+        }
+
+        public TestSocketReader(
+                SequencedRingBuffer<Mbp10Schema> outputBuffer, EpochNanoClock clock, InboundSocketWriter writer) {
+            super(new NullLogger(), outputBuffer, clock, writer, null);
+            this.shouldOfferBuffer = false;
         }
 
         public void addNextReadResult(ByteBuffer buffer) {
@@ -684,6 +856,20 @@ class InboundSocketReaderTest {
         @Override
         protected ByteBuffer readSocket() throws IOException {
             readSocketCallCount.incrementAndGet();
+            final IOException error = nextReadError;
+            if (error != null) {
+                nextReadError = null;
+                throw error;
+            }
+            if (closeOnNextRead) {
+                closeOnNextRead = false;
+                onSocketClose();
+            }
+            final RuntimeException runtimeError = nextReadRuntimeError;
+            if (runtimeError != null) {
+                nextReadRuntimeError = null;
+                throw runtimeError;
+            }
             if (!readResults.isEmpty()) {
                 return readResults.removeFirst();
             }
@@ -730,7 +916,10 @@ class InboundSocketReaderTest {
 
         @Override
         protected void disconnectSocket() throws Exception {
-            // No-op for testing
+            if (socketWriter instanceof BlockingWriter blocking && blocking.writing.get()) {
+                closedWhileWriting.set(true);
+            }
+            disconnectSocketCalled.set(true);
         }
     }
 }

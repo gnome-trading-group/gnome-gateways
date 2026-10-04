@@ -11,6 +11,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -449,5 +450,81 @@ class SocketConnectControllerTest {
         Thread.sleep(100);
 
         verify(logger).log(LogMessage.SOCKET_CONNECT_FAILED);
+    }
+
+    @Test
+    void connectTimeoutStoppedBeforeFiringNeverInterrupts() throws Exception {
+        final SocketConnectController.ConnectTimeout timeout =
+                new SocketConnectController.ConnectTimeout(Thread.currentThread());
+        assertFalse(timeout.stop());
+        timeout.run();
+        assertFalse(Thread.currentThread().isInterrupted());
+    }
+
+    @Test
+    @Timeout(10)
+    void connectTimeoutCaughtMidFireLeavesNoInterruptBehind() throws Exception {
+        // The attempt finishes just as the timeout fires: the timeout has claimed the attempt but its interrupt
+        // has not landed yet. A slow interrupt holds that window open. stop() must wait for the interrupt and
+        // clear it; cleared too early, it lands afterwards and would hit the backoff sleep.
+        final AtomicBoolean leftInterrupted = new AtomicBoolean();
+        final AtomicBoolean fired = new AtomicBoolean();
+        final AtomicReference<SocketConnectController.ConnectTimeout> timeoutRef = new AtomicReference<>();
+        final Thread connecting = new Thread() {
+            @Override
+            public void interrupt() {
+                try {
+                    Thread.sleep(200);
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+                super.interrupt();
+            }
+
+            @Override
+            public void run() {
+                try {
+                    final SocketConnectController.ConnectTimeout timeout = timeoutRef.get();
+                    final Thread firing = new Thread(timeout);
+                    firing.start();
+                    Thread.sleep(50); // the timeout is now inside its slow interrupt
+                    fired.set(timeout.stop());
+                    Thread.sleep(400); // long enough for a late interrupt to land
+                    leftInterrupted.set(Thread.interrupted());
+                    firing.join();
+                } catch (InterruptedException e) {
+                    leftInterrupted.set(true);
+                }
+            }
+        };
+        timeoutRef.set(new SocketConnectController.ConnectTimeout(connecting));
+        connecting.start();
+        connecting.join();
+
+        assertTrue(fired.get());
+        assertFalse(leftInterrupted.get(), "the timeout's interrupt outlived stop()");
+    }
+
+    @Test
+    @Timeout(5)
+    void shutdownInterruptDuringAFailedAttemptStopsRetrying() throws Exception {
+        doAnswer(invocation -> {
+                    Thread.currentThread().interrupt(); // a shutdown arriving mid-attempt
+                    throw new IOException("Connection refused");
+                })
+                .when(connectable)
+                .connect();
+
+        controller = new SocketConnectController(logger, connectable, Duration.ofSeconds(5), 3, Duration.ofSeconds(1));
+        final long start = System.nanoTime();
+        try {
+            assertThrows(RuntimeException.class, controller::connect);
+            assertTrue(Thread.currentThread().isInterrupted(), "the shutdown interrupt was swallowed");
+        } finally {
+            Thread.interrupted();
+        }
+        // Kept, the interrupt ends the first backoff at once instead of sitting through every retry.
+        assertTrue(System.nanoTime() - start < 900_000_000L);
+        verify(connectable, times(1)).connect();
     }
 }

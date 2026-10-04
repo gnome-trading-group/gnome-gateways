@@ -2,6 +2,8 @@ package group.gnometrading.gateways.inbound;
 
 import group.gnometrading.collections.buffer.OneToOneRingBuffer;
 import group.gnometrading.concurrent.GnomeAgent;
+import group.gnometrading.gateways.GatewayConfig;
+import group.gnometrading.gateways.SocketClosedException;
 import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.schemas.Schema;
@@ -98,32 +100,62 @@ public abstract class InboundSocketReader<T extends Schema> implements GnomeAgen
      */
     public final void connect() throws IOException {
         this.buffer = true;
-        this.pause = true;
-        while (!this.isPaused) {
-            Thread.yield();
-        }
+        pauseReader();
 
-        this.attachSocket();
+        // Connecting closes any previous connection, which the writer thread may be sending on.
+        if (this.socketWriter != null) {
+            synchronized (this.socketWriter.socketLock()) {
+                this.attachSocket();
+            }
+        } else {
+            this.attachSocket();
+        }
+        // Silence is measured from the new connection: left at the old connection's last message, the supervisor
+        // would still see the silence that caused this reconnect and reconnect again before anything arrives.
+        this.recvTimestamp = clock.nanoTime();
         this.internalBook.reset();
         this.replayBuffer.reset();
 
-        this.pause = false;
+        resumeReader();
 
         this.snapshot = this.fetchSnapshot();
         if (this.snapshot != null) {
             this.internalBook.copyFrom(this.snapshot);
         }
 
-        this.pause = true;
-        while (!this.isPaused) {
-            Thread.yield();
-        }
+        pauseReader();
 
         this.replayBuffer.read(this::consumeReplay);
 
         this.buffer = false;
-        this.pause = false;
+        resumeReader();
     }
+
+    /** Returns once the reader thread has stopped and will not touch the socket or buffers until resumed. */
+    private void pauseReader() {
+        this.pause = true;
+        while (!this.isPaused) {
+            Thread.yield();
+        }
+    }
+
+    /**
+     * Returns once the reader thread is running again. Waiting for it matters: until it notices, {@link #isPaused}
+     * still reads true from before, and a pause straight after would take that stale value as an acknowledgement
+     * while the reader is in fact about to run.
+     */
+    private void resumeReader() {
+        this.pause = false;
+        while (this.isPaused) {
+            Thread.yield();
+        }
+    }
+
+    /**
+     * Applies the gateway's socket settings to the reader's connection. Called once, before the first connect;
+     * readers whose connection keeps its settings across reconnects need nothing more.
+     */
+    public void configureSocket(final GatewayConfig config) throws IOException {}
 
     protected abstract void attachSocket() throws IOException;
 
@@ -146,14 +178,17 @@ public abstract class InboundSocketReader<T extends Schema> implements GnomeAgen
      */
     public final void disconnect() throws Exception {
         logger.log(LogMessage.SOCKET_DISCONNECTING);
-        this.pause = true;
         this.buffer = true;
+        pauseReader();
 
-        while (!this.isPaused) { // Wait for the main consumer thread to pause
-            Thread.yield();
+        // The writer thread sends on the same socket; closing it mid-write would free it under the writer.
+        if (this.socketWriter != null) {
+            synchronized (this.socketWriter.socketLock()) {
+                this.disconnectSocket();
+            }
+        } else {
+            this.disconnectSocket();
         }
-
-        this.disconnectSocket();
         this.internalBook.reset();
         this.replayBuffer.reset();
         logger.log(LogMessage.SOCKET_DISCONNECTED);
@@ -173,7 +208,19 @@ public abstract class InboundSocketReader<T extends Schema> implements GnomeAgen
             this.isPaused = false;
         }
 
-        final ByteBuffer buffer = readSocket();
+        final ByteBuffer buffer;
+        try {
+            buffer = readSocket();
+        } catch (SocketClosedException e) {
+            // The reader saw the close itself and has already paused and logged it.
+            throw e;
+        } catch (IOException | RuntimeException e) {
+            // Whatever broke the read (a dead connection, a message larger than the buffer, a framing error)
+            // breaks every read after it on this connection too, so stop and let it be reconnected. Rethrown
+            // unpaused, it would fail again at once on every pass, and the error handler would kill the process.
+            onSocketClose(e);
+            return 0;
+        }
         while (buffer != null && buffer.hasRemaining()) {
             this.recvTimestamp = clock.nanoTime();
             this.rawDataSink.capture(this.recvTimestamp, buffer);
@@ -201,8 +248,12 @@ public abstract class InboundSocketReader<T extends Schema> implements GnomeAgen
     }
 
     protected final void onSocketClose() {
+        onSocketClose(null);
+    }
+
+    private void onSocketClose(final Exception cause) {
         this.pause = true;
         logger.log(LogMessage.SOCKET_DISCONNECTED);
-        throw new RuntimeException("Socket closed");
+        throw new SocketClosedException(cause);
     }
 }

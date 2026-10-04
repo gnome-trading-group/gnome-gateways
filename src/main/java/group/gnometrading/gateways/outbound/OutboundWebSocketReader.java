@@ -1,6 +1,7 @@
 package group.gnometrading.gateways.outbound;
 
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
+import group.gnometrading.gateways.GatewayConfig;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.networking.websockets.enums.Opcode;
@@ -33,11 +34,12 @@ public abstract class OutboundWebSocketReader extends OutboundSocketReader {
     @Override
     protected final ByteBuffer readSocket() throws IOException {
         final var result = this.socketClient.read();
-        if (!result.isSuccess()) {
-            return null;
-        }
+        // Checked first: a dropped connection (EOF) is reported as closed but not successful.
         if (result.isClosed()) {
             onSocketClose();
+            return null;
+        }
+        if (!result.isSuccess()) {
             return null;
         }
         if (result.getOpcode() == Opcode.PING) {
@@ -53,13 +55,16 @@ public abstract class OutboundWebSocketReader extends OutboundSocketReader {
 
     protected void beforeConnect() throws IOException {}
 
+    /** The client keeps these settings and applies them to every connection it makes. */
+    @Override
+    public final void configureSocket(final GatewayConfig config) throws IOException {
+        config.configure(this.socketClient, false);
+    }
+
     @Override
     protected final void attachSocket() throws IOException {
         beforeConnect();
         this.socketClient.connect();
-        this.socketClient.configureBlocking(false);
-        this.socketClient.setTcpNoDelay(true);
-        this.socketClient.setKeepAlive(true);
         subscribe();
     }
 

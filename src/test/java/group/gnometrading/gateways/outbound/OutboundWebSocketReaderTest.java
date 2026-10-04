@@ -6,6 +6,8 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
+import group.gnometrading.concurrent.GnomeAgentRunner;
+import group.gnometrading.gateways.GatewayConfig;
 import group.gnometrading.logging.NullLogger;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.networking.websockets.WebSocketResponse;
@@ -156,13 +158,23 @@ class OutboundWebSocketReaderTest {
     // ========== attachSocket ==========
 
     @Test
-    void attachSocket_ConnectsAndConfiguresSocket() throws Exception {
-        reader.testAttachSocket();
+    void configureSocket_AppliesTheGatewaysSettingsNonBlocking() throws Exception {
+        final GatewayConfig config = new GatewayConfig.Builder().build();
+        reader.configureSocket(config);
 
-        verify(client).connect();
         verify(client).configureBlocking(false);
         verify(client).setTcpNoDelay(true);
-        verify(client).setKeepAlive(true);
+        verify(client)
+                .setKeepAlive(
+                        (int) config.tcpKeepAliveIdle().getSeconds(),
+                        (int) config.tcpKeepAliveInterval().getSeconds(),
+                        config.tcpKeepAliveProbes());
+    }
+
+    @Test
+    void attachSocket_Connects() throws Exception {
+        reader.testAttachSocket();
+        verify(client).connect();
     }
 
     @Test
@@ -216,6 +228,21 @@ class OutboundWebSocketReaderTest {
     }
 
     // ========== Test subclass ==========
+
+    @Test
+    void connect_MeasuresSilenceFromTheNewConnection() throws Exception {
+        reader.recvTimestamp = 1; // the last message on the previous connection, long ago
+        final GnomeAgentRunner runner = new GnomeAgentRunner(reader, error -> {});
+        GnomeAgentRunner.startOnThread(runner);
+        try {
+            final long before = System.nanoTime();
+            reader.connect();
+
+            assertTrue(reader.recvTimestamp >= before);
+        } finally {
+            runner.close();
+        }
+    }
 
     static class TestOutboundWebSocketReader extends OutboundWebSocketReader {
 

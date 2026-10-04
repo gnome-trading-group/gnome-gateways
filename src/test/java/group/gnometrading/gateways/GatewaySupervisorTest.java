@@ -34,7 +34,10 @@ class GatewaySupervisorTest {
                 .withReconnectInterval(Duration.ofMillis(1000))
                 .withKeepAliveInterval(Duration.ofMillis(500))
                 .withSanityCheckInterval(Duration.ofMillis(2000))
-                .withMaxSilentInterval(Duration.ofMillis(100))
+                .withMaxSilentInterval(Duration.ofMillis(1500))
+                .withReadTimeout(Duration.ofMillis(500))
+                .withSocketConnectTimeout(Duration.ofSeconds(2))
+                .withHandshakeTimeout(Duration.ofSeconds(1))
                 .build();
         supervisor = new TestGatewaySupervisor(logger, connectable, config, clock, nanoClock);
     }
@@ -147,6 +150,23 @@ class GatewaySupervisorTest {
         assertEquals(1, supervisor.disconnectCallCount);
     }
 
+    @Test
+    void doWork_SilenceCausesExactlyOneReconnect_WhenTheNewConnectionRefreshesTheTimestamp() throws Exception {
+        supervisor.onStart();
+        nanoClock.advance(1);
+        supervisor.testRecvTimestamp = nanoClock.nanoTime();
+        // What the readers' connect() now does: silence is measured from the new connection.
+        connectable.onConnect = () -> supervisor.testRecvTimestamp = nanoClock.nanoTime();
+        nanoClock.advance(config.maxSilentInterval().toNanos() + 1);
+
+        for (int i = 0; i < 50; i++) {
+            supervisor.doWork();
+        }
+
+        assertEquals(1, supervisor.disconnectCallCount);
+        verify(logger, times(1)).log(LogMessage.SOCKET_SILENCE_TIMED_OUT);
+    }
+
     // ========== forceReconnect / forceKeepAlive ==========
 
     @Test
@@ -237,6 +257,7 @@ class GatewaySupervisorTest {
     static class CallTrackingConnectable implements Connectable {
         int connectCallCount = 0;
         boolean disconnectCalledBeforeConnect = false;
+        Runnable onConnect = () -> {};
         private boolean lastDisconnectCalled = false;
 
         void onDisconnectCalled() {
@@ -249,6 +270,7 @@ class GatewaySupervisorTest {
                 disconnectCalledBeforeConnect = true;
             }
             connectCallCount++;
+            onConnect.run();
         }
     }
 

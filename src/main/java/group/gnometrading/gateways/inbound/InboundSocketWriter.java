@@ -12,6 +12,8 @@ public abstract class InboundSocketWriter implements GnomeAgent {
     private static final int DEFAULT_WRITE_BUFFER_SIZE = 1 << 10; // 1kb
     private static final int DEFAULT_MESSAGE_BUS_CAPACITY = 1 << 7; // 128 slots
 
+    // Held while writing, and by the reader while it closes the socket, so the socket is never closed mid-write.
+    private final Object socketLock = new Object();
     private final RingBuffer<ByteBuffer> writeBuffer;
     private final RingBuffer<ByteBuffer> controlWriteBuffer;
     private final int writeBufferSize;
@@ -33,6 +35,15 @@ public abstract class InboundSocketWriter implements GnomeAgent {
 
     protected abstract void write(ByteBuffer buffer) throws IOException;
 
+    /** Whether the socket is open to write to; messages queued while it is closed are dropped. */
+    protected boolean isOpen() {
+        return true;
+    }
+
+    public final Object socketLock() {
+        return this.socketLock;
+    }
+
     @Override
     public final int doWork() {
         this.writeBuffer.read(this::handleWrite);
@@ -43,11 +54,18 @@ public abstract class InboundSocketWriter implements GnomeAgent {
     private void handleWrite(ByteBuffer buffer) {
         buffer.flip();
         try {
-            this.write(buffer);
+            synchronized (this.socketLock) {
+                // A message for a connection that has since closed cannot be sent, and failing on it would only
+                // trigger a needless reconnect on top of the one already under way.
+                if (isOpen()) {
+                    this.write(buffer);
+                }
+            }
         } catch (IOException e) {
             throw new UncheckedIOException(e);
+        } finally {
+            buffer.clear();
         }
-        buffer.clear();
     }
 
     public final void publishWriteBuffer(int writeSequence) {

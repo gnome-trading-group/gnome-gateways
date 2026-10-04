@@ -3,6 +3,8 @@ package group.gnometrading.gateways.outbound;
 import group.gnometrading.gateways.GatewayConfig;
 import group.gnometrading.gateways.GatewaySupervisor;
 import group.gnometrading.logging.Logger;
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import org.agrona.concurrent.EpochClock;
 
 public final class OutboundGateway extends GatewaySupervisor {
@@ -12,6 +14,11 @@ public final class OutboundGateway extends GatewaySupervisor {
     protected OutboundGateway(Logger logger, OutboundSocketReader reader, GatewayConfig config, EpochClock clock) {
         super(logger, reader::connect, config, clock, reader.clock);
         this.reader = reader;
+        try {
+            reader.configureSocket(config);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     @Override

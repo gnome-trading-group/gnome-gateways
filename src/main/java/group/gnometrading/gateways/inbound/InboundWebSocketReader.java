@@ -1,5 +1,6 @@
 package group.gnometrading.gateways.inbound;
 
+import group.gnometrading.gateways.GatewayConfig;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.networking.websockets.enums.Opcode;
@@ -52,13 +53,16 @@ public abstract class InboundWebSocketReader<T extends Schema> extends InboundSo
         ((InboundWebSocketWriter) this.socketWriter).writePong();
     }
 
+    /** The client keeps these settings and applies them to every connection it makes. */
+    @Override
+    public final void configureSocket(final GatewayConfig config) throws IOException {
+        config.configure(this.socketClient, true);
+    }
+
     @Override
     protected final void attachSocket() throws IOException {
         beforeConnect();
         this.socketClient.connect();
-        this.socketClient.configureBlocking(true);
-        this.socketClient.setTcpNoDelay(true);
-        this.socketClient.setKeepAlive(true);
         this.subscribe();
     }
 

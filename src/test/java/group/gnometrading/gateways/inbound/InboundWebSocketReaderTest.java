@@ -2,8 +2,11 @@ package group.gnometrading.gateways.inbound;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.*;
 
+import group.gnometrading.concurrent.GnomeAgentRunner;
+import group.gnometrading.gateways.GatewayConfig;
 import group.gnometrading.gateways.inbound.mbp.Mbp10SchemaFactory;
 import group.gnometrading.logging.NullLogger;
 import group.gnometrading.networking.websockets.WebSocketClient;
@@ -135,18 +138,33 @@ class InboundWebSocketReaderTest {
     // ========== attachSocket ==========
 
     @Test
-    void attachSocket_CallsConnectAndConfigures() throws Exception {
+    void attachSocket_ConnectsWithoutReissuingSettings() throws Exception {
         reader.testAttachSocket();
 
         verify(client).connect();
-        verify(client).configureBlocking(true);
-        verify(client).setTcpNoDelay(true);
-        verify(client).setKeepAlive(true);
+        // The client keeps its settings across connects, so they are not issued again on every attach.
+        verify(client, never()).setReadTimeout(anyInt());
     }
 
     @Test
-    void attachSocket_ConfiguresBlockingTrue_NotFalse() throws Exception {
-        reader.testAttachSocket();
+    void configureSocket_AppliesTheGatewaysSettings() throws Exception {
+        final GatewayConfig config = new GatewayConfig.Builder().build();
+        reader.configureSocket(config);
+
+        verify(client).setConnectTimeout((int) config.socketConnectTimeout().toMillis());
+        verify(client).setHandshakeTimeout((int) config.handshakeTimeout().toMillis());
+        verify(client).setReadTimeout((int) config.readTimeout().toMillis());
+        verify(client).setTcpNoDelay(true);
+        verify(client)
+                .setKeepAlive(
+                        (int) config.tcpKeepAliveIdle().getSeconds(),
+                        (int) config.tcpKeepAliveInterval().getSeconds(),
+                        config.tcpKeepAliveProbes());
+    }
+
+    @Test
+    void configureSocket_ConfiguresBlockingTrue_NotFalse() throws Exception {
+        reader.configureSocket(new GatewayConfig.Builder().build());
 
         verify(client).configureBlocking(true);
         verify(client, never()).configureBlocking(false);
@@ -175,6 +193,21 @@ class InboundWebSocketReaderTest {
     @Test
     void beforeConnect_DefaultIsNoOp() {
         assertDoesNotThrow(() -> reader.testSuperBeforeConnect());
+    }
+
+    @Test
+    void connect_MeasuresSilenceFromTheNewConnection() throws Exception {
+        reader.recvTimestamp = 1; // the last message on the previous connection, long ago
+        final GnomeAgentRunner runner = new GnomeAgentRunner(reader, error -> {});
+        GnomeAgentRunner.startOnThread(runner);
+        try {
+            final long before = System.nanoTime();
+            reader.connect();
+
+            assertTrue(reader.recvTimestamp >= before);
+        } finally {
+            runner.close();
+        }
     }
 
     // ========== Test subclass ==========

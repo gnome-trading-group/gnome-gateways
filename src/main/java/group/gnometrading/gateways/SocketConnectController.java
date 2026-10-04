@@ -7,7 +7,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * This class is responsible for managing the connection to the socket.
@@ -52,36 +52,28 @@ public final class SocketConnectController {
 
         try {
             for (int i = 0; i < 1 + this.maxReconnectAttempts; i++) {
-                Thread connectThread = Thread.currentThread();
-                AtomicBoolean timedOut = new AtomicBoolean(false);
-
-                Future<?> timeoutTask = timeoutExecutor.schedule(
-                        () -> {
-                            timedOut.set(true);
-                            connectThread.interrupt();
-                        },
-                        this.connectTimeout.toMillis(),
-                        TimeUnit.MILLISECONDS);
+                final ConnectTimeout timeout = new ConnectTimeout(Thread.currentThread());
+                final Future<?> timeoutTask =
+                        timeoutExecutor.schedule(timeout, this.connectTimeout.toMillis(), TimeUnit.MILLISECONDS);
 
                 try {
                     this.connectable.connect();
 
                     timeoutTask.cancel(false);
-
-                    if (!timedOut.get()) {
+                    if (!timeout.stop()) {
                         this.logger.log(LogMessage.SOCKET_CONNECTED);
                         this.backoff = this.initialBackoff;
                         return;
                     } else {
-                        Thread.interrupted(); // Clear interrupt set by our timeout task
                         this.logger.log(LogMessage.SOCKET_CONNECT_TIMED_OUT);
                     }
 
                 } catch (Exception e) {
                     timeoutTask.cancel(false);
-                    Thread.interrupted(); // Clear any interrupt from our timeout task before backoff sleep
+                    // stop() clears the timeout's own interrupt; any other interrupt is a shutdown and is kept.
+                    final boolean timedOut = timeout.stop();
 
-                    if (timedOut.get()) {
+                    if (timedOut) {
                         this.logger.log(LogMessage.SOCKET_CONNECT_TIMED_OUT);
                     } else {
                         this.logger.log(LogMessage.SOCKET_CONNECT_FAILED);
@@ -106,6 +98,46 @@ public final class SocketConnectController {
 
         } finally {
             timeoutExecutor.shutdown();
+        }
+    }
+
+    /** Interrupts the connecting thread once an attempt has run too long, unless stopped first. */
+    static final class ConnectTimeout implements Runnable {
+        private static final int PENDING = 0;
+        private static final int FIRING = 1;
+        private static final int FIRED = 2;
+        private static final int STOPPED = 3;
+
+        private final Thread connectThread;
+        private final AtomicInteger state = new AtomicInteger(PENDING);
+
+        ConnectTimeout(final Thread connectThread) {
+            this.connectThread = connectThread;
+        }
+
+        @Override
+        public void run() {
+            if (this.state.compareAndSet(PENDING, FIRING)) {
+                this.connectThread.interrupt();
+                this.state.set(FIRED);
+            }
+        }
+
+        /**
+         * Stops the timeout, returning whether it fired. If it fired, waits for its interrupt to land and clears
+         * it: cleared any earlier, the interrupt would arrive later and hit the backoff sleep, stopping the
+         * supervisor for good. Cancelling the scheduled task cannot ensure this, as a task already running counts
+         * as cancelled.
+         */
+        boolean stop() {
+            if (this.state.compareAndSet(PENDING, STOPPED)) {
+                return false;
+            }
+            while (this.state.get() != FIRED) {
+                Thread.onSpinWait();
+            }
+            Thread.interrupted();
+            return true;
         }
     }
 }

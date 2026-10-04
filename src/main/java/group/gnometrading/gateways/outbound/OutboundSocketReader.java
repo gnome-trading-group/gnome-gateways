@@ -3,6 +3,8 @@ package group.gnometrading.gateways.outbound;
 import group.gnometrading.annotations.VisibleForTesting;
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
 import group.gnometrading.concurrent.GnomeAgent;
+import group.gnometrading.gateways.GatewayConfig;
+import group.gnometrading.gateways.SocketClosedException;
 import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.schemas.ExecType;
@@ -79,21 +81,43 @@ public abstract class OutboundSocketReader implements GnomeAgent {
 
     public abstract void keepAlive() throws IOException;
 
-    public final void connect() throws IOException {
+    /**
+     * Applies the gateway's socket settings to the reader's connection. Called once, before the first connect;
+     * readers whose connection keeps its settings across reconnects need nothing more.
+     */
+    public void configureSocket(final GatewayConfig config) throws IOException {}
+
+    /** Returns once the reader thread has stopped and will not touch the socket until resumed. */
+    private void pauseReader() {
         this.pause = true;
         while (!this.isPaused) {
             Thread.yield();
         }
-        attachSocket();
+    }
+
+    /**
+     * Returns once the reader thread is running again, so that {@link #isPaused} is never left stale for a later
+     * pause to mistake as an acknowledgement.
+     */
+    private void resumeReader() {
         this.pause = false;
+        while (this.isPaused) {
+            Thread.yield();
+        }
+    }
+
+    public final void connect() throws IOException {
+        pauseReader();
+        attachSocket();
+        // Silence is measured from the new connection: left at the old connection's last message, the supervisor
+        // would still see the silence that caused this reconnect and reconnect again before anything arrives.
+        this.recvTimestamp = clock.nanoTime();
+        resumeReader();
     }
 
     public final void disconnect() throws Exception {
         logger.log(LogMessage.SOCKET_DISCONNECTING);
-        this.pause = true;
-        while (!this.isPaused) {
-            Thread.yield();
-        }
+        pauseReader();
         disconnectSocket();
         logger.log(LogMessage.SOCKET_DISCONNECTED);
     }
@@ -113,7 +137,18 @@ public abstract class OutboundSocketReader implements GnomeAgent {
         this.newOrderQueue.read(this::consumeNewOrder, OrderContext.HANDOFF_QUEUE_CAPACITY);
         this.writerReportQueue.read(this::consumeWriterReport, OrderContext.HANDOFF_QUEUE_CAPACITY);
 
-        final ByteBuffer buffer = readSocket();
+        final ByteBuffer buffer;
+        try {
+            buffer = readSocket();
+        } catch (SocketClosedException e) {
+            // The reader saw the close itself and has already paused and logged it.
+            throw e;
+        } catch (IOException | RuntimeException e) {
+            // Whatever broke the read (a dead connection, a message larger than the buffer, a framing error)
+            // breaks every read after it on this connection too, so stop and let it be reconnected.
+            onSocketClose(e);
+            return 0;
+        }
         if (buffer != null && buffer.hasRemaining()) {
             this.recvTimestamp = clock.nanoTime();
             handleGatewayMessage(buffer);
@@ -254,9 +289,13 @@ public abstract class OutboundSocketReader implements GnomeAgent {
     }
 
     protected final void onSocketClose() {
+        onSocketClose(null);
+    }
+
+    private void onSocketClose(final Exception cause) {
         this.pause = true;
         logger.log(LogMessage.SOCKET_DISCONNECTED);
-        throw new RuntimeException("Socket closed");
+        throw new SocketClosedException(cause);
     }
 
     protected static long computeKey(final byte[] bytes, final int length) {
