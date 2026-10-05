@@ -107,6 +107,18 @@ class OutboundSocketReaderTest {
         assertEquals(0L, reader.recvTimestamp);
     }
 
+    @Test
+    void doWork_NoData_ReportsNoWork() throws Exception {
+        assertEquals(0, reader.doWork());
+    }
+
+    @Test
+    void doWork_DataReceived_ReportsWork() throws Exception {
+        reader.readResults.add(ByteBuffer.wrap(new byte[] {1}));
+
+        assertEquals(1, reader.doWork());
+    }
+
     // ========== doWork — queue consumption ==========
 
     @Test
@@ -118,6 +130,14 @@ class OutboundSocketReaderTest {
 
         final long key = TestOutboundSocketReader.testComputeKey(hash.getBytes(StandardCharsets.UTF_8), hash.length());
         assertNotNull(reader.testFindOrderContext(key));
+    }
+
+    @Test
+    void doWork_ConsumedHandoffCountsAsWork_AndResetsEachPass() throws Exception {
+        enqueueNewOrder("hash", 1L, 2, 3L, 10L);
+
+        assertEquals(1, reader.doWork());
+        assertEquals(0, reader.doWork());
     }
 
     @Test

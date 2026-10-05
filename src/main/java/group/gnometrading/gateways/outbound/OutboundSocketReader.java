@@ -3,6 +3,7 @@ package group.gnometrading.gateways.outbound;
 import group.gnometrading.annotations.VisibleForTesting;
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
 import group.gnometrading.concurrent.GnomeAgent;
+import group.gnometrading.concurrent.ThreadProfile;
 import group.gnometrading.gateways.GatewayConfig;
 import group.gnometrading.gateways.SocketClosedException;
 import group.gnometrading.logging.LogMessage;
@@ -25,6 +26,9 @@ public abstract class OutboundSocketReader implements GnomeAgent {
     protected final Logger logger;
     private final SequencedRingBuffer<OrderExecutionReport> execReportBuffer;
     private final ManyToOneRingBuffer<OrderContext> newOrderQueue;
+    // Counts handoffs and socket messages within one doWork() pass, because the queue reads don't report how
+    // many entries they consumed and a back-off idle strategy needs an honest work count.
+    private int handoffsThisPass;
     private final ManyToOneRingBuffer<OrderContext> writerReportQueue;
     protected final EpochNanoClock clock;
     protected final Listing listing;
@@ -152,11 +156,20 @@ public abstract class OutboundSocketReader implements GnomeAgent {
         if (buffer != null && buffer.hasRemaining()) {
             this.recvTimestamp = clock.nanoTime();
             handleGatewayMessage(buffer);
+            this.handoffsThisPass++;
         }
-        return 0;
+        final int work = this.handoffsThisPass;
+        this.handoffsThisPass = 0;
+        return work;
+    }
+
+    @Override
+    public final ThreadProfile threadProfile() {
+        return ThreadProfile.HOT_PATH;
     }
 
     private void consumeNewOrder(final OrderContext src) {
+        this.handoffsThisPass++;
         if (this.contextPoolHead <= 0) {
             throw new RuntimeException("Order context pool exhausted");
         }
@@ -166,6 +179,7 @@ public abstract class OutboundSocketReader implements GnomeAgent {
     }
 
     private void consumeWriterReport(final OrderContext src) {
+        this.handoffsThisPass++;
         if (src.amendAccepted) {
             applyAcceptedAmend(src);
             return;

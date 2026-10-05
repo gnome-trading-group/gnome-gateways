@@ -69,6 +69,22 @@ class OutboundSocketWriterTest {
     }
 
     @Test
+    void doWork_NothingPending_ReportsNoWork() throws Exception {
+        assertEquals(0, writer.doWork());
+    }
+
+    @Test
+    void doWork_PolledOrderAndReleasedContext_CountAsWork() throws Exception {
+        publishOrder(
+                Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 7L, 1);
+        assertEquals(1, writer.doWork());
+
+        enqueueCompletion(releasedOrderQueue, 7L);
+        assertEquals(1, writer.doWork());
+        assertEquals(0, writer.doWork());
+    }
+
+    @Test
     void submitSuccess_AssignsIncrementingOrderIds() throws Exception {
         publishOrder(
                 Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);

@@ -3,6 +3,7 @@ package group.gnometrading.gateways.outbound;
 import group.gnometrading.annotations.VisibleForTesting;
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
 import group.gnometrading.concurrent.GnomeAgent;
+import group.gnometrading.concurrent.ThreadProfile;
 import group.gnometrading.schemas.CancelOrder;
 import group.gnometrading.schemas.CancelOrderDecoder;
 import group.gnometrading.schemas.ExecType;
@@ -32,6 +33,8 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
     private long nextOrderId = 1;
 
     private final ManyToOneRingBuffer<OrderContext> releasedOrderQueue;
+    // The queue read doesn't report how many entries it consumed; a back-off idle strategy needs the count.
+    private int releasedThisPass;
 
     protected final Order order = new Order();
     protected final CancelOrder cancelOrder = new CancelOrder();
@@ -68,10 +71,18 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
     @Override
     public final int doWork() throws Exception {
         this.releasedOrderQueue.read(this::consumeReleasedOrder, OrderContext.HANDOFF_QUEUE_CAPACITY);
-        return this.orderPoller.poll();
+        final int released = this.releasedThisPass;
+        this.releasedThisPass = 0;
+        return released + this.orderPoller.poll();
+    }
+
+    @Override
+    public final ThreadProfile threadProfile() {
+        return ThreadProfile.HOT_PATH;
     }
 
     private void consumeReleasedOrder(final OrderContext src) {
+        this.releasedThisPass++;
         final OrderContext ctx = this.activeOrders.remove(src.clientOidCounter);
         if (ctx != null) {
             returnToPool(ctx);

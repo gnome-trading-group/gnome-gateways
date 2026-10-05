@@ -2,6 +2,7 @@ package group.gnometrading.gateways.inbound;
 
 import group.gnometrading.collections.buffer.OneToOneRingBuffer;
 import group.gnometrading.concurrent.GnomeAgent;
+import group.gnometrading.concurrent.ThreadProfile;
 import group.gnometrading.gateways.GatewayConfig;
 import group.gnometrading.gateways.SocketClosedException;
 import group.gnometrading.logging.LogMessage;
@@ -221,12 +222,19 @@ public abstract class InboundSocketReader<T extends Schema> implements GnomeAgen
             onSocketClose(e);
             return 0;
         }
+        int handled = 0;
         while (buffer != null && buffer.hasRemaining()) {
             this.recvTimestamp = clock.nanoTime();
             this.rawDataSink.capture(this.recvTimestamp, buffer);
             handleGatewayMessage(buffer);
+            handled++;
         }
-        return 0;
+        return handled;
+    }
+
+    @Override
+    public final ThreadProfile threadProfile() {
+        return ThreadProfile.HOT_PATH;
     }
 
     protected final void claim() {

@@ -76,7 +76,7 @@ class InboundSocketReaderTest {
 
         int result = socketReader.doWork();
 
-        assertEquals(0, result);
+        assertEquals(4, result);
         assertEquals(1, socketReader.readSocketCallCount.get());
         assertEquals(4, socketReader.handleMessageByteCount.get());
     }
@@ -118,7 +118,7 @@ class InboundSocketReaderTest {
 
         int result = socketReader.doWork();
 
-        assertEquals(0, result);
+        assertEquals(5, result);
         assertEquals(1, socketReader.readSocketCallCount.get());
         assertEquals(5, socketReader.handleMessageByteCount.get());
     }
