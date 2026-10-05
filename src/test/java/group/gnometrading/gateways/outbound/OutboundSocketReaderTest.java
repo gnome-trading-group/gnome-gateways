@@ -41,6 +41,7 @@ class OutboundSocketReaderTest {
     private ManyToOneRingBuffer<OrderContext> releasedOrderQueue;
     private List<OrderExecutionReport> captured;
     private TestOutboundSocketReader reader;
+    private GnomeAgentRunner runner;
 
     @BeforeEach
     void setUp() {
@@ -61,7 +62,12 @@ class OutboundSocketReaderTest {
     }
 
     @AfterEach
-    void tearDown() {
+    void tearDown() throws Exception {
+        if (runner != null) {
+            // close() joins the thread, which never leaves doWork()'s pause spin while pause is set.
+            reader.pause = false;
+            runner.close();
+        }
         execReportBuffer.shutdown();
     }
 
@@ -245,7 +251,7 @@ class OutboundSocketReaderTest {
 
         startReaderOnThread();
         reader.connect();
-        reader.pause = false;
+        pauseReaderThread();
 
         final long key = TestOutboundSocketReader.testComputeKey(hash.getBytes(StandardCharsets.UTF_8), hash.length());
         assertNotNull(reader.testFindOrderContext(key));
@@ -259,10 +265,9 @@ class OutboundSocketReaderTest {
 
         startReaderOnThread();
         reader.connect();
-        reader.pause = false;
+        // The reader thread drains the queue in the pass it resumes into, before it can see the pause.
+        pauseReaderThread();
 
-        // After reconnect, pending context should still be consumable
-        reader.doWork();
         final long key =
                 TestOutboundSocketReader.testComputeKey("hash1".getBytes(StandardCharsets.UTF_8), "hash1".length());
         assertNotNull(reader.testFindOrderContext(key));
@@ -279,7 +284,7 @@ class OutboundSocketReaderTest {
         startReaderOnThread();
         reader.disconnect();
         reader.connect();
-        reader.pause = false;
+        pauseReaderThread();
 
         final long key = TestOutboundSocketReader.testComputeKey(hash.getBytes(StandardCharsets.UTF_8), hash.length());
         final OrderContext ctx = reader.testFindOrderContext(key);
@@ -481,7 +486,14 @@ class OutboundSocketReaderTest {
 
     private void startReaderOnThread() {
         reader.pause = true;
-        GnomeAgentRunner.startOnThread(new GnomeAgentRunner(reader, null));
+        runner = new GnomeAgentRunner(reader, null);
+        GnomeAgentRunner.startOnThread(runner);
+        waitForPaused();
+    }
+
+    /** Parks the reader thread so the test thread can safely read state the reader thread wrote. */
+    private void pauseReaderThread() {
+        reader.pause = true;
         waitForPaused();
     }
 
