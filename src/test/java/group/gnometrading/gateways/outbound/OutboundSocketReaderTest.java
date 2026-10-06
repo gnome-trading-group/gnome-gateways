@@ -62,14 +62,14 @@ class OutboundSocketReaderTest {
         writerReportQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 256);
         releasedOrderQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
         reader = new TestOutboundSocketReader(execReportBuffer, newOrderQueue, writerReportQueue, releasedOrderQueue);
-        reader.pause = false;
+        reader.pauseControl.release();
     }
 
     @AfterEach
     void tearDown() throws Exception {
         if (runner != null) {
             // close() joins the thread, which never leaves doWork()'s pause spin while pause is set.
-            reader.pause = false;
+            reader.pauseControl.release();
             runner.close();
         }
         execReportBuffer.shutdown();
@@ -301,7 +301,7 @@ class OutboundSocketReaderTest {
     @Timeout(5)
     void disconnect_CallsDisconnectSocket() throws Exception {
         startReaderOnThread();
-        reader.pause = false;
+        reader.pauseControl.release();
         waitForUnpaused();
 
         reader.disconnect();
@@ -314,15 +314,15 @@ class OutboundSocketReaderTest {
     @Test
     @Timeout(5)
     void pauseIsPausedSynchronization_WorksCorrectly() throws Exception {
-        reader.pause = true;
+        reader.pauseControl.pauseSelf();
         startReaderOnThread();
 
         waitForPaused();
-        assertTrue(reader.isPaused);
+        assertTrue(reader.pauseControl.isPaused());
 
-        reader.pause = false;
+        reader.pauseControl.release();
         waitForUnpaused();
-        assertFalse(reader.isPaused);
+        assertFalse(reader.pauseControl.isPaused());
     }
 
     @Test
@@ -332,7 +332,7 @@ class OutboundSocketReaderTest {
 
         for (int i = 0; i < 5; i++) {
             reader.connect();
-            reader.pause = false;
+            reader.pauseControl.release();
             waitForUnpaused();
             reader.disconnect();
         }
@@ -362,7 +362,7 @@ class OutboundSocketReaderTest {
     @Test
     void onSocketClose_SetsPauseAndThrowsRuntimeException() {
         assertThrows(RuntimeException.class, () -> reader.testOnSocketClose());
-        assertTrue(reader.pause);
+        assertTrue(reader.pauseControl.isPauseRequested());
     }
 
     // ========== Pool management ==========
@@ -488,7 +488,7 @@ class OutboundSocketReaderTest {
     }
 
     private void startReaderOnThread() {
-        reader.pause = true;
+        reader.pauseControl.pauseSelf();
         runner = new GnomeAgentRunner(reader, null);
         GnomeAgentRunner.startOnThread(runner);
         waitForPaused();
@@ -496,21 +496,21 @@ class OutboundSocketReaderTest {
 
     /** Parks the reader thread so the test thread can safely read state the reader thread wrote. */
     private void pauseReaderThread() {
-        reader.pause = true;
+        reader.pauseControl.pauseSelf();
         waitForPaused();
     }
 
     private void waitForPaused() {
         final long deadline = System.currentTimeMillis() + 5000;
-        while (!reader.isPaused && System.currentTimeMillis() < deadline) {
+        while (!reader.pauseControl.isPaused() && System.currentTimeMillis() < deadline) {
             Thread.yield();
         }
-        assertTrue(reader.isPaused, "Reader did not enter paused state");
+        assertTrue(reader.pauseControl.isPaused(), "Reader did not enter paused state");
     }
 
     private void waitForUnpaused() {
         final long deadline = System.currentTimeMillis() + 5000;
-        while (reader.isPaused && System.currentTimeMillis() < deadline) {
+        while (reader.pauseControl.isPaused() && System.currentTimeMillis() < deadline) {
             Thread.yield();
         }
     }

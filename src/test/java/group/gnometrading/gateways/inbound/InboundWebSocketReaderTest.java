@@ -54,7 +54,7 @@ class InboundWebSocketReaderTest {
 
         socketWriter = new InboundWebSocketWriter(client);
         reader = new TestWebSocketReader(outputBuffer, socketWriter, client);
-        reader.pause = false;
+        reader.pauseControl.release();
     }
 
     @AfterEach

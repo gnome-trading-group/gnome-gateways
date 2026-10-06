@@ -135,7 +135,7 @@ class KalshiVenueOrderQueryTest {
     @Test
     void cancelsByKalshisOwnOrderId() throws IOException {
         respond(200, "{}");
-        final VenueOrder order = new VenueOrder("4071-501-3", "k-1", null, 0, 0, 0, 0, 0, false);
+        final VenueOrder order = new VenueOrder("4071-501-3", "k-1", 0, 0, 0, false);
         assertTrue(query.cancel(NO_LISTING, order));
         assertEquals("DELETE /trade-api/v2/portfolio/events/orders/k-1", paths.get(0));
     }

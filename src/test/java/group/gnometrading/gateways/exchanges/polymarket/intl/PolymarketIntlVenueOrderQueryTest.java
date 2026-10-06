@@ -15,7 +15,6 @@ import group.gnometrading.gateways.outbound.recovery.VenueOrder;
 import group.gnometrading.networking.http.HTTPClient;
 import group.gnometrading.networking.http.HTTPResponse;
 import group.gnometrading.schemas.SchemaType;
-import group.gnometrading.schemas.Side;
 import group.gnometrading.sm.Exchange;
 import group.gnometrading.sm.Listing;
 import group.gnometrading.sm.Security;
@@ -109,9 +108,6 @@ class PolymarketIntlVenueOrderQueryTest {
         assertEquals("/data/orders?asset_id=777&next_cursor=MTA=", paths.get(1));
         final VenueOrder order = orders.get(0);
         assertEquals(HASH, order.exchangeOrderId());
-        assertEquals(Side.Bid, order.side());
-        assertEquals(420_000_000L, order.price());
-        assertEquals(10_000_000, order.size());
         assertEquals(4_000_000, order.filledQty());
         assertEquals(1_680_000_000L, order.filledNotional(), "4 matched at the 42c limit");
         assertFalse(order.terminal());
@@ -122,7 +118,6 @@ class PolymarketIntlVenueOrderQueryTest {
         respond(200, order(HASH, "MATCHED", "SELL", "0.42", "10", "10"));
         final VenueOrder order = query.getOrder(LISTING, HASH, 0).orElseThrow();
         assertTrue(order.terminal());
-        assertEquals(Side.Ask, order.side());
         assertEquals("/data/order/" + HASH, paths.get(0));
     }
 
@@ -134,7 +129,7 @@ class PolymarketIntlVenueOrderQueryTest {
 
     @Test
     void aCancelCountsOnlyWhenTheVenueListsItAsCancelled() throws IOException {
-        final VenueOrder order = new VenueOrder(HASH, HASH, Side.Bid, 0, 0, 0, 0, 0, false);
+        final VenueOrder order = new VenueOrder(HASH, HASH, 0, 0, 0, false);
         respond(200, "{\"canceled\":[\"" + HASH + "\"],\"not_canceled\":{}}");
         assertTrue(query.cancel(LISTING, order));
         assertEquals("{\"orderID\":\"" + HASH + "\"}", bodies.get(0));

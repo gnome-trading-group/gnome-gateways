@@ -339,6 +339,11 @@ class PolymarketIntlOutboundWriterTest {
         publishOrder(Side.Bid, price("0.55"), qty("10"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, false);
 
         assertThrows(IllegalStateException.class, () -> writer.doWork());
+        writer.doWork();
+
+        capturePostBody(); // verifies a single POST: re-signing would send a second, distinct live order
+        assertEquals(1, drainQueue(newOrderQueue).size(), "it is live, so it stays registered");
+        assertEquals(0, drainQueue(writerReportQueue).size());
     }
 
     @Test

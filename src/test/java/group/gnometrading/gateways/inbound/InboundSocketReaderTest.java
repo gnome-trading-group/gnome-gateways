@@ -56,22 +56,22 @@ class InboundSocketReaderTest {
     @Test
     void testDoWorkWhenPaused() throws Exception {
         socketReader = new TestSocketReader(sequencedRingBuffer, clock);
-        socketReader.pause = true;
+        socketReader.pauseControl.pauseSelf();
 
         GnomeAgentRunner.startOnThread(new GnomeAgentRunner(socketReader, null));
         long deadline = System.currentTimeMillis() + 5000;
-        while (!socketReader.isPaused && System.currentTimeMillis() < deadline) {
+        while (!socketReader.pauseControl.isPaused() && System.currentTimeMillis() < deadline) {
             Thread.yield();
         }
 
-        assertTrue(socketReader.isPaused);
+        assertTrue(socketReader.pauseControl.isPaused());
         assertEquals(0, socketReader.readSocketCallCount.get());
     }
 
     @Test
     void testDoWorkWhenNotPaused() throws Exception {
         socketReader = new TestSocketReader(sequencedRingBuffer, clock);
-        socketReader.pause = false;
+        socketReader.pauseControl.release();
         socketReader.addNextReadResult(ByteBuffer.wrap("test".getBytes()));
 
         int result = socketReader.doWork();
@@ -84,7 +84,7 @@ class InboundSocketReaderTest {
     @Test
     void testDoWorkWithNullBuffer() throws Exception {
         socketReader = new TestSocketReader(sequencedRingBuffer, clock);
-        socketReader.pause = false;
+        socketReader.pauseControl.release();
 
         int result = socketReader.doWork();
 
@@ -96,7 +96,7 @@ class InboundSocketReaderTest {
     @Test
     void testDoWorkWithEmptyBuffer() throws Exception {
         socketReader = new TestSocketReader(sequencedRingBuffer, clock);
-        socketReader.pause = false;
+        socketReader.pauseControl.release();
         ByteBuffer emptyBuffer = ByteBuffer.allocate(0);
         socketReader.addNextReadResult(emptyBuffer);
 
@@ -110,7 +110,7 @@ class InboundSocketReaderTest {
     @Test
     void testDoWorkProcessesMultipleMessages() throws Exception {
         socketReader = new TestSocketReader(sequencedRingBuffer, clock);
-        socketReader.pause = false;
+        socketReader.pauseControl.release();
 
         // Create buffer with multiple "messages" (each byte is a message in our test)
         ByteBuffer buffer = ByteBuffer.wrap(new byte[] {1, 2, 3, 4, 5});
@@ -126,7 +126,7 @@ class InboundSocketReaderTest {
     @Test
     void testDoWorkSetsRecvTimestamp() throws Exception {
         socketReader = new TestSocketReader(sequencedRingBuffer, clock);
-        socketReader.pause = false;
+        socketReader.pauseControl.release();
         socketReader.addNextReadResult(ByteBuffer.wrap("test".getBytes()));
 
         long beforeTime = clock.nanoTime();
@@ -144,7 +144,7 @@ class InboundSocketReaderTest {
         socketReader = new TestSocketReader(sequencedRingBuffer, clock);
         GnomeAgentRunner.startOnThread(new GnomeAgentRunner(socketReader, null));
         long deadline = System.currentTimeMillis() + 5000;
-        while (!socketReader.isPaused && System.currentTimeMillis() < deadline) {
+        while (!socketReader.pauseControl.isPaused() && System.currentTimeMillis() < deadline) {
             Thread.yield();
         }
 
@@ -162,7 +162,7 @@ class InboundSocketReaderTest {
     @Test
     void testConnectSetsCorrectFlags() throws IOException {
         socketReader = new TestSocketReader(sequencedRingBuffer, clock);
-        socketReader.pause = true;
+        socketReader.pauseControl.pauseSelf();
         socketReader.buffer = false;
         GnomeAgentRunner.startOnThread(new GnomeAgentRunner(socketReader, null));
 
@@ -184,14 +184,14 @@ class InboundSocketReaderTest {
         }
 
         assertFalse(supervisor.isAlive());
-        assertFalse(socketReader.pause);
+        assertFalse(socketReader.pauseControl.isPauseRequested());
 
         // Worker thread clears isPaused after observing pause=false — spin-wait for it
         long deadline = System.currentTimeMillis() + 1000;
-        while (socketReader.isPaused && System.currentTimeMillis() < deadline) {
+        while (socketReader.pauseControl.isPaused() && System.currentTimeMillis() < deadline) {
             Thread.yield();
         }
-        assertFalse(socketReader.isPaused);
+        assertFalse(socketReader.pauseControl.isPaused());
     }
 
     @Test
@@ -236,7 +236,7 @@ class InboundSocketReaderTest {
     @Timeout(10)
     void testDoWorkAndConnectConcurrency() throws Exception {
         socketReader = new TestSocketReader(sequencedRingBuffer, clock);
-        socketReader.pause = false;
+        socketReader.pauseControl.release();
 
         AtomicBoolean workerRunning = new AtomicBoolean(true);
         AtomicInteger doWorkCalls = new AtomicInteger(0);
@@ -292,7 +292,7 @@ class InboundSocketReaderTest {
         assertTrue(doWorkCalls.get() > 0, "doWork should have been called");
 
         // Verify final state
-        assertFalse(socketReader.pause);
+        assertFalse(socketReader.pauseControl.isPauseRequested());
     }
 
     @Test
@@ -343,7 +343,7 @@ class InboundSocketReaderTest {
     @Timeout(10)
     void testPauseLatchSynchronization() throws Exception {
         socketReader = new TestSocketReader(sequencedRingBuffer, clock);
-        socketReader.pause = false;
+        socketReader.pauseControl.release();
 
         CountDownLatch workerReady = new CountDownLatch(1);
         AtomicBoolean workerAcknowledged = new AtomicBoolean(false);
@@ -375,15 +375,15 @@ class InboundSocketReaderTest {
         assertTrue(workerAcknowledged.get(), "Worker should have completed at least one doWork cycle");
 
         // Set pause flag
-        socketReader.pause = true;
+        socketReader.pauseControl.pauseSelf();
 
         // Spin-wait for isPaused instead of a timed join (the worker never exits the loop)
         deadline = System.currentTimeMillis() + 5000;
-        while (!socketReader.isPaused && System.currentTimeMillis() < deadline) {
+        while (!socketReader.pauseControl.isPaused() && System.currentTimeMillis() < deadline) {
             Thread.yield();
         }
 
-        assertTrue(socketReader.isPaused);
+        assertTrue(socketReader.pauseControl.isPaused());
     }
 
     // ========== Advanced Race Condition Tests ==========
@@ -392,7 +392,7 @@ class InboundSocketReaderTest {
     @Timeout(10)
     void testConnectWhileDoWorkIsProcessingMessages() throws Exception {
         socketReader = new TestSocketReader(sequencedRingBuffer, clock);
-        socketReader.pause = false;
+        socketReader.pauseControl.release();
 
         AtomicBoolean workerRunning = new AtomicBoolean(true);
         AtomicInteger messagesProcessed = new AtomicInteger(0);
@@ -448,7 +448,7 @@ class InboundSocketReaderTest {
         }
 
         assertTrue(messagesProcessed.get() > 0, "Worker should have processed messages");
-        assertFalse(socketReader.pause, "Should not be paused after connect");
+        assertFalse(socketReader.pauseControl.isPauseRequested(), "Should not be paused after connect");
     }
 
     @Test
@@ -539,7 +539,7 @@ class InboundSocketReaderTest {
     @Timeout(10)
     void testVolatileFlagVisibility() throws Exception {
         socketReader = new TestSocketReader(sequencedRingBuffer, clock);
-        socketReader.pause = false;
+        socketReader.pauseControl.release();
 
         AtomicBoolean workerSawPause = new AtomicBoolean(false);
         CountDownLatch workerStarted = new CountDownLatch(1);
@@ -552,7 +552,7 @@ class InboundSocketReaderTest {
                 pauseSet.await();
                 // Give supervisor time to set pause flag
                 sleep(10);
-                if (socketReader.pause) {
+                if (socketReader.pauseControl.isPauseRequested()) {
                     workerSawPause.set(true);
                 }
             } catch (InterruptedException e) {
@@ -564,7 +564,7 @@ class InboundSocketReaderTest {
         workerStarted.await();
 
         // Supervisor sets pause flag
-        socketReader.pause = true;
+        socketReader.pauseControl.pauseSelf();
         pauseSet.countDown();
 
         worker.join(1000);
@@ -576,7 +576,7 @@ class InboundSocketReaderTest {
     @Timeout(10)
     void testStressTestDoWorkAndConnect() throws Exception {
         socketReader = new TestSocketReader(sequencedRingBuffer, clock);
-        socketReader.pause = false;
+        socketReader.pauseControl.release();
 
         AtomicBoolean workerRunning = new AtomicBoolean(true);
         AtomicInteger doWorkCalls = new AtomicInteger(0);
@@ -648,7 +648,7 @@ class InboundSocketReaderTest {
     @Test
     void readErrorIsTreatedAsASocketClose() throws Exception {
         socketReader = new TestSocketReader(sequencedRingBuffer, clock);
-        socketReader.pause = false;
+        socketReader.pauseControl.release();
         final IOException cause = new IOException("Connection reset by peer");
         socketReader.nextReadError = cause;
 
@@ -657,7 +657,7 @@ class InboundSocketReaderTest {
         assertEquals("Socket closed", thrown.getMessage());
         assertSame(cause, thrown.getCause());
         // Paused, so the reader stops touching the broken socket until it is reconnected.
-        assertTrue(socketReader.pause);
+        assertTrue(socketReader.pauseControl.isPauseRequested());
     }
 
     @Test
@@ -670,7 +670,7 @@ class InboundSocketReaderTest {
             for (int i = 0; i < 200; i++) {
                 socketReader.connect();
                 // Left true, the next pause would read it as an acknowledgement while the reader is still running.
-                assertFalse(socketReader.isPaused, "isPaused was still set after connect " + i);
+                assertFalse(socketReader.pauseControl.isPaused(), "isPaused was still set after connect " + i);
             }
         } finally {
             runner.close();
@@ -710,7 +710,7 @@ class InboundSocketReaderTest {
             assertFalse(socketReader.closedWhileWriting.get());
         } finally {
             writer.release.countDown();
-            socketReader.pause = false; // a paused reader spins in doWork, so its runner could never stop
+            socketReader.pauseControl.release(); // a paused reader spins in doWork, so its runner could never stop
             readerRunner.close();
             writerRunner.close();
         }
@@ -719,7 +719,7 @@ class InboundSocketReaderTest {
     @Test
     void oversizedMessageIsTreatedAsASocketCloseNotARepeatingError() throws Exception {
         socketReader = new TestSocketReader(sequencedRingBuffer, clock);
-        socketReader.pause = false;
+        socketReader.pauseControl.release();
         // What the WebSocket client throws for a frame larger than the read buffer. It throws again on every read
         // until the connection is replaced, so left unpaused the reader would fail on every pass.
         final RuntimeException cause = new RuntimeException("Read buffer overflowed");
@@ -729,7 +729,7 @@ class InboundSocketReaderTest {
 
         assertEquals("Socket closed", thrown.getMessage());
         assertSame(cause, thrown.getCause());
-        assertTrue(socketReader.pause);
+        assertTrue(socketReader.pauseControl.isPauseRequested());
     }
 
     @Test
@@ -766,7 +766,7 @@ class InboundSocketReaderTest {
             assertEquals(attachesBefore + 1, socketReader.connectCallCount.get());
         } finally {
             writer.release.countDown();
-            socketReader.pause = false;
+            socketReader.pauseControl.release();
             readerRunner.close();
             writerRunner.close();
         }
@@ -775,14 +775,14 @@ class InboundSocketReaderTest {
     @Test
     void closeSeenByTheReaderIsReportedOnce() throws Exception {
         socketReader = new TestSocketReader(sequencedRingBuffer, clock);
-        socketReader.pause = false;
+        socketReader.pauseControl.release();
         socketReader.closeOnNextRead = true;
 
         final SocketClosedException thrown = assertThrows(SocketClosedException.class, socketReader::doWork);
 
         // Passed through as is, not wrapped in a second close (which also logged the disconnect twice).
         assertNull(thrown.getCause());
-        assertTrue(socketReader.pause);
+        assertTrue(socketReader.pauseControl.isPauseRequested());
     }
 
     static final class BlockingWriter extends InboundSocketWriter {

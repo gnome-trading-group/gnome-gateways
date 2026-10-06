@@ -39,7 +39,7 @@ class InboundJsonWebSocketReaderTest {
         outputBuffer.start();
 
         reader = new TestJsonWebSocketReader(outputBuffer);
-        reader.pause = false;
+        reader.pauseControl.release();
     }
 
     @AfterEach

@@ -93,7 +93,7 @@ class KalshiInboundReaderTest {
                 "test-api-key",
                 TEST_PRIVATE_KEY);
         reader.buffer = false;
-        reader.pause = false;
+        reader.pauseControl.release();
     }
 
     @AfterEach
@@ -175,6 +175,95 @@ class KalshiInboundReaderTest {
         Mbp10Schema schema2 = captured.get(1);
         // No YES levels remain
         assertEquals(Mbp10Encoder.bidPrice0NullValue(), schema2.decoder.bidPrice0());
+    }
+
+    @Test
+    void subCentSnapshotLevelsStayDistinct() throws Exception {
+        // tapered_deci_cent markets tick in tenths of a cent near 0 and 1
+        processNoEmit(
+                """
+                {"type":"orderbook_snapshot","sid":1,"seq":1,"msg":{"market_ticker":"TEST-TICKER",\
+                "yes_dollars_fp":[["0.0010","10.00"],["0.0900","20.00"],["0.0950","30.00"]],\
+                "no_dollars_fp":[["0.9910","40.00"],["0.9990","50.00"]]}}
+                """);
+        process(
+                """
+                {"type":"orderbook_delta","sid":1,"seq":2,"msg":{"market_ticker":"TEST-TICKER",\
+                "price_dollars":"0.0950","delta_fp":"0.00","side":"yes","ts_ms":1700000000000}}
+                """);
+
+        final Mbp10Schema schema = captured.get(0);
+        assertEquals(price("0.095"), schema.decoder.bidPrice0());
+        assertEquals(size("30"), schema.decoder.bidSize0());
+        assertEquals(price("0.09"), schema.decoder.bidPrice1());
+        assertEquals(size("20"), schema.decoder.bidSize1());
+        assertEquals(price("0.001"), schema.decoder.bidPrice2());
+        assertEquals(size("10"), schema.decoder.bidSize2());
+        assertEquals(price("0.991"), schema.decoder.askPrice0());
+        assertEquals(size("40"), schema.decoder.askSize0());
+        assertEquals(price("0.999"), schema.decoder.askPrice1());
+        assertEquals(size("50"), schema.decoder.askSize1());
+    }
+
+    @Test
+    void coarserTicksAndShortDecimalsLandOnTheirOwnLevels() throws Exception {
+        processNoEmit(
+                """
+                {"type":"orderbook_snapshot","sid":1,"seq":1,"msg":{"market_ticker":"TEST-TICKER",\
+                "yes_dollars_fp":[["0.1","10.00"],["0.20","20.00"],["0.0100","30.00"],["0.0","99.00"]],\
+                "no_dollars_fp":[["0.9","40.00"],["0.990","50.00"],["1.0","99.00"]]}}
+                """);
+        process(
+                """
+                {"type":"orderbook_delta","sid":1,"seq":2,"msg":{"market_ticker":"TEST-TICKER",\
+                "price_dollars":"0.2","delta_fp":"5.00","side":"yes","ts_ms":1700000000000}}
+                """);
+
+        final Mbp10Schema schema = captured.get(0);
+        assertEquals(price("0.20"), schema.decoder.bidPrice0());
+        assertEquals(size("25"), schema.decoder.bidSize0(), "0.2 and 0.20 are the same level");
+        assertEquals(price("0.10"), schema.decoder.bidPrice1());
+        assertEquals(price("0.01"), schema.decoder.bidPrice2());
+        assertEquals(Mbp10Encoder.bidPrice3NullValue(), schema.decoder.bidPrice3(), "0 is not a tradable price");
+        assertEquals(price("0.90"), schema.decoder.askPrice0());
+        assertEquals(price("0.99"), schema.decoder.askPrice1());
+        assertEquals(Mbp10Encoder.askPrice2NullValue(), schema.decoder.askPrice2(), "nor is 1");
+    }
+
+    @Test
+    void subCentDeltaUpdatesItsOwnLevel() throws Exception {
+        processSnapshot();
+        process(
+                """
+                {"type":"orderbook_delta","sid":1,"seq":2,"msg":{"market_ticker":"TEST-TICKER",\
+                "price_dollars":"0.5550","delta_fp":"25.00","side":"yes","ts_ms":1700000000000}}
+                """);
+
+        final Mbp10Schema schema = captured.get(0);
+        assertEquals(price("0.555"), schema.decoder.bidPrice0());
+        assertEquals(size("25"), schema.decoder.bidSize0());
+        assertEquals(price("0.55"), schema.decoder.bidPrice1());
+        assertEquals(size("100"), schema.decoder.bidSize1(), "the whole-cent level is untouched");
+    }
+
+    @Test
+    void priceFinerThanAnyKalshiTick_IsDroppedNotMergedIntoANeighbour() throws Exception {
+        processSnapshot();
+        process(
+                """
+                {"type":"orderbook_delta","sid":1,"seq":2,"msg":{"market_ticker":"TEST-TICKER",\
+                "price_dollars":"0.5505","delta_fp":"25.00","side":"yes","ts_ms":1700000000000}}
+                """);
+        process(
+                """
+                {"type":"orderbook_delta","sid":1,"seq":3,"msg":{"market_ticker":"TEST-TICKER",\
+                "price_dollars":"0.5500","delta_fp":"0.00","side":"yes","ts_ms":1700000000001}}
+                """);
+
+        final Mbp10Schema schema = captured.get(captured.size() - 1);
+        assertEquals(price("0.55"), schema.decoder.bidPrice0());
+        assertEquals(size("100"), schema.decoder.bidSize0());
+        assertEquals(price("0.50"), schema.decoder.bidPrice1());
     }
 
     @Test

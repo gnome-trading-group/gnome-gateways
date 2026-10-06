@@ -17,6 +17,11 @@ public abstract class GatewaySupervisor implements GnomeAgent {
     private final Schedule keepAliveSchedule;
     private final Schedule sanityCheckSchedule;
 
+    // Set while the last connect cycle failed: retried on every pass, not through the reconnect schedule, which
+    // would overwrite a trigger set from inside its own task.
+    private boolean needsConnect;
+    private int failedConnectCycles;
+
     protected GatewaySupervisor(
             Logger logger, Connectable connectable, GatewayConfig config, EpochClock clock, EpochNanoClock nanoClock) {
         this.logger = logger;
@@ -40,14 +45,18 @@ public abstract class GatewaySupervisor implements GnomeAgent {
 
     @Override
     public final void onStart() throws Exception {
-        this.connectController.connect();
         this.reconnectSchedule.start();
         this.keepAliveSchedule.start();
         this.sanityCheckSchedule.start();
+        connect();
     }
 
     @Override
     public final int doWork() throws Exception {
+        if (this.needsConnect) {
+            connect();
+            return 1;
+        }
         this.reconnectSchedule.check();
         this.keepAliveSchedule.check();
         this.sanityCheckSchedule.check();
@@ -87,7 +96,32 @@ public abstract class GatewaySupervisor implements GnomeAgent {
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
-        this.connectController.connect();
+        connect();
+    }
+
+    /**
+     * A failed cycle is retried on the next pass rather than reported, so a venue that is briefly down doesn't
+     * reach the error handler. Once {@link GatewayConfig#maxConnectCycles} fail in a row the gateway gives up: what
+     * happens next is the error handler's call, and if it carries on, the retries start over.
+     */
+    private void connect() {
+        try {
+            this.connectController.connect();
+        } catch (final RuntimeException e) {
+            if (Thread.currentThread().isInterrupted()) {
+                throw e;
+            }
+            this.needsConnect = true;
+            if (++this.failedConnectCycles >= this.config.maxConnectCycles()) {
+                this.failedConnectCycles = 0;
+                throw new GatewayConnectFailedException(
+                        "Gave up connecting after " + this.config.maxConnectCycles() + " failed connect cycles", e);
+            }
+            this.logger.log(LogMessage.SOCKET_RECONNECTING);
+            return;
+        }
+        this.needsConnect = false;
+        this.failedConnectCycles = 0;
     }
 
     private void keepAlive() {

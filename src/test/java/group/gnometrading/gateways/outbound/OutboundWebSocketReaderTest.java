@@ -60,7 +60,7 @@ class OutboundWebSocketReaderTest {
                 new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
         reader = new TestOutboundWebSocketReader(
                 execReportBuffer, newOrderQueue, writerReportQueue, releasedOrderQueue, client);
-        reader.pause = false;
+        reader.pauseControl.release();
     }
 
     @AfterEach

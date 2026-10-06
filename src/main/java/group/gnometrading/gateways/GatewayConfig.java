@@ -5,6 +5,8 @@ import java.io.IOException;
 import java.time.Duration;
 
 /**
+ * @param maxReconnectAttempts attempts after the first in one connect cycle, with backoff between them
+ * @param maxConnectCycles connect cycles that may fail in a row before the gateway gives up and reports it fatal
  * @param keepAliveInterval how often the gateway sends its application-level keep-alive (e.g. a ping message)
  * @param connectTimeout how long one whole connect attempt may take: socket connect, upgrade, subscribe and
  *     snapshot
@@ -25,6 +27,7 @@ public record GatewayConfig(
         Duration keepAliveInterval,
         Duration sanityCheckInterval,
         int maxReconnectAttempts,
+        int maxConnectCycles,
         Duration maxSilentInterval,
         Duration initialBackoff,
         Duration connectTimeout,
@@ -49,6 +52,12 @@ public record GatewayConfig(
                     + ") plus handshakeTimeout (" + handshakeTimeout + ") must be less than connectTimeout ("
                     + connectTimeout + ")");
         }
+        if (maxReconnectAttempts < 0) {
+            throw new IllegalArgumentException("maxReconnectAttempts must not be negative");
+        }
+        if (maxConnectCycles < 1) {
+            throw new IllegalArgumentException("maxConnectCycles must be at least 1");
+        }
         if (readTimeout.isZero() || readTimeout.isNegative()) {
             throw new IllegalArgumentException("readTimeout must be positive");
         }
@@ -65,6 +74,7 @@ public record GatewayConfig(
                 keepAliveInterval,
                 sanityCheckInterval,
                 maxReconnectAttempts,
+                maxConnectCycles,
                 maxSilentInterval,
                 initialBackoff,
                 connectTimeout,
@@ -101,6 +111,7 @@ public record GatewayConfig(
     static final Duration DEFAULT_KEEP_ALIVE_INTERVAL = Duration.ofSeconds(10);
     static final Duration DEFAULT_SANITY_CHECK_INTERVAL = Duration.ofHours(1);
     static final int DEFAULT_MAX_RECONNECT_ATTEMPTS = 5;
+    static final int DEFAULT_MAX_CONNECT_CYCLES = 3;
     static final Duration DEFAULT_MAX_SILENT_INTERVAL = Duration.ofSeconds(30);
     static final Duration DEFAULT_INITIAL_BACKOFF = Duration.ofSeconds(1);
     static final Duration DEFAULT_CONNECT_TIMEOUT = Duration.ofSeconds(10);
@@ -118,6 +129,7 @@ public record GatewayConfig(
         private Duration keepAliveInterval = DEFAULT_KEEP_ALIVE_INTERVAL;
         private Duration sanityCheckInterval = DEFAULT_SANITY_CHECK_INTERVAL;
         private int maxReconnectAttempts = DEFAULT_MAX_RECONNECT_ATTEMPTS;
+        private int maxConnectCycles = DEFAULT_MAX_CONNECT_CYCLES;
         private Duration maxSilentInterval = DEFAULT_MAX_SILENT_INTERVAL;
         private Duration initialBackoff = DEFAULT_INITIAL_BACKOFF;
         private Duration connectTimeout = DEFAULT_CONNECT_TIMEOUT;
@@ -180,6 +192,11 @@ public record GatewayConfig(
             return this;
         }
 
+        public Builder withMaxConnectCycles(int maxConnectCycles) {
+            this.maxConnectCycles = maxConnectCycles;
+            return this;
+        }
+
         public Builder withMaxSilentInterval(Duration maxSilentInterval) {
             this.maxSilentInterval = maxSilentInterval;
             return this;
@@ -192,6 +209,7 @@ public record GatewayConfig(
                     this.keepAliveInterval,
                     this.sanityCheckInterval,
                     this.maxReconnectAttempts,
+                    this.maxConnectCycles,
                     this.maxSilentInterval,
                     this.initialBackoff,
                     this.connectTimeout,

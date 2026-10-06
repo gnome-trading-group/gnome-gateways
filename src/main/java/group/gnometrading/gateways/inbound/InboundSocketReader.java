@@ -4,6 +4,7 @@ import group.gnometrading.collections.buffer.OneToOneRingBuffer;
 import group.gnometrading.concurrent.GnomeAgent;
 import group.gnometrading.concurrent.ThreadProfile;
 import group.gnometrading.gateways.GatewayConfig;
+import group.gnometrading.gateways.ReaderPauseControl;
 import group.gnometrading.gateways.SocketClosedException;
 import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.Logger;
@@ -32,8 +33,7 @@ public abstract class InboundSocketReader<T extends Schema> implements GnomeAgen
     protected Book<T> internalBook;
     private Book<T> snapshot;
 
-    public volatile boolean pause;
-    public volatile boolean isPaused;
+    public final ReaderPauseControl pauseControl = new ReaderPauseControl();
     public volatile boolean buffer;
 
     public InboundSocketReader(
@@ -52,9 +52,7 @@ public abstract class InboundSocketReader<T extends Schema> implements GnomeAgen
         this.internalBook = createBook();
         this.snapshot = null;
 
-        this.pause = true;
         this.buffer = true;
-        this.isPaused = false;
         this.claim();
     }
 
@@ -101,7 +99,7 @@ public abstract class InboundSocketReader<T extends Schema> implements GnomeAgen
      */
     public final void connect() throws IOException {
         this.buffer = true;
-        pauseReader();
+        this.pauseControl.pause();
 
         // Connecting closes any previous connection, which the writer thread may be sending on.
         if (this.socketWriter != null) {
@@ -117,39 +115,19 @@ public abstract class InboundSocketReader<T extends Schema> implements GnomeAgen
         this.internalBook.reset();
         this.replayBuffer.reset();
 
-        resumeReader();
+        this.pauseControl.resume();
 
         this.snapshot = this.fetchSnapshot();
         if (this.snapshot != null) {
             this.internalBook.copyFrom(this.snapshot);
         }
 
-        pauseReader();
+        this.pauseControl.pause();
 
         this.replayBuffer.read(this::consumeReplay);
 
         this.buffer = false;
-        resumeReader();
-    }
-
-    /** Returns once the reader thread has stopped and will not touch the socket or buffers until resumed. */
-    private void pauseReader() {
-        this.pause = true;
-        while (!this.isPaused) {
-            Thread.yield();
-        }
-    }
-
-    /**
-     * Returns once the reader thread is running again. Waiting for it matters: until it notices, {@link #isPaused}
-     * still reads true from before, and a pause straight after would take that stale value as an acknowledgement
-     * while the reader is in fact about to run.
-     */
-    private void resumeReader() {
-        this.pause = false;
-        while (this.isPaused) {
-            Thread.yield();
-        }
+        this.pauseControl.resume();
     }
 
     /**
@@ -180,7 +158,7 @@ public abstract class InboundSocketReader<T extends Schema> implements GnomeAgen
     public final void disconnect() throws Exception {
         logger.log(LogMessage.SOCKET_DISCONNECTING);
         this.buffer = true;
-        pauseReader();
+        this.pauseControl.pause();
 
         // The writer thread sends on the same socket; closing it mid-write would free it under the writer.
         if (this.socketWriter != null) {
@@ -201,13 +179,7 @@ public abstract class InboundSocketReader<T extends Schema> implements GnomeAgen
 
     @Override
     public final int doWork() throws Exception {
-        if (this.pause) {
-            this.isPaused = true;
-            while (this.pause) {
-                Thread.yield();
-            }
-            this.isPaused = false;
-        }
+        this.pauseControl.awaitIfPaused();
 
         final ByteBuffer buffer;
         try {
@@ -260,7 +232,7 @@ public abstract class InboundSocketReader<T extends Schema> implements GnomeAgen
     }
 
     private void onSocketClose(final Exception cause) {
-        this.pause = true;
+        this.pauseControl.pauseSelf();
         logger.log(LogMessage.SOCKET_DISCONNECTED);
         throw new SocketClosedException(cause);
     }

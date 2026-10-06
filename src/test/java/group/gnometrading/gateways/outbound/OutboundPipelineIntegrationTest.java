@@ -77,7 +77,7 @@ class OutboundPipelineIntegrationTest {
 
         writer = new TestPipelineWriter(orderBuffer, newOrderQueue, writerReportQueue, releasedOrderQueue);
         reader = new TestPipelineReader(execReportBuffer, newOrderQueue, writerReportQueue, releasedOrderQueue);
-        reader.pause = false;
+        reader.pauseControl.release();
     }
 
     @AfterEach

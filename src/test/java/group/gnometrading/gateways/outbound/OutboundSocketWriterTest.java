@@ -431,6 +431,203 @@ class OutboundSocketWriterTest {
                 reports.stream().map(r -> r.clientOidCounter).toList());
     }
 
+    // ========== Failures inside a message ==========
+
+    @Test
+    void prepareThrows_RejectsOnceAndIsNotRetried() throws Exception {
+        writer.prepareScript.add(new IllegalStateException("signer broke"));
+        publishOrder(
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
+
+        assertThrows(IllegalStateException.class, () -> writer.doWork(), "the bug still reaches the error handler");
+        writer.doWork();
+
+        assertEquals(1, writer.prepareCallCount, "the message is settled, not delivered again");
+        final List<OrderContext> reports = drainQueue(writerReportQueue);
+        assertEquals(1, reports.size());
+        assertEquals(ExecType.REJECT, reports.get(0).execType);
+        assertEquals(RejectReason.GATEWAY_REJECTED, reports.get(0).rejectReason);
+        assertEquals(0, drainQueue(newOrderQueue).size(), "never registered, so never sent");
+        assertEquals(0, writer.submitCallCount);
+    }
+
+    @Test
+    void prepareThrows_ReturnsItsPoolSlot() throws Exception {
+        writer.prepareScript.add(new IllegalStateException("signer broke"));
+        publishOrder(
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
+        assertThrows(IllegalStateException.class, () -> writer.doWork());
+        drainQueue(writerReportQueue);
+
+        for (int i = 0; i < OrderContext.MAX_IN_FLIGHT_ORDERS; i++) {
+            publishOrder(
+                    Side.Bid,
+                    price("0.50"),
+                    qty("1.0"),
+                    OrderType.LIMIT,
+                    TimeInForce.GOOD_TILL_CANCELED,
+                    2,
+                    3L,
+                    100L + i,
+                    1);
+            writer.doWork();
+            drainQueue(newOrderQueue);
+        }
+
+        assertEquals(0, drainQueue(writerReportQueue).size(), "every slot is still available");
+    }
+
+    @Test
+    void submitThrowsUnexpectedly_StaysRegisteredAndIsNotResent() throws Exception {
+        writer.submitScript.add(new IllegalStateException("venue assigned a different id"));
+        publishOrder(
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
+
+        assertThrows(IllegalStateException.class, () -> writer.doWork());
+        writer.doWork();
+
+        assertEquals(1, writer.submitCallCount, "a resend could place a second live order");
+        assertEquals(1, writer.prepareCallCount);
+        assertEquals(1, drainQueue(newOrderQueue).size());
+        assertEquals(0, drainQueue(writerReportQueue).size(), "it may be live, so it is not reported rejected");
+        assertEquals(1, writer.activeOrderCount());
+    }
+
+    @Test
+    void findThrowsUnexpectedly_StaysRegisteredAndIsNotRetried() throws Exception {
+        writer.submitScript.add(SubmitResult.UNKNOWN);
+        writer.submitScript.add(SubmitResult.REJECTED);
+        writer.findScript.add(new IllegalStateException("unreadable lookup"));
+        publishOrder(
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
+
+        assertThrows(IllegalStateException.class, () -> writer.doWork());
+        writer.doWork();
+
+        assertEquals(2, writer.submitCallCount);
+        assertEquals(1, writer.findCallCount);
+        assertEquals(0, drainQueue(writerReportQueue).size());
+        assertEquals(1, writer.activeOrderCount());
+    }
+
+    @Test
+    void cancelNetworkError_IsCancelRejectedWithoutReachingTheErrorHandler() throws Exception {
+        publishOrder(
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 7L, 1);
+        writer.doWork();
+        writer.cancelScript.add(new IOException("connection reset"));
+
+        publishCancel(7L, 2, 3L);
+        assertDoesNotThrow(() -> writer.doWork());
+        writer.doWork();
+
+        assertEquals(1, writer.cancelCallCount, "not retried behind the OMS's back");
+        final List<OrderContext> reports = drainQueue(writerReportQueue);
+        assertEquals(1, reports.size());
+        assertEquals(ExecType.CANCEL_REJECT, reports.get(0).execType);
+        assertEquals(RejectReason.UNKNOWN, reports.get(0).rejectReason, "the venue never answered");
+        assertEquals(1, writer.activeOrderCount(), "the order may still be working");
+
+        publishCancel(7L, 2, 3L);
+        writer.doWork();
+        assertEquals(2, writer.cancelCallCount, "a later cancel is still routed");
+    }
+
+    @Test
+    void cancelThrowsUnexpectedly_IsCancelRejectedAndNotRetried() throws Exception {
+        publishOrder(
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 7L, 1);
+        writer.doWork();
+        writer.cancelScript.add(new IllegalStateException("bad response"));
+
+        publishCancel(7L, 2, 3L);
+        assertThrows(IllegalStateException.class, () -> writer.doWork());
+        writer.doWork();
+
+        assertEquals(1, writer.cancelCallCount);
+        final List<OrderContext> reports = drainQueue(writerReportQueue);
+        assertEquals(1, reports.size());
+        assertEquals(ExecType.CANCEL_REJECT, reports.get(0).execType);
+        assertEquals(1, writer.activeOrderCount());
+    }
+
+    @Test
+    void modifyNetworkError_IsCancelRejectedWithoutReachingTheErrorHandler() throws Exception {
+        publishOrder(
+                Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 7L, 1);
+        writer.doWork();
+        writer.modifyException = new IOException("connection reset");
+
+        publishModify(7L, price("0.60"), qty("5.0"), 2, 3L);
+        assertDoesNotThrow(() -> writer.doWork());
+        writer.doWork();
+
+        assertEquals(1, writer.modifyCallCount);
+        final List<OrderContext> reports = drainQueue(writerReportQueue);
+        assertEquals(1, reports.size());
+        assertEquals(ExecType.CANCEL_REJECT, reports.get(0).execType);
+        assertEquals(RejectReason.UNKNOWN, reports.get(0).rejectReason);
+        assertEquals(7L, reports.get(0).clientOidCounter);
+    }
+
+    @Test
+    void failedMessage_DoesNotBlockTheOnesBehindIt() throws Exception {
+        writer.prepareScript.add(new IllegalStateException("signer broke"));
+        publishOrder(
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
+        publishOrder(
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 2L, 1);
+
+        assertThrows(IllegalStateException.class, () -> writer.doWork());
+
+        assertEquals(1, writer.submitCallCount);
+        assertEquals(2L, drainQueue(newOrderQueue).get(0).clientOidCounter);
+    }
+
+    @Test
+    void severalFailuresInOnePoll_AllReachTheErrorHandler() throws Exception {
+        writer.prepareScript.add(new IllegalStateException("first"));
+        writer.prepareScript.add(new IllegalStateException("second"));
+        publishOrder(
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
+        publishOrder(
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 2L, 1);
+
+        final IllegalStateException thrown = assertThrows(IllegalStateException.class, () -> writer.doWork());
+
+        assertEquals("first", thrown.getMessage());
+        assertEquals(1, thrown.getSuppressed().length);
+        assertEquals("second", thrown.getSuppressed()[0].getMessage());
+        assertEquals(0, writer.doWork());
+    }
+
+    @Test
+    void reportQueueFull_InterruptStopsTheWait() throws Exception {
+        final ManyToOneRingBuffer<OrderContext> smallReportQueue =
+                new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 2);
+        final TestOutboundSocketWriter failWriter =
+                new TestOutboundSocketWriter(orderBuffer, newOrderQueue, smallReportQueue, releasedOrderQueue);
+        failWriter.submitResult = false;
+        for (int i = 0; i < 3; i++) {
+            publishOrder(
+                    Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, i, 1);
+        }
+
+        final Thread writerThread = new Thread(() -> {
+            try {
+                failWriter.doWork();
+            } catch (final Exception e) { // the interrupt surfaces as a failure; only the exit matters here
+            }
+        });
+        writerThread.start();
+        writerThread.join(200);
+        assertTrue(writerThread.isAlive(), "the third reject waits for room");
+
+        writerThread.interrupt();
+        writerThread.join(5_000);
+        assertFalse(writerThread.isAlive(), "shutdown is not held up by a stalled reader");
+    }
+
     // ========== Flags propagation ==========
 
     @Test
@@ -655,12 +852,17 @@ class OutboundSocketWriterTest {
         boolean prepareResult = true;
         boolean submitResult = true;
         boolean cancelResult = true;
-        // Scripted answers, consumed in order before falling back to submitResult / REJECTED.
+        Exception modifyException;
+        // Scripted answers, consumed in order before falling back to the defaults. An exception is thrown.
+        final Deque<Exception> prepareScript = new ArrayDeque<>();
         final Deque<Object> submitScript = new ArrayDeque<>();
-        final Deque<SubmitResult> findScript = new ArrayDeque<>();
+        final Deque<Object> findScript = new ArrayDeque<>();
+        final Deque<Exception> cancelScript = new ArrayDeque<>();
+        int prepareCallCount = 0;
         int submitCallCount = 0;
         int findCallCount = 0;
         int cancelCallCount = 0;
+        int modifyCallCount = 0;
         final List<OrderContext> submittedContexts = new ArrayList<>();
         final List<OrderContext> cancelledContexts = new ArrayList<>();
 
@@ -673,7 +875,12 @@ class OutboundSocketWriterTest {
         }
 
         @Override
-        protected boolean prepareOrder(final OrderContext ctx) {
+        protected boolean prepareOrder(final OrderContext ctx) throws Exception {
+            prepareCallCount++;
+            final Exception scripted = prepareScript.poll();
+            if (scripted != null) {
+                throw scripted;
+            }
             final byte[] correlation = ("corr-" + ctx.clientOidCounter).getBytes(StandardCharsets.UTF_8);
             System.arraycopy(correlation, 0, ctx.correlationIdBytes, 0, correlation.length);
             ctx.correlationIdLength = correlation.length;
@@ -681,10 +888,10 @@ class OutboundSocketWriterTest {
         }
 
         @Override
-        protected SubmitResult submitOrder(final OrderContext ctx) throws IOException {
+        protected SubmitResult submitOrder(final OrderContext ctx) throws Exception {
             submitCallCount++;
             final Object scripted = submitScript.poll();
-            if (scripted instanceof IOException e) {
+            if (scripted instanceof Exception e) {
                 throw e;
             }
             final SubmitResult result = scripted != null
@@ -700,9 +907,13 @@ class OutboundSocketWriterTest {
         }
 
         @Override
-        protected SubmitResult findOrder(final OrderContext ctx) {
+        protected SubmitResult findOrder(final OrderContext ctx) throws Exception {
             findCallCount++;
-            final SubmitResult result = findScript.isEmpty() ? SubmitResult.REJECTED : findScript.poll();
+            final Object scripted = findScript.poll();
+            if (scripted instanceof Exception e) {
+                throw e;
+            }
+            final SubmitResult result = scripted == null ? SubmitResult.REJECTED : (SubmitResult) scripted;
             if (result == SubmitResult.ACCEPTED) {
                 setVenueId(ctx);
             }
@@ -710,12 +921,25 @@ class OutboundSocketWriterTest {
         }
 
         @Override
-        protected boolean cancelOrder(final OrderContext ctx) {
+        protected boolean cancelOrder(final OrderContext ctx) throws Exception {
             cancelCallCount++;
             final OrderContext copy = new OrderContext();
             copy.copyFrom(ctx);
             cancelledContexts.add(copy);
+            final Exception scripted = cancelScript.poll();
+            if (scripted != null) {
+                throw scripted;
+            }
             return cancelResult;
+        }
+
+        @Override
+        protected void handleModifyOrder() throws Exception {
+            modifyCallCount++;
+            if (modifyException != null) {
+                throw modifyException;
+            }
+            super.handleModifyOrder();
         }
 
         private static void setVenueId(final OrderContext ctx) {

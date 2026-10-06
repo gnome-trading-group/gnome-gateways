@@ -58,7 +58,7 @@ class InboundWebSocketReaderStallTest {
             outputBuffer.start();
             final TestWebSocketReader reader =
                     new TestWebSocketReader(outputBuffer, new InboundWebSocketWriter(client), client);
-            reader.pause = false;
+            reader.pauseControl.release();
             reader.configureSocket(new GatewayConfig.Builder().build());
             reader.testAttachSocket();
 
@@ -78,10 +78,10 @@ class InboundWebSocketReaderStallTest {
 
             try {
                 assertTimeoutPreemptively(Duration.ofSeconds(5), reader::disconnect);
-                assertTrue(reader.isPaused);
+                assertTrue(reader.pauseControl.isPaused());
             } finally {
                 running.set(false);
-                reader.pause = false;
+                reader.pauseControl.release();
                 outputBuffer.shutdown();
                 silentPeer.interrupt();
             }

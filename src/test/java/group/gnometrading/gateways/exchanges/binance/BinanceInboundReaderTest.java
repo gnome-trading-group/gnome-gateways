@@ -102,7 +102,7 @@ public class BinanceInboundReaderTest {
                 new NullLogger(), sequencedRingBuffer, clock, mockFixClient, listing, config, null, "TEST_API_KEY");
 
         reader.buffer = false;
-        reader.pause = false;
+        reader.pauseControl.release();
         seqNum = 1;
     }
 

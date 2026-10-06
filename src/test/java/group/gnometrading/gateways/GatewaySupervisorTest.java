@@ -31,6 +31,7 @@ class GatewaySupervisorTest {
                 .withConnectTimeout(Duration.ofSeconds(5))
                 .withInitialBackoff(Duration.ofMillis(10))
                 .withMaxReconnectAttempts(0)
+                .withMaxConnectCycles(3)
                 .withReconnectInterval(Duration.ofMillis(1000))
                 .withKeepAliveInterval(Duration.ofMillis(500))
                 .withSanityCheckInterval(Duration.ofMillis(2000))
@@ -58,6 +59,103 @@ class GatewaySupervisorTest {
         assertEquals(0, supervisor.disconnectCallCount);
         assertEquals(0, supervisor.keepAliveCallCount);
         assertEquals(0, supervisor.sanityCheckCallCount);
+    }
+
+    // ========== Failed connects ==========
+
+    @Test
+    void onStart_ConnectFails_RetriesOnDoWorkUntilItConnects() throws Exception {
+        connectable.failNextConnects = 2;
+
+        assertDoesNotThrow(() -> supervisor.onStart());
+        assertDoesNotThrow(() -> supervisor.doWork());
+        assertEquals(2, connectable.connectCallCount);
+        assertDoesNotThrow(() -> supervisor.doWork());
+
+        assertEquals(3, connectable.connectCallCount);
+        assertEquals(0, supervisor.disconnectCallCount, "nothing was connected to tear down");
+        supervisor.doWork();
+        assertEquals(3, connectable.connectCallCount, "connected, so it stops retrying");
+    }
+
+    @Test
+    void onStart_ConnectFails_SchedulesStillRun() throws Exception {
+        connectable.failNextConnects = 1;
+        supervisor.onStart();
+        supervisor.doWork();
+
+        clock.advance(501);
+        supervisor.doWork();
+
+        assertEquals(1, supervisor.keepAliveCallCount);
+    }
+
+    @Test
+    void connectNeverSucceeds_FailsTheGatewayAfterTheConfiguredCycles() throws Exception {
+        connectable.failNextConnects = Integer.MAX_VALUE;
+
+        assertDoesNotThrow(() -> supervisor.onStart());
+        assertDoesNotThrow(() -> supervisor.doWork());
+        final GatewayConnectFailedException failure =
+                assertThrows(GatewayConnectFailedException.class, () -> supervisor.doWork());
+
+        assertEquals(3, connectable.connectCallCount);
+        assertInstanceOf(IOException.class, rootCause(failure));
+    }
+
+    @Test
+    void connectFailsOnce_FailureCountStartsOverAfterItConnects() throws Exception {
+        connectable.failNextConnects = 2;
+        supervisor.onStart();
+        supervisor.doWork();
+        supervisor.doWork();
+
+        connectable.failNextConnects = 2;
+        supervisor.forceReconnect();
+        assertDoesNotThrow(() -> supervisor.doWork());
+        assertDoesNotThrow(() -> supervisor.doWork());
+        assertDoesNotThrow(() -> supervisor.doWork());
+
+        assertEquals(6, connectable.connectCallCount);
+    }
+
+    @Test
+    void connectInterruptedByShutdown_IsNotSwallowedAsAFailedCycle() {
+        connectable.failNextConnects = 1;
+        Thread.currentThread().interrupt();
+        try {
+            assertThrows(RuntimeException.class, () -> supervisor.onStart());
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
+    @Test
+    void reconnectFails_RetriesOnTheNextDoWorkWithoutReachingTheErrorHandler() throws Exception {
+        supervisor.onStart();
+        connectable.failNextConnects = 1;
+
+        clock.advance(1001);
+        assertDoesNotThrow(() -> supervisor.doWork());
+        supervisor.doWork();
+
+        assertEquals(3, connectable.connectCallCount);
+        assertEquals(1, supervisor.disconnectCallCount, "the retry only connects; the old socket is gone");
+    }
+
+    @Test
+    void whileDisconnected_SilenceDoesNotTriggerAReconnect() throws Exception {
+        supervisor.onStart();
+        supervisor.testRecvTimestamp = nanoClock.nanoTime();
+        connectable.failNextConnects = 1;
+        supervisor.forceReconnect();
+        supervisor.doWork();
+
+        nanoClock.advance(Duration.ofSeconds(10).toNanos());
+        supervisor.doWork();
+
+        assertEquals(1, supervisor.disconnectCallCount, "the retry connects, it doesn't tear down again");
+        assertEquals(3, connectable.connectCallCount);
     }
 
     // ========== doWork — schedule firing ==========
@@ -254,8 +352,17 @@ class GatewaySupervisorTest {
         }
     }
 
+    private static Throwable rootCause(final Throwable error) {
+        Throwable cause = error;
+        while (cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        return cause;
+    }
+
     static class CallTrackingConnectable implements Connectable {
         int connectCallCount = 0;
+        int failNextConnects = 0;
         boolean disconnectCalledBeforeConnect = false;
         Runnable onConnect = () -> {};
         private boolean lastDisconnectCalled = false;
@@ -270,6 +377,10 @@ class GatewaySupervisorTest {
                 disconnectCalledBeforeConnect = true;
             }
             connectCallCount++;
+            if (failNextConnects > 0) {
+                failNextConnects--;
+                throw new IOException("connection refused");
+            }
             onConnect.run();
         }
     }

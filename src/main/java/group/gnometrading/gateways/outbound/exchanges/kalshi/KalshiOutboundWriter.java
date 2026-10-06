@@ -61,6 +61,9 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
     private int jsonBodyLength;
 
     private final byte[] clientOrderIdPrefix;
+    // Each order's id is written here, then copied into its context, so no buffer is made per order.
+    private final byte[] clientOrderIdBuf = new byte[OrderContext.EXCHANGE_ORDER_ID_MAX_LENGTH];
+    private final ByteBuffer clientOrderIdBuffer = ByteBuffer.wrap(clientOrderIdBuf);
     private long preparedAtMillis;
     private final byte[] lookupOrderId = new byte[OrderContext.EXCHANGE_ORDER_ID_MAX_LENGTH];
     private int lookupOrderIdLength;
@@ -85,7 +88,7 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
         this.authSigner = authSigner;
         this.clock = clock;
         this.jsonEncoder.wrap(this.jsonBodyBuffer);
-        this.clientOrderIdPrefix = (sessionTag + "-" + listing.listingId() + "-").getBytes(StandardCharsets.US_ASCII);
+        this.clientOrderIdPrefix = (sessionTag + "-").getBytes(StandardCharsets.US_ASCII);
 
         final String exchangeSecurityId = listing.exchangeSecurityId();
         final int colonIdx = exchangeSecurityId.indexOf(':');
@@ -223,17 +226,15 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
     }
 
     /**
-     * {@code {sessionTag}-{listingId}-{counter}}. The OMS's counter restarts with each session, and Kalshi
-     * deduplicates on this id, so the session tag keeps ids unique across sessions. Every order the
-     * account holds then names the session and listing that placed it, which a later session's startup
-     * reads to tell its own leftovers from other strategies' orders on the same credentials. The listing
-     * also tells apart the YES and NO listings, which share a ticker.
+     * {@code {sessionTag}-{counter}}. The OMS's counter restarts with each session, and Kalshi deduplicates on
+     * this id, so the session tag keeps ids unique across sessions.
      */
     private void writeClientOrderId(final OrderContext ctx) {
-        final ByteBuffer out = ByteBuffer.wrap(ctx.correlationIdBytes);
-        out.put(this.clientOrderIdPrefix);
-        ByteBufferUtils.putLongAscii(out, ctx.clientOidCounter);
-        ctx.correlationIdLength = out.position();
+        this.clientOrderIdBuffer.clear();
+        this.clientOrderIdBuffer.put(this.clientOrderIdPrefix);
+        ByteBufferUtils.putLongAscii(this.clientOrderIdBuffer, ctx.clientOidCounter);
+        ctx.correlationIdLength = this.clientOrderIdBuffer.position();
+        System.arraycopy(this.clientOrderIdBuf, 0, ctx.correlationIdBytes, 0, ctx.correlationIdLength);
     }
 
     private static boolean equalsCorrelationId(final GnomeString value, final OrderContext ctx) {

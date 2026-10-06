@@ -22,6 +22,23 @@ class GatewayConfigTest {
     }
 
     @Test
+    void givesUpAfterThreeConnectCyclesByDefault() {
+        assertEquals(3, new GatewayConfig.Builder().build().maxConnectCycles());
+    }
+
+    @Test
+    void fewerThanOneConnectCycleIsRejected() {
+        final GatewayConfig.Builder builder = new GatewayConfig.Builder().withMaxConnectCycles(0);
+        assertThrows(IllegalArgumentException.class, builder::build);
+    }
+
+    @Test
+    void negativeReconnectAttemptsAreRejected() {
+        final GatewayConfig.Builder builder = new GatewayConfig.Builder().withMaxReconnectAttempts(-1);
+        assertThrows(IllegalArgumentException.class, builder::build);
+    }
+
+    @Test
     void keepAliveAsLongAsTheSilenceWindowIsRejected() {
         final GatewayConfig.Builder builder = new GatewayConfig.Builder()
                 .withKeepAliveInterval(Duration.ofSeconds(30))

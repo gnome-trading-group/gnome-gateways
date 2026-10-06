@@ -97,7 +97,7 @@ class PolymarketUsInboundReaderTest {
                 new JsonDecoder(),
                 signer);
         reader.buffer = false;
-        reader.pause = false;
+        reader.pauseControl.release();
     }
 
     @AfterEach

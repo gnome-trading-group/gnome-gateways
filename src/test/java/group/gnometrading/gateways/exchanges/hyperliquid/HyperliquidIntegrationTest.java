@@ -62,7 +62,7 @@ public class HyperliquidIntegrationTest {
         GnomeAgentRunner.startOnThread(writerRunner);
         GnomeAgentRunner.startOnThread(readerRunner);
 
-        while (!reader.isPaused) {
+        while (!reader.pauseControl.isPaused()) {
             Thread.yield();
         }
 

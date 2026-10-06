@@ -34,6 +34,9 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
     private final ManyToOneRingBuffer<OrderContext> releasedOrderQueue;
     // The queue read doesn't report how many entries it consumed; a back-off idle strategy needs the count.
     private int releasedThisPass;
+    // Thrown from doWork once the poll has moved past the message: thrown inside it, the poller would
+    // deliver the same message again forever.
+    private Exception orderFailure;
 
     protected final Order order = new Order();
     protected final CancelOrder cancelOrder = new CancelOrder();
@@ -72,7 +75,13 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         this.releasedOrderQueue.read(this::consumeReleasedOrder, OrderContext.HANDOFF_QUEUE_CAPACITY);
         final int released = this.releasedThisPass;
         this.releasedThisPass = 0;
-        return released + this.orderPoller.poll();
+        final int polled = this.orderPoller.poll();
+        if (this.orderFailure != null) {
+            final Exception failure = this.orderFailure;
+            this.orderFailure = null;
+            throw failure;
+        }
+        return released + polled;
     }
 
     @Override
@@ -88,17 +97,32 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         }
     }
 
-    private void onOrder(final long globalSeq, final int templateId, final UnsafeBuffer buf, final int len)
-            throws Exception {
-        if (templateId == OrderDecoder.TEMPLATE_ID) {
-            order.wrap(buf);
-            handleSubmitOrder();
-        } else if (templateId == CancelOrderDecoder.TEMPLATE_ID) {
-            cancelOrder.wrap(buf);
-            handleCancelOrder();
-        } else if (templateId == ModifyOrderDecoder.TEMPLATE_ID) {
-            modifyOrder.wrap(buf);
-            handleModifyOrder();
+    /**
+     * Every message is settled here, whatever goes wrong: each path answers the OMS before a failure is
+     * passed on, so a message is never left without a report and never handled twice.
+     */
+    private void onOrder(final long globalSeq, final int templateId, final UnsafeBuffer buf, final int len) {
+        try {
+            if (templateId == OrderDecoder.TEMPLATE_ID) {
+                order.wrap(buf);
+                handleSubmitOrder();
+            } else if (templateId == CancelOrderDecoder.TEMPLATE_ID) {
+                cancelOrder.wrap(buf);
+                handleCancelOrder();
+            } else if (templateId == ModifyOrderDecoder.TEMPLATE_ID) {
+                modifyOrder.wrap(buf);
+                routeModifyOrder();
+            }
+        } catch (final Exception e) {
+            recordFailure(e);
+        }
+    }
+
+    private void recordFailure(final Exception failure) {
+        if (this.orderFailure == null) {
+            this.orderFailure = failure;
+        } else {
+            this.orderFailure.addSuppressed(failure);
         }
     }
 
@@ -118,7 +142,14 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         ctx.side = this.order.decoder.side();
         ctx.flags = (short) this.order.decoder.flags().getRaw();
 
-        if (!prepareOrder(ctx)) {
+        final boolean prepared;
+        try {
+            prepared = prepareOrder(ctx);
+        } catch (final Exception e) {
+            rejectSubmit(ctx, RejectReason.GATEWAY_REJECTED);
+            throw e;
+        }
+        if (!prepared) {
             rejectSubmit(ctx, RejectReason.GATEWAY_REJECTED);
             return;
         }
@@ -141,6 +172,7 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
             rejectSubmit(ctx, RejectReason.EXCHANGE_REJECTED);
         }
         // Still UNKNOWN: the order may be live, so it stays registered and the venue's events settle it.
+        // Any other failure from here on leaves it the same way, as the request may have reached the venue.
     }
 
     /**
@@ -195,11 +227,39 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         if (ctx == null) {
             return;
         }
-        if (!cancelOrder(ctx)) {
+        final boolean accepted;
+        try {
+            accepted = cancelOrder(ctx);
+        } catch (final IOException e) {
+            enqueueCancelReject(ctx, RejectReason.UNKNOWN);
+            return;
+        } catch (final Exception e) {
+            enqueueCancelReject(ctx, RejectReason.UNKNOWN);
+            throw e;
+        }
+        if (!accepted) {
             enqueueCancelReject(ctx, RejectReason.EXCHANGE_REJECTED);
         } else {
             this.activeOrders.remove(clientOidCounter);
             returnToPool(ctx);
+        }
+    }
+
+    /**
+     * A modify that fails without the venue's answer is refused: the OMS keeps the order's last known
+     * terms, and the venue's own events correct them if the amend did land.
+     */
+    private void routeModifyOrder() throws Exception {
+        try {
+            handleModifyOrder();
+        } catch (final Exception e) {
+            final OrderContext ctx = this.activeOrders.get(this.modifyOrder.getClientOidCounter());
+            if (ctx != null) {
+                enqueueCancelReject(ctx, RejectReason.UNKNOWN);
+            }
+            if (!(e instanceof IOException)) {
+                throw e;
+            }
         }
     }
 
@@ -276,6 +336,9 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
     private int claimWriterReport() {
         int idx;
         while ((idx = this.writerReportQueue.tryClaim()) < 0) {
+            if (Thread.currentThread().isInterrupted()) {
+                throw new IllegalStateException("Interrupted waiting for room in the writer report queue");
+            }
             Thread.onSpinWait();
         }
         return idx;

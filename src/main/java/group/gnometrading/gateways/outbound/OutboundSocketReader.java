@@ -5,6 +5,7 @@ import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
 import group.gnometrading.concurrent.GnomeAgent;
 import group.gnometrading.concurrent.ThreadProfile;
 import group.gnometrading.gateways.GatewayConfig;
+import group.gnometrading.gateways.ReaderPauseControl;
 import group.gnometrading.gateways.SocketClosedException;
 import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.Logger;
@@ -41,8 +42,7 @@ public abstract class OutboundSocketReader implements GnomeAgent {
 
     protected final OrderExecutionReport execReport;
 
-    public volatile boolean pause;
-    public volatile boolean isPaused;
+    public final ReaderPauseControl pauseControl = new ReaderPauseControl();
     public volatile long recvTimestamp;
 
     protected OutboundSocketReader(
@@ -68,8 +68,6 @@ public abstract class OutboundSocketReader implements GnomeAgent {
         this.contextPoolHead = OrderContext.MAX_IN_FLIGHT_ORDERS;
         this.execReport = new OrderExecutionReport();
         this.execReport.wrap(this.execReport.buffer);
-        this.pause = true;
-        this.isPaused = false;
         this.recvTimestamp = 0;
     }
 
@@ -91,50 +89,25 @@ public abstract class OutboundSocketReader implements GnomeAgent {
      */
     public void configureSocket(final GatewayConfig config) throws IOException {}
 
-    /** Returns once the reader thread has stopped and will not touch the socket until resumed. */
-    private void pauseReader() {
-        this.pause = true;
-        while (!this.isPaused) {
-            Thread.yield();
-        }
-    }
-
-    /**
-     * Returns once the reader thread is running again, so that {@link #isPaused} is never left stale for a later
-     * pause to mistake as an acknowledgement.
-     */
-    private void resumeReader() {
-        this.pause = false;
-        while (this.isPaused) {
-            Thread.yield();
-        }
-    }
-
     public final void connect() throws IOException {
-        pauseReader();
+        this.pauseControl.pause();
         attachSocket();
         // Silence is measured from the new connection: left at the old connection's last message, the supervisor
         // would still see the silence that caused this reconnect and reconnect again before anything arrives.
         this.recvTimestamp = clock.nanoTime();
-        resumeReader();
+        this.pauseControl.resume();
     }
 
     public final void disconnect() throws Exception {
         logger.log(LogMessage.SOCKET_DISCONNECTING);
-        pauseReader();
+        this.pauseControl.pause();
         disconnectSocket();
         logger.log(LogMessage.SOCKET_DISCONNECTED);
     }
 
     @Override
     public final int doWork() throws Exception {
-        if (this.pause) {
-            this.isPaused = true;
-            while (this.pause) {
-                Thread.yield();
-            }
-            this.isPaused = false;
-        }
+        this.pauseControl.awaitIfPaused();
 
         // New orders first: an order submitted and amended in one writer poll must exist here before
         // its amend notice is applied.
@@ -317,7 +290,7 @@ public abstract class OutboundSocketReader implements GnomeAgent {
     }
 
     private void onSocketClose(final Exception cause) {
-        this.pause = true;
+        this.pauseControl.pauseSelf();
         logger.log(LogMessage.SOCKET_DISCONNECTED);
         throw new SocketClosedException(cause);
     }

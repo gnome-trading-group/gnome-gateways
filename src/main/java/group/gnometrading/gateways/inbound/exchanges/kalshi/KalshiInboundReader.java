@@ -34,8 +34,8 @@ import org.agrona.concurrent.EpochNanoClock;
  *
  * <p>Connects to the Kalshi WebSocket API and subscribes to the {@code orderbook_delta} and
  * {@code trade} channels for a single market ticker. Maintains a full-depth YES and NO orderbook
- * internally (indexed by integer cent price 1–99) and extracts top-10 levels into Mbp10Schema on
- * each book update.
+ * internally (indexed by price in tenths of a cent, 1–999, the finest tick Kalshi has) and extracts
+ * top-10 levels into Mbp10Schema on each book update.
  *
  * <p>YES levels map to bids and NO levels map to asks. The subscription sets {@code use_yes_price}
  * so NO levels arrive in YES-leg pricing: a NO level at P is a YES ask at P. Kalshi's default is
@@ -61,10 +61,10 @@ import org.agrona.concurrent.EpochNanoClock;
 public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10Schema> implements Mbp10SchemaFactory {
 
     private static final int MAX_LEVEL_DEPTH = 10;
-    // Kalshi prices: integer cents 1–99. Index 0 and 100 unused.
-    private static final int PRICE_ARRAY_SIZE = 100;
-    // Converts integer cents to internal fixed-point price: cents * (PRICE_SCALING_FACTOR / 100)
-    private static final long CENTS_TO_PRICE_SCALE = Statics.PRICE_SCALING_FACTOR / 100L;
+    // Prices in tenths of a cent: tapered_deci_cent markets tick that finely near 0 and 1. Index 0 unused.
+    private static final int TICKS_PER_DOLLAR = 1000;
+    private static final int PRICE_ARRAY_SIZE = TICKS_PER_DOLLAR;
+    private static final long TICK_TO_PRICE_SCALE = Statics.PRICE_SCALING_FACTOR / TICKS_PER_DOLLAR;
     // Kalshi qty strings have 2 decimal places (cent-dollar precision). We store qty arrays
     // in cent-dollars (multiply by 100 on parse) so $0.01 orders are preserved. Divide by 100
     // when writing to the size field to keep the same schema scale as other exchanges.
@@ -247,11 +247,11 @@ public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10S
     }
 
     private void parsePair(final JsonDecoder.JsonArray pair, final long[] qtyArray) {
-        int priceCents = 0;
+        int priceTick = 0;
         long qty = 0;
         if (pair.hasNextItem()) {
             try (var priceNode = pair.nextItem()) {
-                priceCents = (int) priceNode.asString().toFixedPointLong(100);
+                priceTick = toPriceTick(priceNode.asString());
             }
         }
         if (pair.hasNextItem()) {
@@ -259,13 +259,13 @@ public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10S
                 qty = qtyNode.asString().toFixedPointLong(100);
             }
         }
-        if (priceCents > 0 && priceCents < PRICE_ARRAY_SIZE) {
-            qtyArray[priceCents] = qty;
+        if (priceTick > 0 && priceTick < PRICE_ARRAY_SIZE) {
+            qtyArray[priceTick] = qty;
         }
     }
 
     private void parseDelta(final JsonDecoder.JsonNode msgNode) {
-        int priceCents = 0;
+        int priceTick = 0;
         long delta = 0;
         boolean isYes = false;
         boolean sideParsed = false;
@@ -274,7 +274,7 @@ public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10S
             while (msg.hasNextKey()) {
                 try (var key = msg.nextKey()) {
                     if (key.getName().equals("price_dollars")) {
-                        priceCents = (int) key.asString().toFixedPointLong(100);
+                        priceTick = toPriceTick(key.asString());
                     } else if (key.getName().equals("delta_fp")) {
                         delta = key.asString().toFixedPointLong(100);
                     } else if (key.getName().equals("side")) {
@@ -288,12 +288,12 @@ public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10S
             }
         }
 
-        if (!sideParsed || priceCents <= 0 || priceCents >= PRICE_ARRAY_SIZE) {
+        if (!sideParsed || priceTick <= 0 || priceTick >= PRICE_ARRAY_SIZE) {
             return;
         }
 
         long[] qtyArray = isYes ? yesQty : noQty;
-        qtyArray[priceCents] = Math.max(0L, qtyArray[priceCents] + delta);
+        qtyArray[priceTick] = Math.max(0L, qtyArray[priceTick] + delta);
 
         refreshMbp10Book();
         emitBookUpdate();
@@ -336,12 +336,21 @@ public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10S
         offer();
     }
 
+    /**
+     * Parsed one digit finer than the finest tick, so a price off every tick is dropped (as 0) rather than truncated
+     * onto a neighbouring level.
+     */
+    private static int toPriceTick(final GnomeString dollars) {
+        final long fine = dollars.toFixedPointLong(TICKS_PER_DOLLAR * 10L);
+        return fine % 10 == 0 ? (int) (fine / 10) : 0;
+    }
+
     private void refreshMbp10Book() {
         // Bids: YES levels, descending by price (highest = best bid first)
         int bidIdx = 0;
         for (int p = PRICE_ARRAY_SIZE - 1; p >= 1 && bidIdx < MAX_LEVEL_DEPTH; p--) {
             if (yesQty[p] > 0) {
-                book.bids[bidIdx].update((long) p * CENTS_TO_PRICE_SCALE, yesQty[p] * CENT_DOLLAR_TO_SIZE, 1L);
+                book.bids[bidIdx].update((long) p * TICK_TO_PRICE_SCALE, yesQty[p] * CENT_DOLLAR_TO_SIZE, 1L);
                 bidIdx++;
             }
         }
@@ -353,7 +362,7 @@ public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10S
         int askIdx = 0;
         for (int p = 1; p < PRICE_ARRAY_SIZE && askIdx < MAX_LEVEL_DEPTH; p++) {
             if (noQty[p] > 0) {
-                book.asks[askIdx].update((long) p * CENTS_TO_PRICE_SCALE, noQty[p] * CENT_DOLLAR_TO_SIZE, 1L);
+                book.asks[askIdx].update((long) p * TICK_TO_PRICE_SCALE, noQty[p] * CENT_DOLLAR_TO_SIZE, 1L);
                 askIdx++;
             }
         }

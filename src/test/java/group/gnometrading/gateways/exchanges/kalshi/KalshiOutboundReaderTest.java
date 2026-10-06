@@ -105,7 +105,7 @@ class KalshiOutboundReaderTest {
                 new KalshiAuthSigner("test-api-key", TEST_PRIVATE_KEY),
                 0.07,
                 0.0175);
-        reader.pause = false;
+        reader.pauseControl.release();
     }
 
     @AfterEach

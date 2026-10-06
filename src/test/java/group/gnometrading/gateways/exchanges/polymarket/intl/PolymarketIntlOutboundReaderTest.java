@@ -421,7 +421,7 @@ class PolymarketIntlOutboundReaderTest {
                 "test-secret",
                 "test-passphrase",
                 marketInfo);
-        built.pause = false;
+        built.pauseControl.release();
         return built;
     }
 

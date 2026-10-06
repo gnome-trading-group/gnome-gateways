@@ -6,7 +6,6 @@ import group.gnometrading.gateways.outbound.recovery.VenueOrderQuery;
 import group.gnometrading.networking.http.HTTPClient;
 import group.gnometrading.networking.http.HTTPProtocol;
 import group.gnometrading.networking.http.HTTPResponse;
-import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
 import group.gnometrading.sm.Listing;
 import group.gnometrading.strings.GnomeString;
@@ -173,9 +172,7 @@ public final class PolymarketIntlVenueOrderQuery implements VenueOrderQuery {
     private static VenueOrder readOrder(final JsonDecoder.JsonObject order) {
         String id = "";
         String status = "";
-        Side side = Side.None;
         long price = 0;
-        long size = 0;
         long matched = 0;
         while (order.hasNextKey()) {
             try (var field = order.nextKey()) {
@@ -184,20 +181,15 @@ public final class PolymarketIntlVenueOrderQuery implements VenueOrderQuery {
                     id = field.asString().toString();
                 } else if (name.equals("status")) {
                     status = field.asString().toString();
-                } else if (name.equals("side")) {
-                    side = field.asString().toString().equals("BUY") ? Side.Bid : Side.Ask;
                 } else if (name.equals("price")) {
                     price = field.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR);
-                } else if (name.equals("original_size")) {
-                    size = field.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR);
                 } else if (name.equals("size_matched")) {
                     matched = field.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR);
                 }
             }
         }
         final long notional = ScaledMath.multiplyDivide(price, matched, Statics.SIZE_SCALING_FACTOR);
-        return new VenueOrder(
-                id, id, side, price, size, matched, notional, 0, !WORKING_STATUSES.contains(status.toUpperCase()));
+        return new VenueOrder(id, id, matched, notional, 0, !WORKING_STATUSES.contains(status.toUpperCase()));
     }
 
     private boolean listsAsCanceled(final ByteBuffer body, final String venueId) {

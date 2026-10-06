@@ -93,7 +93,7 @@ public class LighterInboundReaderTest {
         socketReader = new LighterInboundReader(
                 new NullLogger(), sequencedRingBuffer, clock, null, listing, mockClient, jsonDecoder);
         socketReader.buffer = false;
-        socketReader.pause = false;
+        socketReader.pauseControl.release();
     }
 
     @AfterEach

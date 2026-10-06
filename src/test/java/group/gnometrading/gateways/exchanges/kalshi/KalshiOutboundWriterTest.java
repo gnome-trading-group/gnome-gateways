@@ -92,10 +92,29 @@ class KalshiOutboundWriterTest {
         writer.doWork();
 
         final OrderContext registered = drainQueue(newOrderQueue).get(0);
-        // Session 4071, listing 1, the OMS's first order.
-        final String clientOrderId = SESSION_TAG + "-" + LISTING_ID + "-1";
+        // Session 4071, the OMS's first order.
+        final String clientOrderId = SESSION_TAG + "-1";
         assertEquals(clientOrderId, correlationId(registered));
         assertTrue(captureLastPostBody().contains("\"client_order_id\":\"" + clientOrderId + "\""));
+    }
+
+    @Test
+    void clientOrderIds_CarryTheWholeCounter() throws Exception {
+        mockPostSuccess(orderResponse("kalshi-order-uuid-003"));
+
+        publishTo(
+                orderBuffer,
+                Side.Bid,
+                price("0.50"),
+                qty("10.0"),
+                OrderType.LIMIT,
+                TimeInForce.GOOD_TILL_CANCELED,
+                9_040_000_000_123L);
+        writer.doWork();
+
+        assertEquals(
+                SESSION_TAG + "-9040000000123",
+                correlationId(drainQueue(newOrderQueue).get(0)));
     }
 
     @Test
@@ -112,15 +131,14 @@ class KalshiOutboundWriterTest {
         laterRun.doWork();
 
         final String laterId = correlationId(drainQueue(newOrderQueue).get(0));
-        assertEquals("4072-" + LISTING_ID + "-1", laterId, "same listing and counter, new session");
+        assertEquals("4072-1", laterId, "same counter, new session");
     }
 
     @Test
     void lostResponse_DuplicateRefusal_FoundInOpenOrders_IsAcceptedWithVenueId() throws Exception {
         mockPostStatuses(0, 409);
         mockGetOrders("{\"orders\":[{\"order_id\":\"someone-else\",\"client_order_id\":\"other\"},"
-                + "{\"order_id\":\"kalshi-order-found\",\"client_order_id\":\"" + SESSION_TAG + "-" + LISTING_ID
-                + "-1\"}],"
+                + "{\"order_id\":\"kalshi-order-found\",\"client_order_id\":\"" + SESSION_TAG + "-1\"}],"
                 + "\"cursor\":\"\"}");
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
@@ -694,6 +712,17 @@ class KalshiOutboundWriterTest {
             final long sizeVal,
             final OrderType orderType,
             final TimeInForce tif) {
+        publishTo(buf, side, priceVal, sizeVal, orderType, tif, 1L);
+    }
+
+    private static void publishTo(
+            final SequencedRingBuffer<Order> buf,
+            final Side side,
+            final long priceVal,
+            final long sizeVal,
+            final OrderType orderType,
+            final TimeInForce tif,
+            final long clientOidCounter) {
         final Order order = buf.claim();
         order.encoder.exchangeId(2);
         order.encoder.securityId(3L);
@@ -703,7 +732,7 @@ class KalshiOutboundWriterTest {
         order.encoder.orderType(orderType);
         order.encoder.timeInForce(tif);
         order.encoder.flags().clear();
-        order.encodeClientOid(1L, 1);
+        order.encodeClientOid(clientOidCounter, 1);
         buf.publish();
     }
 

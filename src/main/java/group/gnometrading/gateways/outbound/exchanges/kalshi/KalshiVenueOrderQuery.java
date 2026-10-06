@@ -6,7 +6,6 @@ import group.gnometrading.gateways.outbound.recovery.VenueOrderQuery;
 import group.gnometrading.networking.http.HTTPClient;
 import group.gnometrading.networking.http.HTTPProtocol;
 import group.gnometrading.networking.http.HTTPResponse;
-import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
 import group.gnometrading.sm.Listing;
 import group.gnometrading.strings.GnomeString;
@@ -21,8 +20,7 @@ import org.agrona.concurrent.EpochClock;
  * Kalshi's side of startup recovery. Kalshi files a listing's YES and NO sides under one ticker, and can't look an
  * order up by our client order id, so both listing and lookup go through the ticker's order list.
  *
- * <p>Orders are read with the same fields the reader takes from Kalshi's order updates. Side and price are left
- * unknown: recovery identifies Kalshi orders by their client order id, never by their terms.
+ * <p>Orders are read with the same fields the reader takes from Kalshi's order updates.
  */
 public final class KalshiVenueOrderQuery implements VenueOrderQuery {
 
@@ -159,7 +157,6 @@ public final class KalshiVenueOrderQuery implements VenueOrderQuery {
         String venueId = "";
         String status = "";
         long filled;
-        long remaining;
         long cost;
         long fees;
 
@@ -178,8 +175,6 @@ public final class KalshiVenueOrderQuery implements VenueOrderQuery {
         private void readAmount(final GnomeString name, final JsonDecoder.JsonNode field) {
             if (name.equals("fill_count_fp")) {
                 filled = field.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR);
-            } else if (name.equals("remaining_count_fp")) {
-                remaining = field.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR);
             } else if (name.equals("taker_fill_cost_dollars") || name.equals("maker_fill_cost_dollars")) {
                 cost += field.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR);
             } else if (name.equals("taker_fees_dollars") || name.equals("maker_fees_dollars")) {
@@ -188,16 +183,7 @@ public final class KalshiVenueOrderQuery implements VenueOrderQuery {
         }
 
         VenueOrder toVenueOrder() {
-            return new VenueOrder(
-                    clientOrderId,
-                    venueId,
-                    Side.None,
-                    0,
-                    filled + remaining,
-                    filled,
-                    cost,
-                    fees,
-                    !status.equals("resting"));
+            return new VenueOrder(clientOrderId, venueId, filled, cost, fees, !status.equals("resting"));
         }
     }
 

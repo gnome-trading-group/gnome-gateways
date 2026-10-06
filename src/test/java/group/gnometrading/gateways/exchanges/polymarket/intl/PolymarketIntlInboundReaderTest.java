@@ -65,7 +65,7 @@ class PolymarketIntlInboundReaderTest {
         reader = new PolymarketIntlInboundReader(
                 new NullLogger(), ringBuffer, () -> 9_000_000_000L, null, listing, client, new JsonDecoder());
         reader.buffer = false;
-        reader.pause = false;
+        reader.pauseControl.release();
     }
 
     @AfterEach
