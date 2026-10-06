@@ -15,6 +15,10 @@ import java.time.Duration;
  * @param tcpKeepAliveIdle silence before the kernel starts probing the peer
  * @param tcpKeepAliveInterval time between kernel probes
  * @param tcpKeepAliveProbes unanswered probes before the kernel declares the peer dead
+ * @param spinReads whether inbound readers poll a non-blocking socket instead of sleeping in a blocking read. Only
+ *     worth it on a core the reader has to itself: waking from a blocking read cost ~130us per message on c7i
+ *     against single-digit microseconds spinning, but a spinning reader on a shared core starves its neighbours.
+ *     The read timeout then no longer applies; a silent connection is still caught by {@code maxSilentInterval}.
  */
 public record GatewayConfig(
         Duration reconnectInterval,
@@ -29,7 +33,8 @@ public record GatewayConfig(
         Duration readTimeout,
         Duration tcpKeepAliveIdle,
         Duration tcpKeepAliveInterval,
-        int tcpKeepAliveProbes) {
+        int tcpKeepAliveProbes,
+        boolean spinReads) {
 
     public GatewayConfig {
         // On a quiet feed the keep-alive reply is the only traffic, so replies must land well inside the silence
@@ -51,6 +56,25 @@ public record GatewayConfig(
             throw new IllegalArgumentException(
                     "TCP keep-alive idle, interval (whole seconds) and probes must be positive");
         }
+    }
+
+    /** A copy that spins or blocks on reads; set by whoever knows the reader's core placement, not per exchange. */
+    public GatewayConfig withSpinReads(final boolean spin) {
+        return new GatewayConfig(
+                reconnectInterval,
+                keepAliveInterval,
+                sanityCheckInterval,
+                maxReconnectAttempts,
+                maxSilentInterval,
+                initialBackoff,
+                connectTimeout,
+                socketConnectTimeout,
+                handshakeTimeout,
+                readTimeout,
+                tcpKeepAliveIdle,
+                tcpKeepAliveInterval,
+                tcpKeepAliveProbes,
+                spin);
     }
 
     /** Applies these socket settings to a WebSocket client, which keeps them for every connection it makes. */
@@ -176,7 +200,8 @@ public record GatewayConfig(
                     this.readTimeout,
                     this.tcpKeepAliveIdle,
                     this.tcpKeepAliveInterval,
-                    this.tcpKeepAliveProbes);
+                    this.tcpKeepAliveProbes,
+                    false);
         }
     }
 }

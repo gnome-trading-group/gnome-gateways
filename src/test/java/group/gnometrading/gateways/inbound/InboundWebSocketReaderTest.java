@@ -171,6 +171,14 @@ class InboundWebSocketReaderTest {
     }
 
     @Test
+    void configureSocket_SpinReadsConfiguresNonBlocking() throws Exception {
+        reader.configureSocket(new GatewayConfig.Builder().build().withSpinReads(true));
+
+        verify(client).configureBlocking(false);
+        verify(client, never()).configureBlocking(true);
+    }
+
+    @Test
     void attachSocket_CallsBeforeConnectThenSubscribe() throws Exception {
         reader.testAttachSocket();
 

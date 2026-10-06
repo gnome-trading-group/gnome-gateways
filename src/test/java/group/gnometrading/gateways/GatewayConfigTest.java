@@ -14,6 +14,14 @@ class GatewayConfigTest {
     }
 
     @Test
+    void readsBlockUnlessSpinningIsAskedFor() {
+        assertFalse(new GatewayConfig.Builder().build().spinReads());
+        final GatewayConfig spinning = new GatewayConfig.Builder().build().withSpinReads(true);
+        assertTrue(spinning.spinReads());
+        assertEquals(new GatewayConfig.Builder().build(), spinning.withSpinReads(false));
+    }
+
+    @Test
     void keepAliveAsLongAsTheSilenceWindowIsRejected() {
         final GatewayConfig.Builder builder = new GatewayConfig.Builder()
                 .withKeepAliveInterval(Duration.ofSeconds(30))

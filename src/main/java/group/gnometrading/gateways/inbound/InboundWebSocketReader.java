@@ -56,7 +56,7 @@ public abstract class InboundWebSocketReader<T extends Schema> extends InboundSo
     /** The client keeps these settings and applies them to every connection it makes. */
     @Override
     public final void configureSocket(final GatewayConfig config) throws IOException {
-        config.configure(this.socketClient, true);
+        config.configure(this.socketClient, !config.spinReads());
     }
 
     @Override
