@@ -102,7 +102,7 @@ class PolymarketIntlOutboundReaderTest {
         assertEquals(OrderStatus.NEW, report.decoder.orderStatus());
         assertEquals(0, report.decoder.cumulativeQty());
         assertEquals(ORIG_QTY, report.decoder.leavesQty());
-        assertEquals(1L, report.decoder.orderId());
+        assertEquals(1L, report.getClientOidCounter());
         assertEquals(FIXED_NANO, report.decoder.timestampRecv());
     }
 
@@ -196,9 +196,9 @@ class PolymarketIntlOutboundReaderTest {
 
         final OrderExecutionReport first = awaitReport(2);
         final OrderExecutionReport second = awaitReport(3);
-        assertEquals(1L, first.decoder.orderId());
+        assertEquals(1L, first.getClientOidCounter());
         assertEquals(ExecType.FILL, first.decoder.execType());
-        assertEquals(2L, second.decoder.orderId());
+        assertEquals(2L, second.getClientOidCounter());
         assertEquals(ExecType.PARTIAL_FILL, second.decoder.execType());
         assertEquals(qty("3"), second.decoder.filledQty());
         assertEquals(List.of(1L), drainReleased());
@@ -369,8 +369,8 @@ class PolymarketIntlOutboundReaderTest {
 
         process("[" + orderEvent("PLACEMENT", "LIVE", ORDER_A) + "," + orderEvent("PLACEMENT", "LIVE", ORDER_B) + "]");
 
-        assertEquals(1L, awaitReport(0).decoder.orderId());
-        assertEquals(2L, awaitReport(1).decoder.orderId());
+        assertEquals(1L, awaitReport(0).getClientOidCounter());
+        assertEquals(2L, awaitReport(1).getClientOidCounter());
     }
 
     @Test
@@ -388,7 +388,7 @@ class PolymarketIntlOutboundReaderTest {
         ctx.execType = ExecType.REJECT;
         ctx.orderStatus = OrderStatus.REJECTED;
         ctx.rejectReason = RejectReason.EXCHANGE_REJECTED;
-        ctx.orderId = 5L;
+        ctx.clientOidCounter = 5L;
         writerReportQueue.commit(idx);
 
         process("PONG");
@@ -403,8 +403,8 @@ class PolymarketIntlOutboundReaderTest {
     private PolymarketIntlOutboundReader buildReader(final PolymarketIntlMarketInfo marketInfo) {
         final Listing listing = new Listing(
                 7,
-                new Exchange(2, "Polymarket", "global", SchemaType.MBP_10),
-                new Security(3, "TEST", 3),
+                new Exchange(2, "POLYMARKET", "Polymarket", "global", SchemaType.MBP_10),
+                new Security(3, "TEST", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
                 "condition-1:token-yes",
                 "TEST-YES");
         final PolymarketIntlOutboundReader built = new PolymarketIntlOutboundReader(
@@ -430,7 +430,7 @@ class PolymarketIntlOutboundReaderTest {
         final int seen = captured.size();
         enqueueOrder(SENTINEL, SENTINEL_ORDER_ID);
         process(orderEvent("PLACEMENT", "LIVE", SENTINEL));
-        assertEquals(SENTINEL_ORDER_ID, awaitReport(seen).decoder.orderId());
+        assertEquals(SENTINEL_ORDER_ID, awaitReport(seen).getClientOidCounter());
         assertEquals(seen + 1, captured.size());
     }
 
@@ -449,12 +449,11 @@ class PolymarketIntlOutboundReaderTest {
         return captured.get(index);
     }
 
-    private void enqueueOrder(final String orderHash, final long orderId) {
+    private void enqueueOrder(final String orderHash, final long clientOidCounter) {
         final int idx = newOrderQueue.tryClaim();
         final OrderContext ctx = newOrderQueue.indexAt(idx);
         ctx.reset();
-        ctx.orderId = orderId;
-        ctx.clientOidCounter = orderId;
+        ctx.clientOidCounter = clientOidCounter;
         ctx.exchangeId = 2;
         ctx.securityId = 3L;
         ctx.originalQty = ORIG_QTY;

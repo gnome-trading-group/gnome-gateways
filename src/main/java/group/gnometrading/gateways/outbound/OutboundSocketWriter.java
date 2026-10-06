@@ -30,7 +30,6 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
     private final Long2ObjectHashMap<OrderContext> activeOrders;
     private final OrderContext[] writerPool;
     private int writerPoolHead;
-    private long nextOrderId = 1;
 
     private final ManyToOneRingBuffer<OrderContext> releasedOrderQueue;
     // The queue read doesn't report how many entries it consumed; a back-off idle strategy needs the count.
@@ -105,11 +104,11 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
 
     private void handleSubmitOrder() throws Exception {
         if (this.writerPoolHead <= 0) {
-            throw new RuntimeException("Writer order context pool exhausted");
+            rejectUnpooledSubmit();
+            return;
         }
         final OrderContext ctx = this.writerPool[--this.writerPoolHead];
         ctx.reset();
-        ctx.orderId = this.nextOrderId++;
         ctx.clientOidCounter = this.order.getClientOidCounter();
         ctx.clientOidStrategyId = this.order.getClientOidStrategyId();
         ctx.exchangeId = this.order.decoder.exchangeId();
@@ -120,14 +119,18 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         ctx.flags = (short) this.order.decoder.flags().getRaw();
 
         if (!prepareOrder(ctx)) {
-            rejectSubmit(ctx);
+            rejectSubmit(ctx, RejectReason.GATEWAY_REJECTED);
             return;
         }
 
         // Registered with the reader before anything is sent, so venue events that beat the submit's
-        // response, or arrive when that response is lost, still find the order.
+        // response, or arrive when that response is lost, still find the order. If the reader can't take
+        // it, nothing is sent: an order the reader doesn't know would fill unseen.
+        if (!tryEnqueueNewOrder(ctx)) {
+            rejectSubmit(ctx, RejectReason.GATEWAY_REJECTED);
+            return;
+        }
         this.activeOrders.put(ctx.clientOidCounter, ctx);
-        enqueueNewOrder(ctx);
 
         SubmitResult result = send(ctx);
         if (result == SubmitResult.UNKNOWN) {
@@ -135,7 +138,7 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         }
         if (result == SubmitResult.REJECTED) {
             this.activeOrders.remove(ctx.clientOidCounter);
-            rejectSubmit(ctx);
+            rejectSubmit(ctx, RejectReason.EXCHANGE_REJECTED);
         }
         // Still UNKNOWN: the order may be live, so it stays registered and the venue's events settle it.
     }
@@ -178,10 +181,10 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         }
     }
 
-    private void rejectSubmit(final OrderContext ctx) {
+    private void rejectSubmit(final OrderContext ctx, final RejectReason reason) {
         ctx.execType = ExecType.REJECT;
         ctx.orderStatus = OrderStatus.REJECTED;
-        ctx.rejectReason = RejectReason.EXCHANGE_REJECTED;
+        ctx.rejectReason = reason;
         enqueueWriterReport(ctx);
         returnToPool(ctx);
     }
@@ -193,7 +196,7 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
             return;
         }
         if (!cancelOrder(ctx)) {
-            enqueueCancelReject(ctx);
+            enqueueCancelReject(ctx, RejectReason.EXCHANGE_REJECTED);
         } else {
             this.activeOrders.remove(clientOidCounter);
             returnToPool(ctx);
@@ -208,7 +211,7 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
     protected void handleModifyOrder() throws Exception {
         final OrderContext ctx = this.activeOrders.get(this.modifyOrder.getClientOidCounter());
         if (ctx != null) {
-            enqueueCancelReject(ctx);
+            enqueueCancelReject(ctx, RejectReason.GATEWAY_REJECTED);
         }
     }
 
@@ -249,21 +252,50 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
      */
     protected abstract boolean cancelOrder(OrderContext ctx) throws Exception;
 
-    protected final void enqueueNewOrder(final OrderContext ctx) {
+    private boolean tryEnqueueNewOrder(final OrderContext ctx) {
         final int idx = this.newOrderQueue.tryClaim();
         if (idx < 0) {
-            throw new RuntimeException("New order queue overflow");
+            return false;
         }
         this.newOrderQueue.indexAt(idx).copyFrom(ctx);
         this.newOrderQueue.commit(idx);
+        return true;
     }
 
-    protected final void enqueueWriterReport(final OrderContext ctx) {
-        final int idx = this.writerReportQueue.tryClaim();
-        if (idx < 0) {
-            throw new RuntimeException("Writer report queue overflow");
-        }
+    private void enqueueWriterReport(final OrderContext ctx) {
+        final int idx = claimWriterReport();
         this.writerReportQueue.indexAt(idx).copyFrom(ctx);
+        this.writerReportQueue.commit(idx);
+    }
+
+    /**
+     * A report must reach the OMS, or it waits on the order forever. The reader drains this queue on
+     * every pass, so it stays full only while the reader is stalled; waiting is the backpressure, and
+     * a dead reader fails the gateway on its own.
+     */
+    private int claimWriterReport() {
+        int idx;
+        while ((idx = this.writerReportQueue.tryClaim()) < 0) {
+            Thread.onSpinWait();
+        }
+        return idx;
+    }
+
+    /**
+     * Refuses a submit when every pool slot is held by a working order. Written straight into the queue,
+     * as there is no context to build it in.
+     */
+    private void rejectUnpooledSubmit() {
+        final int idx = claimWriterReport();
+        final OrderContext reject = this.writerReportQueue.indexAt(idx);
+        reject.reset();
+        reject.clientOidCounter = this.order.getClientOidCounter();
+        reject.clientOidStrategyId = this.order.getClientOidStrategyId();
+        reject.exchangeId = this.order.decoder.exchangeId();
+        reject.securityId = this.order.decoder.securityId();
+        reject.execType = ExecType.REJECT;
+        reject.orderStatus = OrderStatus.REJECTED;
+        reject.rejectReason = RejectReason.GATEWAY_REJECTED;
         this.writerReportQueue.commit(idx);
     }
 
@@ -271,39 +303,34 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
      * Reports that a cancel or modify of {@code existing} was refused. Written straight into the queue
      * so it needs no pool slot, which matters when every slot is held by a working order.
      */
-    protected final void enqueueCancelReject(final OrderContext existing) {
-        final int idx = this.writerReportQueue.tryClaim();
-        if (idx < 0) {
-            throw new RuntimeException("Writer report queue overflow");
-        }
+    protected final void enqueueCancelReject(final OrderContext existing, final RejectReason reason) {
+        final int idx = claimWriterReport();
         final OrderContext reject = this.writerReportQueue.indexAt(idx);
         reject.reset();
-        reject.orderId = existing.orderId;
+        reject.correlationIdLength = existing.correlationIdLength;
+        System.arraycopy(existing.correlationIdBytes, 0, reject.correlationIdBytes, 0, existing.correlationIdLength);
         reject.clientOidCounter = existing.clientOidCounter;
         reject.clientOidStrategyId = existing.clientOidStrategyId;
         reject.exchangeId = existing.exchangeId;
         reject.securityId = existing.securityId;
         reject.execType = ExecType.CANCEL_REJECT;
         reject.orderStatus = OrderStatus.CANCELED;
-        reject.rejectReason = RejectReason.EXCHANGE_REJECTED;
+        reject.rejectReason = reason;
         this.writerReportQueue.commit(idx);
     }
 
     /**
-     * Builds a notice that the venue accepted an amend, for the reader to apply.
+     * Tells the reader the venue accepted an amend.
      *
      * <p>The writer sees the amend's result but not the order's fills, which arrive on the reader's
      * stream. Only the reader can therefore produce a correct acknowledgement, so the writer hands it
      * the venue's numbers instead of reporting directly. Pass {@link OrderContext#QTY_ABSENT} for any
-     * quantity the venue did not report. The returned context must be passed to
-     * {@link #enqueueWriterReport} and then {@link #returnToPool}.
+     * quantity the venue did not report. Written straight into the queue, so it needs no pool slot.
      */
-    protected final OrderContext buildAmendAccepted(
+    protected final void enqueueAmendAccepted(
             final OrderContext existing, final long newSize, final long venueFillCount, final long venueRemaining) {
-        if (this.writerPoolHead <= 0) {
-            throw new RuntimeException("Writer order context pool exhausted");
-        }
-        final OrderContext notice = this.writerPool[--this.writerPoolHead];
+        final int idx = claimWriterReport();
+        final OrderContext notice = this.writerReportQueue.indexAt(idx);
         notice.reset();
         notice.amendAccepted = true;
         notice.clientOidCounter = existing.clientOidCounter;
@@ -313,10 +340,10 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         notice.leavesQty = venueRemaining;
         notice.correlationIdLength = existing.correlationIdLength;
         System.arraycopy(existing.correlationIdBytes, 0, notice.correlationIdBytes, 0, existing.correlationIdLength);
-        return notice;
+        this.writerReportQueue.commit(idx);
     }
 
-    protected final void returnToPool(final OrderContext ctx) {
+    private void returnToPool(final OrderContext ctx) {
         ctx.reset();
         this.writerPool[this.writerPoolHead++] = ctx;
     }

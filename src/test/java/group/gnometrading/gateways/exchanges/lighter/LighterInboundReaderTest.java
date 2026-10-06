@@ -70,8 +70,22 @@ public class LighterInboundReaderTest {
         // Note: Listing constructor is (securityId, exchangeId, securityIndex, exchangeSecurityId, symbol)
         Listing listing = new Listing(
                 0, // listingId
-                new Exchange(1, "test-exchange", "test-region", SchemaType.MBP_10), // exchangeId
-                new Security(1, "test-security", 1), // securityId
+                new Exchange(1, "TEST-EXCHANGE", "test-exchange", "test-region", SchemaType.MBP_10), // exchangeId
+                new Security(
+                        1,
+                        "test-security",
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        false,
+                        false,
+                        0L,
+                        0L,
+                        true,
+                        0), // securityId
                 "0", // exchangeSecurityId
                 "TEST" // symbol
                 );

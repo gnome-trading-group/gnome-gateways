@@ -29,8 +29,8 @@ public class HyperliquidIntegrationTest {
     public static void main(String[] args) throws Exception {
         Listing listing = new Listing(
                 0,
-                new Exchange(1, "hyperliquid", "global", SchemaType.MBP_10),
-                new Security(1, "ETH", 1),
+                new Exchange(1, "HYPERLIQUID", "hyperliquid", "global", SchemaType.MBP_10),
+                new Security(1, "ETH", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
                 "ETH",
                 "ETH");
 

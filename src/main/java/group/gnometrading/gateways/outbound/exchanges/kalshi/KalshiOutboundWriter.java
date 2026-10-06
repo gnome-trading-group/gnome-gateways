@@ -9,6 +9,7 @@ import group.gnometrading.networking.http.HTTPClient;
 import group.gnometrading.networking.http.HTTPProtocol;
 import group.gnometrading.networking.http.HTTPResponse;
 import group.gnometrading.schemas.OrderType;
+import group.gnometrading.schemas.RejectReason;
 import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
 import group.gnometrading.schemas.TimeInForce;
@@ -59,7 +60,7 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
     private final JsonDecoder jsonDecoder = new JsonDecoder();
     private int jsonBodyLength;
 
-    private final byte[] sessionPrefix;
+    private final byte[] clientOrderIdPrefix;
     private long preparedAtMillis;
     private final byte[] lookupOrderId = new byte[OrderContext.EXCHANGE_ORDER_ID_MAX_LENGTH];
     private int lookupOrderIdLength;
@@ -76,15 +77,15 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
             final String apiHost,
             final KalshiAuthSigner authSigner,
             final EpochNanoClock clock,
-            final Listing listing) {
+            final Listing listing,
+            final String sessionTag) {
         super(orderOutboundBuffer, newOrderQueue, writerReportQueue, releasedOrderQueue);
         this.httpClient = httpClient;
         this.apiHost = apiHost;
         this.authSigner = authSigner;
         this.clock = clock;
         this.jsonEncoder.wrap(this.jsonBodyBuffer);
-        this.sessionPrefix = Long.toString(clock.nanoTime() / NANOS_PER_MILLI, Character.MAX_RADIX)
-                .getBytes(StandardCharsets.US_ASCII);
+        this.clientOrderIdPrefix = (sessionTag + "-" + listing.listingId() + "-").getBytes(StandardCharsets.US_ASCII);
 
         final String exchangeSecurityId = listing.exchangeSecurityId();
         final int colonIdx = exchangeSecurityId.indexOf(':');
@@ -222,15 +223,15 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
     }
 
     /**
-     * {@code {sessionPrefix}-{strategyId}-{counter}}. The OMS's counter restarts with the process, and
-     * Kalshi deduplicates on this id, so the process's start time keeps ids from one run unique.
+     * {@code {sessionTag}-{listingId}-{counter}}. The OMS's counter restarts with each session, and Kalshi
+     * deduplicates on this id, so the session tag keeps ids unique across sessions. Every order the
+     * account holds then names the session and listing that placed it, which a later session's startup
+     * reads to tell its own leftovers from other strategies' orders on the same credentials. The listing
+     * also tells apart the YES and NO listings, which share a ticker.
      */
     private void writeClientOrderId(final OrderContext ctx) {
         final ByteBuffer out = ByteBuffer.wrap(ctx.correlationIdBytes);
-        out.put(this.sessionPrefix);
-        out.put((byte) '-');
-        ByteBufferUtils.putLongAscii(out, ctx.clientOidStrategyId);
-        out.put((byte) '-');
+        out.put(this.clientOrderIdPrefix);
         ByteBufferUtils.putLongAscii(out, ctx.clientOidCounter);
         ctx.correlationIdLength = out.position();
     }
@@ -312,15 +313,13 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
             // Kalshi acknowledges an amend only in this response body, and only the reader knows the
             // order's fills, so hand it the venue's numbers to build the acknowledgement from.
             ctx.originalQty = this.modifyOrder.decoder.size();
-            final OrderContext notice = buildAmendAccepted(
+            enqueueAmendAccepted(
                     ctx,
                     ctx.originalQty,
                     parseFixedPointField(response, FILL_COUNT_MARKER),
                     parseFixedPointField(response, REMAINING_COUNT_MARKER));
-            enqueueWriterReport(notice);
-            returnToPool(notice);
         } else {
-            enqueueCancelReject(ctx);
+            enqueueCancelReject(ctx, RejectReason.EXCHANGE_REJECTED);
         }
     }
 

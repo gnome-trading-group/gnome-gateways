@@ -83,8 +83,8 @@ class PolymarketUsInboundReaderTest {
         // ":short" listings share the long-priced book; the suffix is stripped before subscribing.
         final Listing listing = new Listing(
                 1,
-                new Exchange(6, "POLYMARKET_US", "us-east-1", SchemaType.MBP_10),
-                new Security(3, "TEST", 3),
+                new Exchange(6, "POLYMARKET_US", "POLYMARKET_US", "us-east-1", SchemaType.MBP_10),
+                new Security(3, "TEST", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
                 SLUG + ":short",
                 "PM_US-TEST-SHORT");
         reader = new PolymarketUsInboundReader(

@@ -93,8 +93,8 @@ public class BinanceInboundReaderTest {
 
         Listing listing = new Listing(
                 0,
-                new Exchange(1, "binance", "us-east-1", SchemaType.MBP_10),
-                new Security(1, "BTCUSDT", 1),
+                new Exchange(1, "BINANCE", "binance", "us-east-1", SchemaType.MBP_10),
+                new Security(1, "BTCUSDT", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
                 "1",
                 "BTCUSDT");
 

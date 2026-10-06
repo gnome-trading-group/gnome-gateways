@@ -29,7 +29,11 @@ import org.junit.jupiter.api.Test;
 class InboundWebSocketReaderTest {
 
     private static final Listing LISTING = new Listing(
-            1, new Exchange(2, "test", "global", SchemaType.MBP_10), new Security(3, "TEST", 3), "test-id", "TEST");
+            1,
+            new Exchange(2, "TEST", "test", "global", SchemaType.MBP_10),
+            new Security(3, "TEST", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
+            "test-id",
+            "TEST");
 
     private WebSocketClient client;
     private WebSocketResponse response;

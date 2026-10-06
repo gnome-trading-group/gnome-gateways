@@ -45,7 +45,8 @@ class KalshiOutboundWriterTest {
     private static final String MARKET_TICKER = "KALSHI-MARKET";
     private static final String API_HOST = "external-api.kalshi.com";
     private static final long FIXED_NANO = 1_700_000_000_000_000_000L;
-    private static final String SESSION_PREFIX = Long.toString(FIXED_NANO / 1_000_000L, Character.MAX_RADIX);
+    private static final String SESSION_TAG = "4071";
+    private static final long LISTING_ID = 1;
     private static final String ORDER_PATH = "/trade-api/v2/portfolio/events/orders";
 
     private static final PrivateKey TEST_PRIVATE_KEY;
@@ -91,34 +92,35 @@ class KalshiOutboundWriterTest {
         writer.doWork();
 
         final OrderContext registered = drainQueue(newOrderQueue).get(0);
-        final String clientOrderId = SESSION_PREFIX + "-1-1";
+        // Session 4071, listing 1, the OMS's first order.
+        final String clientOrderId = SESSION_TAG + "-" + LISTING_ID + "-1";
         assertEquals(clientOrderId, correlationId(registered));
         assertTrue(captureLastPostBody().contains("\"client_order_id\":\"" + clientOrderId + "\""));
     }
 
     @Test
-    void clientOrderIds_DifferAcrossProcessRestarts() throws Exception {
+    void clientOrderIds_DifferAcrossSessions() throws Exception {
         final SequencedRingBuffer<Order> laterBuffer = new SequencedRingBuffer<>(Order::new, new GlobalSequence());
         final KalshiOutboundWriter laterRun = makeWriter(
                 MARKET_TICKER + ":yes",
                 laterBuffer,
                 new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64),
-                FIXED_NANO + 60_000_000_000L);
+                "4072");
         mockPostSuccess(orderResponse("kalshi-order-uuid-002"));
 
         publishTo(laterBuffer, Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         laterRun.doWork();
 
         final String laterId = correlationId(drainQueue(newOrderQueue).get(0));
-        assertTrue(laterId.endsWith("-1-1"));
-        assertTrue(!laterId.equals(SESSION_PREFIX + "-1-1"), "same strategy and counter, new process");
+        assertEquals("4072-" + LISTING_ID + "-1", laterId, "same listing and counter, new session");
     }
 
     @Test
     void lostResponse_DuplicateRefusal_FoundInOpenOrders_IsAcceptedWithVenueId() throws Exception {
         mockPostStatuses(0, 409);
         mockGetOrders("{\"orders\":[{\"order_id\":\"someone-else\",\"client_order_id\":\"other\"},"
-                + "{\"order_id\":\"kalshi-order-found\",\"client_order_id\":\"" + SESSION_PREFIX + "-1-1\"}],"
+                + "{\"order_id\":\"kalshi-order-found\",\"client_order_id\":\"" + SESSION_TAG + "-" + LISTING_ID
+                + "-1\"}],"
                 + "\"cursor\":\"\"}");
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
@@ -529,20 +531,20 @@ class KalshiOutboundWriterTest {
             final SequencedRingBuffer<Order> buf,
             final ManyToOneRingBuffer<OrderContext> releasedOrderQueue)
             throws Exception {
-        return makeWriter(exchangeSecurityId, buf, releasedOrderQueue, FIXED_NANO);
+        return makeWriter(exchangeSecurityId, buf, releasedOrderQueue, SESSION_TAG);
     }
 
     private KalshiOutboundWriter makeWriter(
             final String exchangeSecurityId,
             final SequencedRingBuffer<Order> buf,
             final ManyToOneRingBuffer<OrderContext> releasedOrderQueue,
-            final long startNanos)
+            final String sessionTag)
             throws Exception {
         final KalshiAuthSigner signer = new KalshiAuthSigner("test-api-key", TEST_PRIVATE_KEY);
         final Listing listing = new Listing(
-                1,
-                new Exchange(2, "Kalshi", "global", SchemaType.MBP_10),
-                new Security(3, "TEST", 3),
+                (int) LISTING_ID,
+                new Exchange(2, "KALSHI", "Kalshi", "global", SchemaType.MBP_10),
+                new Security(3, "TEST", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
                 exchangeSecurityId,
                 "KALSHI-TEST");
         return new KalshiOutboundWriter(
@@ -553,8 +555,9 @@ class KalshiOutboundWriterTest {
                 httpClient,
                 API_HOST,
                 signer,
-                () -> startNanos,
-                listing);
+                () -> FIXED_NANO,
+                listing,
+                sessionTag);
     }
 
     private void mockPostSuccess(final ByteBuffer body) throws Exception {

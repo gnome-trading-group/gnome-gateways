@@ -25,7 +25,6 @@ public final class OrderContext {
     /** Marks a quantity the venue did not report. */
     public static final long QTY_ABSENT = -1L;
 
-    public long orderId;
     public long clientOidCounter;
     public int clientOidStrategyId;
     public int exchangeId;
@@ -51,12 +50,12 @@ public final class OrderContext {
     public final byte[] exchangeOrderIdBytes = new byte[EXCHANGE_ORDER_ID_MAX_LENGTH];
     public int exchangeOrderIdLength;
     // An id we choose before sending the order, which the venue echoes on every event for it, so the
-    // reader can match events even if the submit's response never arrives.
+    // reader can match events even if the submit's response never arrives. It is also the id every
+    // execution report carries as exchangeOrderId: the one a later process can find the order by.
     public final byte[] correlationIdBytes = new byte[EXCHANGE_ORDER_ID_MAX_LENGTH];
     public int correlationIdLength;
 
     public void reset() {
-        this.orderId = 0;
         this.clientOidCounter = 0;
         this.clientOidStrategyId = 0;
         this.exchangeId = 0;
@@ -80,7 +79,6 @@ public final class OrderContext {
     }
 
     public void copyFrom(final OrderContext src) {
-        this.orderId = src.orderId;
         this.clientOidCounter = src.clientOidCounter;
         this.clientOidStrategyId = src.clientOidStrategyId;
         this.exchangeId = src.exchangeId;

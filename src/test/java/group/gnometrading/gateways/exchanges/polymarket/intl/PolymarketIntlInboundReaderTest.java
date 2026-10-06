@@ -58,8 +58,8 @@ class PolymarketIntlInboundReaderTest {
 
         Listing listing = new Listing(
                 7,
-                new Exchange(2, "Polymarket", "global", SchemaType.MBP_10),
-                new Security(3, "TEST", 3),
+                new Exchange(2, "POLYMARKET", "Polymarket", "global", SchemaType.MBP_10),
+                new Security(3, "TEST", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
                 "condition-1:" + TOKEN_ID,
                 "TEST-YES");
         reader = new PolymarketIntlInboundReader(

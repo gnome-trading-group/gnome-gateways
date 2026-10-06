@@ -262,10 +262,20 @@ public abstract class OutboundSocketReader implements GnomeAgent {
     protected final void prepareExecReportHeader(final OrderContext ctx) {
         this.execReport.encoder.exchangeId(ctx.exchangeId);
         this.execReport.encoder.securityId(ctx.securityId);
-        this.execReport.encoder.orderId(ctx.orderId);
+        writeExchangeOrderId(ctx);
         this.execReport.encodeClientOid(ctx.clientOidCounter, ctx.clientOidStrategyId);
         this.execReport.encoder.flags().clear();
         this.execReport.encoder.liquidity(Liquidity.NULL_VAL);
+    }
+
+    private void writeExchangeOrderId(final OrderContext ctx) {
+        final int length = Math.min(ctx.correlationIdLength, OrderExecutionReportEncoder.exchangeOrderIdLength());
+        for (int i = 0; i < length; i++) {
+            this.execReport.encoder.exchangeOrderId(i, ctx.correlationIdBytes[i]);
+        }
+        for (int i = length; i < OrderExecutionReportEncoder.exchangeOrderIdLength(); i++) {
+            this.execReport.encoder.exchangeOrderId(i, (byte) 0);
+        }
     }
 
     protected final void publishExecReport() {

@@ -56,7 +56,6 @@ class OutboundSocketWriterTest {
         final List<OrderContext> contexts = drainQueue(newOrderQueue);
         assertEquals(1, contexts.size());
         final OrderContext ctx = contexts.get(0);
-        assertEquals(1L, ctx.orderId);
         assertEquals(7L, ctx.clientOidCounter);
         assertEquals(1, ctx.clientOidStrategyId);
         assertEquals(2, ctx.exchangeId);
@@ -65,7 +64,7 @@ class OutboundSocketWriterTest {
         assertEquals(qty("10.0"), ctx.leavesQty);
         assertEquals(0L, ctx.cumulativeFilledQty);
         assertEquals(Side.Bid, ctx.side);
-        assertEquals("hash-1", exchangeOrderId(writer.submittedContexts.get(0)));
+        assertEquals("hash-7", exchangeOrderId(writer.submittedContexts.get(0)));
     }
 
     @Test
@@ -82,26 +81,6 @@ class OutboundSocketWriterTest {
         enqueueCompletion(releasedOrderQueue, 7L);
         assertEquals(1, writer.doWork());
         assertEquals(0, writer.doWork());
-    }
-
-    @Test
-    void submitSuccess_AssignsIncrementingOrderIds() throws Exception {
-        publishOrder(
-                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
-        publishOrder(
-                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
-        publishOrder(
-                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
-
-        writer.doWork();
-        writer.doWork();
-        writer.doWork();
-
-        final List<OrderContext> contexts = drainQueue(newOrderQueue);
-        assertEquals(3, contexts.size());
-        assertEquals(1L, contexts.get(0).orderId);
-        assertEquals(2L, contexts.get(1).orderId);
-        assertEquals(3L, contexts.get(2).orderId);
     }
 
     @Test
@@ -161,7 +140,9 @@ class OutboundSocketWriterTest {
         writer.doWork();
 
         assertEquals(0, drainQueue(newOrderQueue).size());
-        assertEquals(ExecType.REJECT, drainQueue(writerReportQueue).get(0).execType);
+        final OrderContext reject = drainQueue(writerReportQueue).get(0);
+        assertEquals(ExecType.REJECT, reject.execType);
+        assertEquals(RejectReason.GATEWAY_REJECTED, reject.rejectReason);
         assertEquals(0, writer.submitCallCount);
     }
 
@@ -195,7 +176,7 @@ class OutboundSocketWriterTest {
         writer.doWork();
 
         assertEquals(0, drainQueue(writerReportQueue).size());
-        assertEquals("hash-1", exchangeOrderId(writer.cancelledContexts.get(0)), "cancels route by the found id");
+        assertEquals("hash-7", exchangeOrderId(writer.cancelledContexts.get(0)), "cancels route by the found id");
     }
 
     @Test
@@ -279,7 +260,7 @@ class OutboundSocketWriterTest {
         assertEquals(ExecType.CANCEL_REJECT, reject.execType);
         assertEquals(OrderStatus.CANCELED, reject.orderStatus);
         assertEquals(RejectReason.EXCHANGE_REJECTED, reject.rejectReason);
-        assertEquals(submitted.orderId, reject.orderId);
+        assertEquals(submitted.clientOidCounter, reject.clientOidCounter);
         assertEquals(submitted.exchangeId, reject.exchangeId);
         assertEquals(submitted.securityId, reject.securityId);
     }
@@ -317,9 +298,8 @@ class OutboundSocketWriterTest {
         final List<OrderContext> reports = drainQueue(writerReportQueue);
         assertEquals(1, reports.size());
         assertEquals(ExecType.CANCEL_REJECT, reports.get(0).execType);
-        assertEquals(RejectReason.EXCHANGE_REJECTED, reports.get(0).rejectReason);
+        assertEquals(RejectReason.GATEWAY_REJECTED, reports.get(0).rejectReason, "refused here, not by the venue");
         assertEquals(original.clientOidCounter, reports.get(0).clientOidCounter);
-        assertEquals(original.orderId, reports.get(0).orderId);
         assertEquals(0, writer.cancelCallCount, "refusing a modify must not touch the venue");
         assertEquals(0, drainQueue(newOrderQueue).size());
 
@@ -352,18 +332,25 @@ class OutboundSocketWriterTest {
     // ========== Pool management ==========
 
     @Test
-    void poolExhaustion_ThrowsOnExceedingCapacity() throws Exception {
-        // Fill all 256 pool slots with active orders
+    void poolExhaustion_RejectsWithoutSending() throws Exception {
         for (int i = 0; i < 256; i++) {
             publishOrder(
-                    Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
+                    Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, i, 1);
             writer.doWork();
             drainQueue(newOrderQueue);
         }
+        final int sent = writer.submitCallCount;
 
         publishOrder(
-                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
-        assertThrows(RuntimeException.class, () -> writer.doWork());
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 999L, 1);
+        writer.doWork();
+
+        final List<OrderContext> reports = drainQueue(writerReportQueue);
+        assertEquals(1, reports.size());
+        assertEquals(ExecType.REJECT, reports.get(0).execType);
+        assertEquals(999L, reports.get(0).clientOidCounter);
+        assertEquals(RejectReason.GATEWAY_REJECTED, reports.get(0).rejectReason);
+        assertEquals(sent, writer.submitCallCount, "an order the gateway can't track is never sent");
     }
 
     @Test
@@ -384,42 +371,64 @@ class OutboundSocketWriterTest {
     }
 
     @Test
-    void contextQueueOverflow_ThrowsRuntimeException() throws Exception {
+    void newOrderQueueOverflow_RejectsWithoutSending() throws Exception {
         final ManyToOneRingBuffer<OrderContext> smallContextQueue =
                 new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 2);
         final TestOutboundSocketWriter smallWriter =
                 new TestOutboundSocketWriter(orderBuffer, smallContextQueue, writerReportQueue, releasedOrderQueue);
 
-        // Fill the new order queue (capacity 2) without draining
         for (int i = 0; i < 2; i++) {
             publishOrder(
-                    Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
+                    Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, i, 1);
             smallWriter.doWork();
         }
 
-        // 3rd submit should overflow new order queue
         publishOrder(
-                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
-        assertThrows(RuntimeException.class, () -> smallWriter.doWork());
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 7L, 1);
+        smallWriter.doWork();
+
+        final List<OrderContext> reports = drainQueue(writerReportQueue);
+        assertEquals(1, reports.size());
+        assertEquals(ExecType.REJECT, reports.get(0).execType);
+        assertEquals(7L, reports.get(0).clientOidCounter);
+        assertEquals(RejectReason.GATEWAY_REJECTED, reports.get(0).rejectReason);
+        assertEquals(2, smallWriter.submitCallCount, "an order the reader doesn't know is never sent");
     }
 
     @Test
-    void rejectQueueOverflow_ThrowsRuntimeException() throws Exception {
-        final ManyToOneRingBuffer<OrderContext> smallRejectQueue =
+    void reportQueueFull_WaitsForTheReaderToDrainIt() throws Exception {
+        final ManyToOneRingBuffer<OrderContext> smallReportQueue =
                 new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 2);
         final TestOutboundSocketWriter failWriter =
-                new TestOutboundSocketWriter(orderBuffer, newOrderQueue, smallRejectQueue, releasedOrderQueue);
+                new TestOutboundSocketWriter(orderBuffer, newOrderQueue, smallReportQueue, releasedOrderQueue);
         failWriter.submitResult = false;
 
         for (int i = 0; i < 2; i++) {
             publishOrder(
-                    Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
+                    Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, i, 1);
             failWriter.doWork();
         }
-
         publishOrder(
-                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
-        assertThrows(RuntimeException.class, () -> failWriter.doWork());
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 2L, 1);
+
+        final Thread writerThread = new Thread(() -> {
+            try {
+                failWriter.doWork();
+            } catch (final Exception e) {
+                throw new IllegalStateException(e);
+            }
+        });
+        writerThread.start();
+        writerThread.join(200);
+        assertTrue(writerThread.isAlive(), "the third reject waits for room");
+
+        final List<OrderContext> reports = new ArrayList<>(drainQueue(smallReportQueue));
+        writerThread.join(5_000);
+        assertFalse(writerThread.isAlive());
+        reports.addAll(drainQueue(smallReportQueue));
+        assertEquals(
+                List.of(0L, 1L, 2L),
+                reports.stream().map(r -> r.clientOidCounter).toList());
     }
 
     // ========== Flags propagation ==========
@@ -665,7 +674,7 @@ class OutboundSocketWriterTest {
 
         @Override
         protected boolean prepareOrder(final OrderContext ctx) {
-            final byte[] correlation = ("corr-" + ctx.orderId).getBytes(StandardCharsets.UTF_8);
+            final byte[] correlation = ("corr-" + ctx.clientOidCounter).getBytes(StandardCharsets.UTF_8);
             System.arraycopy(correlation, 0, ctx.correlationIdBytes, 0, correlation.length);
             ctx.correlationIdLength = correlation.length;
             return prepareResult;
@@ -710,7 +719,7 @@ class OutboundSocketWriterTest {
         }
 
         private static void setVenueId(final OrderContext ctx) {
-            final byte[] hash = ("hash-" + ctx.orderId).getBytes(StandardCharsets.UTF_8);
+            final byte[] hash = ("hash-" + ctx.clientOidCounter).getBytes(StandardCharsets.UTF_8);
             System.arraycopy(hash, 0, ctx.exchangeOrderIdBytes, 0, hash.length);
             ctx.exchangeOrderIdLength = hash.length;
         }

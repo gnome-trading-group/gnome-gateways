@@ -14,7 +14,6 @@ class OrderContextTest {
     @Test
     void resetClearsAllFields() {
         final OrderContext ctx = new OrderContext();
-        ctx.orderId = 99L;
         ctx.clientOidCounter = 5L;
         ctx.clientOidStrategyId = 3;
         ctx.exchangeId = 7;
@@ -38,7 +37,6 @@ class OrderContextTest {
 
         ctx.reset();
 
-        assertEquals(0L, ctx.orderId);
         assertEquals(0L, ctx.clientOidCounter);
         assertEquals(0, ctx.clientOidStrategyId);
         assertEquals(0, ctx.exchangeId);
@@ -62,7 +60,6 @@ class OrderContextTest {
     @Test
     void copyFromCopiesAllFields() {
         final OrderContext src = new OrderContext();
-        src.orderId = 42L;
         src.clientOidCounter = 7L;
         src.clientOidStrategyId = 3;
         src.exchangeId = 5;
@@ -87,7 +84,6 @@ class OrderContextTest {
         final OrderContext dst = new OrderContext();
         dst.copyFrom(src);
 
-        assertEquals(src.orderId, dst.orderId);
         assertEquals(src.clientOidCounter, dst.clientOidCounter);
         assertEquals(src.clientOidStrategyId, dst.clientOidStrategyId);
         assertEquals(src.exchangeId, dst.exchangeId);
@@ -129,14 +125,12 @@ class OrderContextTest {
     @Test
     void copyFromWithZeroLengthExchangeOrderId() {
         final OrderContext src = new OrderContext();
-        src.orderId = 1L;
         src.exchangeOrderIdLength = 0;
 
         final OrderContext dst = new OrderContext();
         dst.copyFrom(src);
 
         assertEquals(0, dst.exchangeOrderIdLength);
-        assertEquals(1L, dst.orderId);
     }
 
     @Test

@@ -78,8 +78,8 @@ class KalshiInboundReaderTest {
         // Use ":yes" suffix to verify it is stripped before subscription
         Listing listing = new Listing(
                 1,
-                new Exchange(2, "Kalshi", "global", SchemaType.MBP_10),
-                new Security(3, "TEST", 3),
+                new Exchange(2, "KALSHI", "Kalshi", "global", SchemaType.MBP_10),
+                new Security(3, "TEST", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
                 MARKET_TICKER + ":yes",
                 "TEST-YES");
         reader = new KalshiInboundReader(
@@ -252,8 +252,8 @@ class KalshiInboundReaderTest {
                 new InboundJsonWebSocketWriter(client, new JsonEncoder()),
                 new Listing(
                         1,
-                        new Exchange(2, "Kalshi", "global", SchemaType.MBP_10),
-                        new Security(3, "TEST", 3),
+                        new Exchange(2, "KALSHI", "Kalshi", "global", SchemaType.MBP_10),
+                        new Security(3, "TEST", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
                         MARKET_TICKER + ":no",
                         "TEST-NO"),
                 client,

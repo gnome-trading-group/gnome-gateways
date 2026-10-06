@@ -87,8 +87,8 @@ class KalshiOutboundReaderTest {
 
         final Listing listing = new Listing(
                 7,
-                new Exchange(2, "Kalshi", "global", SchemaType.MBP_10),
-                new Security(3, "TEST", 3),
+                new Exchange(2, "KALSHI", "Kalshi", "global", SchemaType.MBP_10),
+                new Security(3, "TEST", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
                 "KALSHI-MARKET:yes",
                 "KALSHI-YES");
 
@@ -648,7 +648,8 @@ class KalshiOutboundReaderTest {
         final OrderExecutionReport report = captured.get(0);
         assertEquals(2, report.decoder.exchangeId());
         assertEquals(3L, report.decoder.securityId());
-        assertEquals(42L, report.decoder.orderId());
+        assertEquals(42L, report.getClientOidCounter());
+        assertEquals(ORDER_ID, report.decoder.exchangeOrderId());
     }
 
     // ========== Helpers ==========
@@ -691,7 +692,6 @@ class KalshiOutboundReaderTest {
         final OrderContext ctx = newOrderQueue.indexAt(idx);
         ctx.reset();
         ctx.acked = acked;
-        ctx.orderId = internalOrderId;
         ctx.clientOidCounter = internalOrderId;
         ctx.exchangeId = 2;
         ctx.securityId = 3L;
@@ -732,7 +732,7 @@ class KalshiOutboundReaderTest {
         drainQueues();
         waitForReports(expected + 1);
         assertEquals(expected + 1, captured.size());
-        assertEquals(SENTINEL_ORDER_ID, captured.get(expected).decoder.orderId());
+        assertEquals(SENTINEL_ORDER_ID, captured.get(expected).getClientOidCounter());
     }
 
     /** Runs one reader cycle with nothing on the socket, so only the handoff queues are drained. */
@@ -751,7 +751,7 @@ class KalshiOutboundReaderTest {
         ctx.rejectReason = RejectReason.EXCHANGE_REJECTED;
         ctx.exchangeId = 2;
         ctx.securityId = 3L;
-        ctx.orderId = SENTINEL_ORDER_ID;
+        ctx.clientOidCounter = SENTINEL_ORDER_ID;
         writerReportQueue.commit(idx);
     }
 

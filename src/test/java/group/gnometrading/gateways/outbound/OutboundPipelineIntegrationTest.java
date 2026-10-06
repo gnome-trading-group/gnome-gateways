@@ -43,7 +43,11 @@ import org.junit.jupiter.api.Test;
 class OutboundPipelineIntegrationTest {
 
     private static final Listing LISTING = new Listing(
-            1, new Exchange(2, "test", "global", SchemaType.MBP_10), new Security(3, "TEST", 3), "test-id", "TEST");
+            1,
+            new Exchange(2, "TEST", "test", "global", SchemaType.MBP_10),
+            new Security(3, "TEST", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
+            "test-id",
+            "TEST");
 
     private SequencedRingBuffer<Order> orderBuffer;
     private ManyToOneRingBuffer<OrderContext> newOrderQueue;
@@ -97,7 +101,7 @@ class OutboundPipelineIntegrationTest {
 
         waitForReports(1);
         assertEquals(ExecType.FILL, captured.get(0).decoder.execType());
-        assertEquals(1L, captured.get(0).decoder.orderId());
+        assertEquals("hash-1", captured.get(0).decoder.exchangeOrderId());
     }
 
     @Test
@@ -114,7 +118,7 @@ class OutboundPipelineIntegrationTest {
         assertEquals(1, captured.size());
         final OrderExecutionReport report = captured.get(0);
         assertEquals(ExecType.FILL, report.decoder.execType());
-        assertEquals(1L, report.decoder.orderId());
+        assertEquals("hash-1", report.decoder.exchangeOrderId());
         assertEquals(2, report.decoder.exchangeId());
         assertEquals(3L, report.decoder.securityId());
     }
@@ -140,7 +144,7 @@ class OutboundPipelineIntegrationTest {
         assertEquals(0, ack.decoder.cumulativeQty());
         assertEquals(qty("5.0"), ack.decoder.leavesQty());
         assertEquals(RejectReason.NULL_VAL, ack.decoder.rejectReason());
-        assertEquals(1L, ack.decoder.orderId());
+        assertEquals("hash-1", ack.decoder.exchangeOrderId());
     }
 
     @Test
@@ -371,11 +375,12 @@ class OutboundPipelineIntegrationTest {
         }
     }
 
-    private static OrderExecutionReport findReport(final List<OrderExecutionReport> reports, final long orderId) {
+    private static OrderExecutionReport findReport(
+            final List<OrderExecutionReport> reports, final long clientOidCounter) {
         return reports.stream()
-                .filter(r -> r.decoder.orderId() == orderId)
+                .filter(r -> r.getClientOidCounter() == clientOidCounter)
                 .findFirst()
-                .orElseThrow(() -> new AssertionError("No report found for orderId=" + orderId));
+                .orElseThrow(() -> new AssertionError("No report found for clientOidCounter=" + clientOidCounter));
     }
 
     private static long price(final String val) {
@@ -404,7 +409,7 @@ class OutboundPipelineIntegrationTest {
 
         @Override
         protected boolean prepareOrder(final OrderContext ctx) {
-            final byte[] hashBytes = ("hash-" + ctx.orderId).getBytes(StandardCharsets.UTF_8);
+            final byte[] hashBytes = ("hash-" + ctx.clientOidCounter).getBytes(StandardCharsets.UTF_8);
             System.arraycopy(hashBytes, 0, ctx.correlationIdBytes, 0, hashBytes.length);
             ctx.correlationIdLength = hashBytes.length;
             System.arraycopy(hashBytes, 0, ctx.exchangeOrderIdBytes, 0, hashBytes.length);
@@ -446,10 +451,7 @@ class OutboundPipelineIntegrationTest {
             if (ctx == null) {
                 return;
             }
-            final OrderContext notice =
-                    buildAmendAccepted(ctx, modifyOrder.decoder.size(), amendVenueFillCount, amendVenueRemaining);
-            enqueueWriterReport(notice);
-            returnToPool(notice);
+            enqueueAmendAccepted(ctx, modifyOrder.decoder.size(), amendVenueFillCount, amendVenueRemaining);
         }
     }
 

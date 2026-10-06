@@ -33,7 +33,11 @@ import org.junit.jupiter.api.Timeout;
 class OutboundSocketReaderTest {
 
     private static final Listing LISTING = new Listing(
-            1, new Exchange(2, "test", "global", SchemaType.MBP_10), new Security(3, "TEST", 3), "test-id", "TEST");
+            1,
+            new Exchange(2, "TEST", "test", "global", SchemaType.MBP_10),
+            new Security(3, "TEST", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
+            "test-id",
+            "TEST");
 
     private SequencedRingBuffer<OrderExecutionReport> execReportBuffer;
     private ManyToOneRingBuffer<OrderContext> newOrderQueue;
@@ -154,7 +158,7 @@ class OutboundSocketReaderTest {
         final int idx = writerReportQueue.tryClaim();
         final OrderContext reject = writerReportQueue.indexAt(idx);
         reject.reset();
-        reject.orderId = 1L;
+        reject.clientOidCounter = 1L;
         reject.execType = ExecType.REJECT;
         reject.orderStatus = OrderStatus.REJECTED;
         reject.rejectReason = RejectReason.EXCHANGE_REJECTED;
@@ -182,7 +186,7 @@ class OutboundSocketReaderTest {
         final long key = TestOutboundSocketReader.testComputeKey(hash.getBytes(StandardCharsets.UTF_8), hash.length());
         final OrderContext ctx = reader.testFindOrderContext(key);
         assertNotNull(ctx);
-        assertEquals(42L, ctx.orderId);
+        assertEquals(42L, ctx.clientOidCounter);
         assertEquals(5, ctx.exchangeId);
         assertEquals(99L, ctx.securityId);
         assertEquals(200L, ctx.originalQty);
@@ -199,7 +203,7 @@ class OutboundSocketReaderTest {
         assertEquals(ExecType.REJECT, captured.get(0).decoder.execType());
         assertEquals(OrderStatus.REJECTED, captured.get(0).decoder.orderStatus());
         assertEquals(RejectReason.EXCHANGE_REJECTED, captured.get(0).decoder.rejectReason());
-        assertEquals(77L, captured.get(0).decoder.orderId());
+        assertEquals(77L, captured.get(0).getClientOidCounter());
     }
 
     @Test
@@ -289,7 +293,7 @@ class OutboundSocketReaderTest {
         final long key = TestOutboundSocketReader.testComputeKey(hash.getBytes(StandardCharsets.UTF_8), hash.length());
         final OrderContext ctx = reader.testFindOrderContext(key);
         assertNotNull(ctx);
-        assertEquals(42L, ctx.orderId);
+        assertEquals(42L, ctx.clientOidCounter);
         assertEquals(99L, ctx.securityId);
     }
 
@@ -446,7 +450,6 @@ class OutboundSocketReaderTest {
         assertTrue(idx >= 0, "New order queue full");
         final OrderContext ctx = newOrderQueue.indexAt(idx);
         ctx.reset();
-        ctx.orderId = clientOidCounter;
         ctx.clientOidCounter = clientOidCounter;
         ctx.exchangeId = exchangeId;
         ctx.securityId = securityId;
@@ -459,7 +462,7 @@ class OutboundSocketReaderTest {
     }
 
     private void enqueueReject(
-            final long orderId,
+            final long clientOidCounter,
             final int exchangeId,
             final long securityId,
             final ExecType execType,
@@ -468,7 +471,7 @@ class OutboundSocketReaderTest {
         assertTrue(idx >= 0, "Writer report queue full");
         final OrderContext ctx = writerReportQueue.indexAt(idx);
         ctx.reset();
-        ctx.orderId = orderId;
+        ctx.clientOidCounter = clientOidCounter;
         ctx.exchangeId = exchangeId;
         ctx.securityId = securityId;
         ctx.execType = execType;
