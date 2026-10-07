@@ -177,9 +177,17 @@ public abstract class InboundSocketReader<T extends Schema> implements GnomeAgen
         this.rawDataSink = sink;
     }
 
+    /** Runs on the reader's own thread after its last pass, so the supervisor can stop waiting on it. */
+    @Override
+    public final void onClose() {
+        this.pauseControl.readerExited();
+    }
+
     @Override
     public final int doWork() throws Exception {
-        this.pauseControl.awaitIfPaused();
+        if (!this.pauseControl.awaitIfPaused()) {
+            return 0;
+        }
 
         final ByteBuffer buffer;
         try {

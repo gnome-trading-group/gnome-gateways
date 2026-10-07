@@ -105,9 +105,17 @@ public abstract class OutboundSocketReader implements GnomeAgent {
         logger.log(LogMessage.SOCKET_DISCONNECTED);
     }
 
+    /** Runs on the reader's own thread after its last pass, so the supervisor can stop waiting on it. */
+    @Override
+    public final void onClose() {
+        this.pauseControl.readerExited();
+    }
+
     @Override
     public final int doWork() throws Exception {
-        this.pauseControl.awaitIfPaused();
+        if (!this.pauseControl.awaitIfPaused()) {
+            return 0;
+        }
 
         // New orders first: an order submitted and amended in one writer poll must exist here before
         // its amend notice is applied.

@@ -24,16 +24,23 @@ import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Exchange;
 import group.gnometrading.sm.Listing;
 import group.gnometrading.sm.Security;
+import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.PrivateKey;
+import java.security.Signature;
+import java.security.spec.MGF1ParameterSpec;
+import java.security.spec.PSSParameterSpec;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class KalshiOutboundReaderTest {
 
@@ -111,6 +118,72 @@ class KalshiOutboundReaderTest {
     @AfterEach
     void tearDown() {
         execReportBuffer.shutdown();
+    }
+
+    // ========== Connecting ==========
+
+    @Test
+    void connect_SignsTheTradeApiSocketPath() throws Exception {
+        // user_orders is a channel on Kalshi's one authenticated socket; there is no /user_orders endpoint.
+        final KeyPair keys = KeyPairGenerator.getInstance("RSA").generateKeyPair();
+        final KalshiOutboundReader signed = readerFor("KALSHI-MARKET:yes", keys.getPrivate());
+
+        final Method beforeConnect = KalshiOutboundReader.class.getDeclaredMethod("beforeConnect");
+        beforeConnect.setAccessible(true);
+        beforeConnect.invoke(signed);
+
+        final ArgumentCaptor<String> timestamp = ArgumentCaptor.forClass(String.class);
+        final ArgumentCaptor<String> signature = ArgumentCaptor.forClass(String.class);
+        verify(client).setHeader(eq("KALSHI-ACCESS-TIMESTAMP"), timestamp.capture());
+        verify(client).setHeader(eq("KALSHI-ACCESS-SIGNATURE"), signature.capture());
+        final Signature verifier = Signature.getInstance("RSASSA-PSS");
+        verifier.setParameter(new PSSParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256, 32, 1));
+        verifier.initVerify(keys.getPublic());
+        verifier.update((timestamp.getValue() + "GET/trade-api/ws/v2").getBytes(StandardCharsets.UTF_8));
+        assertTrue(verifier.verify(Base64.getDecoder().decode(signature.getValue())));
+    }
+
+    @Test
+    void connect_SubscribesToUserOrdersForTheListingsMarket() throws Exception {
+        final List<String> sent = new ArrayList<>();
+        doAnswer(inv -> {
+                    final ByteBuffer payload = inv.getArgument(1);
+                    sent.add(StandardCharsets.UTF_8.decode(payload.duplicate()).toString());
+                    return null;
+                })
+                .when(client)
+                .writeMessage(eq(Opcode.TEXT), any(ByteBuffer.class));
+        final KalshiOutboundReader noListing = readerFor("KALSHI-MARKET:no", TEST_PRIVATE_KEY);
+
+        final Method subscribe = KalshiOutboundReader.class.getDeclaredMethod("subscribe");
+        subscribe.setAccessible(true);
+        subscribe.invoke(noListing);
+
+        assertEquals(
+                List.of("{\"id\":1,\"cmd\":\"subscribe\",\"params\":{\"channels\":[\"user_orders\"],"
+                        + "\"market_tickers\":[\"KALSHI-MARKET\"]}}"),
+                sent);
+    }
+
+    private KalshiOutboundReader readerFor(final String exchangeSecurityId, final PrivateKey key) throws Exception {
+        return new KalshiOutboundReader(
+                new NullLogger(),
+                execReportBuffer,
+                newOrderQueue,
+                writerReportQueue,
+                releasedOrderQueue,
+                () -> FIXED_NANO,
+                new Listing(
+                        8,
+                        new Exchange(2, "KALSHI", "Kalshi", "global", SchemaType.MBP_10),
+                        new Security(3, "TEST", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
+                        exchangeSecurityId,
+                        exchangeSecurityId),
+                client,
+                new JsonDecoder(),
+                new KalshiAuthSigner("test-api-key", key),
+                0.07,
+                0.0175);
     }
 
     // ========== Resting / NEW ==========

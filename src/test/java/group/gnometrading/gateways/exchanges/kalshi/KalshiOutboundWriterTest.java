@@ -225,7 +225,9 @@ class KalshiOutboundWriterTest {
                         eq("KALSHI-ACCESS-TIMESTAMP"),
                         anyString(),
                         eq("KALSHI-ACCESS-SIGNATURE"),
-                        anyString());
+                        anyString(),
+                        eq("Content-Type"),
+                        eq("application/json"));
     }
 
     @Test
@@ -238,8 +240,8 @@ class KalshiOutboundWriterTest {
         final String json = captureLastPostBody();
         assertTrue(json.contains("\"ticker\":\"" + MARKET_TICKER + "\""), json);
         assertTrue(json.contains("\"side\":\"bid\""), json);
-        assertTrue(json.contains("\"price\":0.5600"), json);
-        assertTrue(json.contains("\"count\":10.00"), json);
+        assertTrue(json.contains("\"price\":\"0.5600\""), json);
+        assertTrue(json.contains("\"count\":\"10.00\""), json);
         assertTrue(json.contains("\"time_in_force\":\"good_till_canceled\""), json);
         assertTrue(json.contains("\"self_trade_prevention_type\":\"maker\""), json);
     }
@@ -259,7 +261,7 @@ class KalshiOutboundWriterTest {
         final String json = captureLastPostBody();
         assertTrue(json.contains("\"side\":\"ask\""), json);
         // 1.0 - 0.60 = 0.40
-        assertTrue(json.contains("\"price\":0.4000"), json);
+        assertTrue(json.contains("\"price\":\"0.4000\""), json);
         assertTrue(json.contains("\"ticker\":\"" + MARKET_TICKER + "\""), json);
     }
 
@@ -278,7 +280,7 @@ class KalshiOutboundWriterTest {
         final String json = captureLastPostBody();
         assertTrue(json.contains("\"side\":\"bid\""), json);
         // 1.0 - 0.40 = 0.60
-        assertTrue(json.contains("\"price\":0.6000"), json);
+        assertTrue(json.contains("\"price\":\"0.6000\""), json);
     }
 
     @Test
@@ -318,7 +320,7 @@ class KalshiOutboundWriterTest {
         publishOrder(Side.Bid, price("0.05"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
 
-        assertTrue(captureLastPostBody().contains("\"price\":0.0500"));
+        assertTrue(captureLastPostBody().contains("\"price\":\"0.0500\""));
     }
 
     @Test
@@ -328,7 +330,7 @@ class KalshiOutboundWriterTest {
         publishOrder(Side.Bid, price("0.50"), qty("0.05"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
         writer.doWork();
 
-        assertTrue(captureLastPostBody().contains("\"count\":0.05"));
+        assertTrue(captureLastPostBody().contains("\"count\":\"0.05\""));
     }
 
     // ========== Cancel order ==========
@@ -411,6 +413,50 @@ class KalshiOutboundWriterTest {
     }
 
     @Test
+    void amendOrder_SendsPriceAndCountAsStrings() throws Exception {
+        // Kalshi refuses numbers here: "cannot unmarshal number into Go struct field .price of type string".
+        mockPostSuccess(orderResponse("amend-body"));
+        publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
+        writer.doWork();
+        final long clientOidCounter = drainQueue(newOrderQueue).get(0).clientOidCounter;
+
+        publishModify(clientOidCounter, price("0.60"), qty("5.0"));
+        writer.doWork();
+
+        final String json = captureLastPostBody();
+        assertTrue(json.contains("\"price\":\"0.6000\""), json);
+        assertTrue(json.contains("\"count\":\"5.00\""), json);
+    }
+
+    @Test
+    void amendOrder_SendsJsonContentType() throws Exception {
+        // Kalshi refuses a JSON body without it: 400 invalid_content_type.
+        mockPostSuccess(orderResponse("amend-content-type"));
+        publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
+        writer.doWork();
+        final long clientOidCounter = drainQueue(newOrderQueue).get(0).clientOidCounter;
+
+        publishModify(clientOidCounter, price("0.60"), qty("5.0"));
+        writer.doWork();
+
+        verify(httpClient, times(2))
+                .post(
+                        any(),
+                        anyString(),
+                        any(GnomeString.class),
+                        any(byte[].class),
+                        anyInt(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        eq("Content-Type"),
+                        eq("application/json"));
+    }
+
+    @Test
     void amendOrder_PostsToAmendPath_ContainingExchangeOrderId() throws Exception {
         mockPostSuccess(orderResponse("amend-path-order"));
         publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
@@ -429,6 +475,8 @@ class KalshiOutboundWriterTest {
                         pathCaptor.capture(),
                         any(byte[].class),
                         anyInt(),
+                        anyString(),
+                        anyString(),
                         anyString(),
                         anyString(),
                         anyString(),
@@ -455,6 +503,8 @@ class KalshiOutboundWriterTest {
                         any(GnomeString.class),
                         any(byte[].class),
                         anyInt(),
+                        anyString(),
+                        anyString(),
                         anyString(),
                         anyString(),
                         anyString(),
@@ -590,6 +640,8 @@ class KalshiOutboundWriterTest {
                         anyString(),
                         anyString(),
                         anyString(),
+                        anyString(),
+                        anyString(),
                         anyString()))
                 .thenReturn(httpResponse);
         when(httpResponse.isSuccess()).thenReturn(true);
@@ -634,6 +686,8 @@ class KalshiOutboundWriterTest {
                         any(GnomeString.class),
                         any(byte[].class),
                         anyInt(),
+                        anyString(),
+                        anyString(),
                         anyString(),
                         anyString(),
                         anyString(),
@@ -684,6 +738,8 @@ class KalshiOutboundWriterTest {
                         any(GnomeString.class),
                         bodyCaptor.capture(),
                         lenCaptor.capture(),
+                        anyString(),
+                        anyString(),
                         anyString(),
                         anyString(),
                         anyString(),

@@ -117,6 +117,67 @@ class ReaderPauseControlTest {
         assertNotNull(failure.get());
     }
 
+    @Test
+    void stop_ReleasesAPausedReaderWithoutLettingItRun() throws Exception {
+        final ReaderPauseControl control = new ReaderPauseControl();
+        final AtomicBoolean ranAfterStop = new AtomicBoolean();
+        final CountDownLatch returned = new CountDownLatch(1);
+        readerThread = new Thread(
+                () -> {
+                    if (!control.awaitIfPaused()) {
+                        returned.countDown();
+                        return;
+                    }
+                    ranAfterStop.set(true);
+                },
+                "reader");
+        readerThread.setDaemon(true);
+        readerThread.start();
+        control.pause();
+
+        control.stop();
+
+        assertTrue(returned.await(2, TimeUnit.SECONDS), "a paused reader returns once stopped");
+        assertFalse(ranAfterStop.get(), "and does nothing more");
+    }
+
+    @Test
+    void stop_SupervisorStillWaitsForAReadInFlight() throws Exception {
+        final ReaderPauseControl control = new ReaderPauseControl();
+        final AtomicBoolean reading = new AtomicBoolean();
+        final CountDownLatch inRead = new CountDownLatch(1);
+        readerThread = new Thread(
+                () -> {
+                    while (control.awaitIfPaused()) {
+                        reading.set(true);
+                        inRead.countDown();
+                        sleepQuietly(300); // a read in flight on the socket
+                        reading.set(false);
+                    }
+                },
+                "reader");
+        readerThread.setDaemon(true);
+        control.release();
+        readerThread.start();
+        assertTrue(inRead.await(2, TimeUnit.SECONDS));
+
+        control.stop();
+        control.pause(); // as a supervisor reconnecting during shutdown would
+
+        assertFalse(reading.get(), "the supervisor may not touch the socket while the reader is still reading it");
+    }
+
+    @Test
+    void readerExited_SupervisorNoLongerWaitsOnAReaderThatIsGone() {
+        final ReaderPauseControl control = new ReaderPauseControl();
+        control.release();
+        // The reader's thread has left its loop, as at shutdown, without another pass.
+        control.readerExited();
+
+        assertTimeoutPreemptively(java.time.Duration.ofSeconds(2), control::pause);
+        assertTimeoutPreemptively(java.time.Duration.ofSeconds(2), control::resume);
+    }
+
     /** Stands in for a reader's doWork loop: waits while paused, and pauses itself when its socket closes. */
     private void startReader(final ReaderPauseControl control) {
         readerThread = new Thread(
@@ -137,6 +198,14 @@ class ReaderPauseControlTest {
     private static void awaitQuietly(final CountDownLatch latch) {
         try {
             latch.await(2, TimeUnit.SECONDS);
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private static void sleepQuietly(final long millis) {
+        try {
+            Thread.sleep(millis);
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
         }

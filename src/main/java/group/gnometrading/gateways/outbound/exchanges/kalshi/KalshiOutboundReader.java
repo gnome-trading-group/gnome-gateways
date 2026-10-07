@@ -7,6 +7,7 @@ import group.gnometrading.gateways.outbound.OutboundJsonWebSocketReader;
 import group.gnometrading.gateways.outbound.fee.PredictionMarketFees;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.websockets.WebSocketClient;
+import group.gnometrading.networking.websockets.enums.Opcode;
 import group.gnometrading.schemas.ExecType;
 import group.gnometrading.schemas.Liquidity;
 import group.gnometrading.schemas.OrderExecutionReport;
@@ -19,12 +20,14 @@ import group.gnometrading.sm.Listing;
 import group.gnometrading.strings.GnomeString;
 import group.gnometrading.utils.ScaledMath;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import org.agrona.concurrent.EpochNanoClock;
 
 public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
 
-    // Signing uses the WebSocket endpoint path
-    private static final String WS_PATH = "/user_orders";
+    // user_orders is a channel on Kalshi's one authenticated socket, which is signed by its path.
+    private static final String WS_PATH = "/trade-api/ws/v2";
     private static final long NANOS_PER_MILLI = 1_000_000L;
 
     private static final int TYPE_FLAG_USER_ORDER = 1;
@@ -37,6 +40,7 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
     private final double takerFeeRate;
     private final double makerFeeRate;
     private final ParsedEvent parsedEvent = new ParsedEvent();
+    private final byte[] subscribeMessage;
 
     public KalshiOutboundReader(
             final Logger logger,
@@ -64,6 +68,14 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
         this.authSigner = authSigner;
         this.takerFeeRate = takerFeeRate;
         this.makerFeeRate = makerFeeRate;
+
+        // The YES and NO listings trade one market, so the suffix is not part of its ticker.
+        final String exchangeSecurityId = listing.exchangeSecurityId();
+        final int colonIdx = exchangeSecurityId.indexOf(':');
+        final String marketTicker = colonIdx >= 0 ? exchangeSecurityId.substring(0, colonIdx) : exchangeSecurityId;
+        this.subscribeMessage = ("{\"id\":1,\"cmd\":\"subscribe\",\"params\":{\"channels\":[\"user_orders\"],"
+                        + "\"market_tickers\":[\"" + marketTicker + "\"]}}")
+                .getBytes(StandardCharsets.UTF_8);
     }
 
     @Override
@@ -76,7 +88,7 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
 
     @Override
     protected void subscribe() throws IOException {
-        // user_orders channel auto-streams all order updates on connect — no subscription message needed
+        this.socketClient.writeMessage(Opcode.TEXT, ByteBuffer.wrap(this.subscribeMessage));
     }
 
     @Override

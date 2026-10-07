@@ -36,6 +36,9 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
     private static final String HEADER_KEY = "KALSHI-ACCESS-KEY";
     private static final String HEADER_TIMESTAMP = "KALSHI-ACCESS-TIMESTAMP";
     private static final String HEADER_SIGNATURE = "KALSHI-ACCESS-SIGNATURE";
+    // Kalshi refuses a JSON body without it (400 invalid_content_type), and the HTTP client never writes one.
+    private static final String HEADER_CONTENT_TYPE = "Content-Type";
+    private static final String CONTENT_TYPE_JSON = "application/json";
 
     private static final byte[] ORDER_ID_MARKER = "\"order_id\":\"".getBytes(StandardCharsets.UTF_8);
     private static final byte[] FILL_COUNT_MARKER = "\"fill_count\":\"".getBytes(StandardCharsets.UTF_8);
@@ -138,7 +141,9 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
                 HEADER_TIMESTAMP,
                 this.authSigner.timestamp(),
                 HEADER_SIGNATURE,
-                this.authSigner.signature());
+                this.authSigner.signature(),
+                HEADER_CONTENT_TYPE,
+                CONTENT_TYPE_JSON);
 
         if (!response.isSuccess()) {
             return classifyFailure(response.getStatusCode());
@@ -308,7 +313,9 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
                 HEADER_TIMESTAMP,
                 this.authSigner.timestamp(),
                 HEADER_SIGNATURE,
-                this.authSigner.signature());
+                this.authSigner.signature(),
+                HEADER_CONTENT_TYPE,
+                CONTENT_TYPE_JSON);
 
         if (response.isSuccess()) {
             // Kalshi acknowledges an amend only in this response body, and only the reader knows the
@@ -372,20 +379,25 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
         this.jsonBodyLength = this.jsonBodyBuffer.position();
     }
 
+    // Kalshi takes fixed-point decimals as JSON strings and refuses numbers.
     private void writePriceField(final long price) {
         this.jsonEncoder.writeString("price").writeColon();
+        this.jsonBodyBuffer.put((byte) '"');
         ByteBufferUtils.putLongAscii(this.jsonBodyBuffer, price / Statics.PRICE_SCALING_FACTOR);
         this.jsonBodyBuffer.put((byte) '.');
         ByteBufferUtils.putNaturalPaddedLongAscii(
                 this.jsonBodyBuffer, 4, (price % Statics.PRICE_SCALING_FACTOR) / PRICE_SCALE_DIVISOR);
+        this.jsonBodyBuffer.put((byte) '"');
     }
 
     private void writeSizeField(final long size) {
         this.jsonEncoder.writeString("count").writeColon();
+        this.jsonBodyBuffer.put((byte) '"');
         ByteBufferUtils.putLongAscii(this.jsonBodyBuffer, size / Statics.SIZE_SCALING_FACTOR);
         this.jsonBodyBuffer.put((byte) '.');
         ByteBufferUtils.putNaturalPaddedLongAscii(
                 this.jsonBodyBuffer, 2, (size % Statics.SIZE_SCALING_FACTOR) / SIZE_SCALE_DIVISOR);
+        this.jsonBodyBuffer.put((byte) '"');
     }
 
     private void buildOrderPath(final OrderContext ctx) {
