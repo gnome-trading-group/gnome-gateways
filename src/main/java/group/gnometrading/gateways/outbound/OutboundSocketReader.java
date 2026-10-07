@@ -2,6 +2,7 @@ package group.gnometrading.gateways.outbound;
 
 import group.gnometrading.annotations.VisibleForTesting;
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
+import group.gnometrading.collections.buffer.MessageConsumer;
 import group.gnometrading.concurrent.GnomeAgent;
 import group.gnometrading.concurrent.ThreadProfile;
 import group.gnometrading.gateways.GatewayConfig;
@@ -35,6 +36,9 @@ public abstract class OutboundSocketReader implements GnomeAgent {
     protected final Listing listing;
 
     private final ManyToOneRingBuffer<OrderContext> releasedOrderQueue;
+    // Held once, so the hot loop doesn't create a method reference on every pass.
+    private final MessageConsumer<OrderContext> newOrderHandler = this::consumeNewOrder;
+    private final MessageConsumer<OrderContext> writerReportHandler = this::consumeWriterReport;
 
     private final Long2ObjectHashMap<OrderContext> orderContexts;
     private final OrderContext[] contextPool;
@@ -43,7 +47,12 @@ public abstract class OutboundSocketReader implements GnomeAgent {
     protected final OrderExecutionReport execReport;
 
     public final ReaderPauseControl pauseControl = new ReaderPauseControl();
+    // Set by the supervisor during a connect, before it resumes the reader, which the resume hands over.
+    private volatile boolean venueStatePending;
+    private static final long NANOS_PER_MILLI = 1_000_000L;
+
     public volatile long recvTimestamp;
+    private final long createdAtNanos;
 
     protected OutboundSocketReader(
             Logger logger,
@@ -60,15 +69,16 @@ public abstract class OutboundSocketReader implements GnomeAgent {
         this.releasedOrderQueue = releasedOrderQueue;
         this.clock = clock;
         this.listing = listing;
-        this.orderContexts = new Long2ObjectHashMap<>(OrderContext.MAX_IN_FLIGHT_ORDERS * 2, 0.6f);
-        this.contextPool = new OrderContext[OrderContext.MAX_IN_FLIGHT_ORDERS];
-        for (int i = 0; i < OrderContext.MAX_IN_FLIGHT_ORDERS; i++) {
+        this.orderContexts = new Long2ObjectHashMap<>(OrderContext.READER_POOL_SIZE * 2, 0.6f);
+        this.contextPool = new OrderContext[OrderContext.READER_POOL_SIZE];
+        for (int i = 0; i < OrderContext.READER_POOL_SIZE; i++) {
             this.contextPool[i] = new OrderContext();
         }
-        this.contextPoolHead = OrderContext.MAX_IN_FLIGHT_ORDERS;
+        this.contextPoolHead = OrderContext.READER_POOL_SIZE;
         this.execReport = new OrderExecutionReport();
         this.execReport.wrap(this.execReport.buffer);
         this.recvTimestamp = 0;
+        this.createdAtNanos = clock.nanoTime();
     }
 
     protected abstract ByteBuffer readSocket() throws IOException;
@@ -92,11 +102,24 @@ public abstract class OutboundSocketReader implements GnomeAgent {
     public final void connect() throws IOException {
         this.pauseControl.pause();
         attachSocket();
+        // Subscribed first, so nothing can fall between the venue's state and the events that follow it. A
+        // failure fails the connect: the reader is never resumed without having caught up.
+        fetchVenueState();
+        this.venueStatePending = true;
         // Silence is measured from the new connection: left at the old connection's last message, the supervisor
         // would still see the silence that caused this reconnect and reconnect again before anything arrives.
         this.recvTimestamp = clock.nanoTime();
         this.pauseControl.resume();
     }
+
+    /**
+     * Supervisor thread, while the reader is paused and after its socket is subscribed: fetches what the venue
+     * says of the orders this reader holds, for {@link #applyVenueState} to apply.
+     */
+    protected void fetchVenueState() throws IOException {}
+
+    /** Reader thread, on its first pass after a connect: applies what {@link #fetchVenueState} fetched. */
+    protected void applyVenueState() {}
 
     public final void disconnect() throws Exception {
         logger.log(LogMessage.SOCKET_DISCONNECTING);
@@ -119,8 +142,13 @@ public abstract class OutboundSocketReader implements GnomeAgent {
 
         // New orders first: an order submitted and amended in one writer poll must exist here before
         // its amend notice is applied.
-        this.newOrderQueue.read(this::consumeNewOrder, OrderContext.HANDOFF_QUEUE_CAPACITY);
-        this.writerReportQueue.read(this::consumeWriterReport, OrderContext.HANDOFF_QUEUE_CAPACITY);
+        this.newOrderQueue.read(this.newOrderHandler, OrderContext.HANDOFF_QUEUE_CAPACITY);
+        this.writerReportQueue.read(this.writerReportHandler, OrderContext.HANDOFF_QUEUE_CAPACITY);
+        // What the venue said while the socket was down comes before anything queued on the new socket.
+        if (this.venueStatePending) {
+            this.venueStatePending = false;
+            applyVenueState();
+        }
 
         final ByteBuffer buffer;
         try {
@@ -262,6 +290,28 @@ public abstract class OutboundSocketReader implements GnomeAgent {
     protected final void publishExecReport() {
         this.execReportBuffer.publishRaw(
                 this.execReport.buffer, OrderExecutionReportEncoder.TEMPLATE_ID, this.execReport.totalMessageSize());
+    }
+
+    /**
+     * When the oldest order this reader holds was submitted, or -1 if it holds none. Supervisor thread, while the
+     * reader is paused; not for the hot path.
+     */
+    protected final long oldestOpenOrderMillis() {
+        long oldest = Long.MAX_VALUE;
+        for (final OrderContext ctx : this.orderContexts.values()) {
+            oldest = Math.min(oldest, ctx.submittedAtMillis);
+        }
+        return oldest == Long.MAX_VALUE ? -1 : oldest;
+    }
+
+    /**
+     * When the socket last delivered anything, in epoch millis, or when this reader was made if it never connected.
+     * Venue events after it may have been missed, including for orders sent while the socket was down. Supervisor
+     * thread, while the reader is paused.
+     */
+    protected final long lastHeardMillis() {
+        final long lastHeard = this.recvTimestamp;
+        return (lastHeard > 0 ? lastHeard : this.createdAtNanos) / NANOS_PER_MILLI;
     }
 
     protected final OrderContext findOrderContext(final long key) {

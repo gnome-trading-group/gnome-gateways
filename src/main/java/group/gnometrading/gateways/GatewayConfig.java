@@ -55,12 +55,12 @@ public record GatewayConfig(
         if (maxReconnectAttempts < 0) {
             throw new IllegalArgumentException("maxReconnectAttempts must not be negative");
         }
+        // The backoff doubles from here: at zero a failing connect would retry in a tight loop.
+        requirePositive(initialBackoff, "initialBackoff");
         if (maxConnectCycles < 1) {
             throw new IllegalArgumentException("maxConnectCycles must be at least 1");
         }
-        if (readTimeout.isZero() || readTimeout.isNegative()) {
-            throw new IllegalArgumentException("readTimeout must be positive");
-        }
+        requirePositive(readTimeout, "readTimeout");
         if (tcpKeepAliveProbes <= 0 || tcpKeepAliveIdle.getSeconds() <= 0 || tcpKeepAliveInterval.getSeconds() <= 0) {
             throw new IllegalArgumentException(
                     "TCP keep-alive idle, interval (whole seconds) and probes must be positive");
@@ -98,6 +98,12 @@ public record GatewayConfig(
                 (int) this.tcpKeepAliveIdle.getSeconds(),
                 (int) this.tcpKeepAliveInterval.getSeconds(),
                 this.tcpKeepAliveProbes);
+    }
+
+    private static void requirePositive(Duration value, String name) {
+        if (value.isZero() || value.isNegative()) {
+            throw new IllegalArgumentException(name + " must be positive");
+        }
     }
 
     private static void requireAtMostHalf(Duration part, Duration whole, String partName, String wholeName) {

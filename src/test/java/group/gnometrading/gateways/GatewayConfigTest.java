@@ -33,6 +33,19 @@ class GatewayConfigTest {
     }
 
     @Test
+    void zeroInitialBackoffIsRejected() {
+        // Doubling zero stays zero: a failing connect would retry in a tight loop.
+        final GatewayConfig.Builder builder = new GatewayConfig.Builder().withInitialBackoff(Duration.ZERO);
+        assertThrows(IllegalArgumentException.class, builder::build);
+    }
+
+    @Test
+    void negativeInitialBackoffIsRejected() {
+        final GatewayConfig.Builder builder = new GatewayConfig.Builder().withInitialBackoff(Duration.ofMillis(-1));
+        assertThrows(IllegalArgumentException.class, builder::build);
+    }
+
+    @Test
     void negativeReconnectAttemptsAreRejected() {
         final GatewayConfig.Builder builder = new GatewayConfig.Builder().withMaxReconnectAttempts(-1);
         assertThrows(IllegalArgumentException.class, builder::build);

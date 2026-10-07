@@ -2,10 +2,12 @@ package group.gnometrading.gateways.outbound.exchanges.kalshi;
 
 import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
+import group.gnometrading.gateways.Rfc3339;
 import group.gnometrading.gateways.outbound.OrderContext;
 import group.gnometrading.gateways.outbound.OutboundJsonWebSocketReader;
 import group.gnometrading.gateways.outbound.fee.PredictionMarketFees;
 import group.gnometrading.logging.Logger;
+import group.gnometrading.networking.http.HTTPClient;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.networking.websockets.enums.Opcode;
 import group.gnometrading.schemas.ExecType;
@@ -14,6 +16,7 @@ import group.gnometrading.schemas.OrderExecutionReport;
 import group.gnometrading.schemas.OrderExecutionReportEncoder;
 import group.gnometrading.schemas.OrderStatus;
 import group.gnometrading.schemas.RejectReason;
+import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Listing;
@@ -22,6 +25,7 @@ import group.gnometrading.utils.ScaledMath;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import org.agrona.concurrent.EpochNanoClock;
 
 public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
@@ -29,6 +33,9 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
     // user_orders is a channel on Kalshi's one authenticated socket, which is signed by its path.
     private static final String WS_PATH = "/trade-api/ws/v2";
     private static final long NANOS_PER_MILLI = 1_000_000L;
+    private static final long MILLIS_PER_SECOND = 1_000L;
+    // Orders are placed shortly before the time the writer records, by a clock that may run behind Kalshi's.
+    private static final long LOOKUP_SLACK_SECONDS = 60;
 
     private static final int TYPE_FLAG_USER_ORDER = 1;
 
@@ -41,6 +48,11 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
     private final double makerFeeRate;
     private final ParsedEvent parsedEvent = new ParsedEvent();
     private final byte[] subscribeMessage;
+    private final String marketTicker;
+    // Null when no REST client was given: the reader then can't catch up after a reconnect.
+    private final KalshiOrderPages orderPages;
+    // Fetched on the supervisor's thread during a connect, applied on the reader's next pass.
+    private List<ByteBuffer> venueOrderPages = List.of();
 
     public KalshiOutboundReader(
             final Logger logger,
@@ -53,6 +65,8 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
             final WebSocketClient socketClient,
             final JsonDecoder jsonDecoder,
             final KalshiAuthSigner authSigner,
+            final HTTPClient restClient,
+            final String apiHost,
             final double takerFeeRate,
             final double makerFeeRate) {
         super(
@@ -72,9 +86,13 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
         // The YES and NO listings trade one market, so the suffix is not part of its ticker.
         final String exchangeSecurityId = listing.exchangeSecurityId();
         final int colonIdx = exchangeSecurityId.indexOf(':');
-        final String marketTicker = colonIdx >= 0 ? exchangeSecurityId.substring(0, colonIdx) : exchangeSecurityId;
+        this.marketTicker = colonIdx >= 0 ? exchangeSecurityId.substring(0, colonIdx) : exchangeSecurityId;
+        // Its own HTTP client: it runs on the supervisor's thread, and the writer's client is the writer's alone.
+        this.orderPages = restClient == null
+                ? null
+                : new KalshiOrderPages(restClient, apiHost, authSigner, () -> clock.nanoTime() / NANOS_PER_MILLI);
         this.subscribeMessage = ("{\"id\":1,\"cmd\":\"subscribe\",\"params\":{\"channels\":[\"user_orders\"],"
-                        + "\"market_tickers\":[\"" + marketTicker + "\"]}}")
+                        + "\"market_tickers\":[\"" + this.marketTicker + "\"]}}")
                 .getBytes(StandardCharsets.UTF_8);
     }
 
@@ -89,6 +107,63 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
     @Override
     protected void subscribe() throws IOException {
         this.socketClient.writeMessage(Opcode.TEXT, ByteBuffer.wrap(this.subscribeMessage));
+    }
+
+    /**
+     * Fetches every order of this market placed since just before the oldest one this reader holds or the socket
+     * went quiet, all statuses: their fills and cancels while the socket was down are in there.
+     */
+    @Override
+    protected void fetchVenueState() throws IOException {
+        this.venueOrderPages = List.of();
+        if (this.orderPages == null) {
+            return;
+        }
+        // From the oldest order held, or from when the socket went quiet if that's earlier: orders the writer sent
+        // meanwhile are still queued for this reader, not among those it holds.
+        final long oldestHeld = oldestOpenOrderMillis();
+        final long sinceMillis = oldestHeld < 0 ? lastHeardMillis() : Math.min(oldestHeld, lastHeardMillis());
+        this.venueOrderPages = this.orderPages.fetch(
+                this.marketTicker, "&min_ts=" + (sinceMillis / MILLIS_PER_SECOND - LOOKUP_SLACK_SECONDS));
+    }
+
+    /**
+     * Kalshi lists an order with the fields of its user_order updates, so each goes through the same handling:
+     * what the reader has already reported is reported again only by what changed, and orders it doesn't hold
+     * are skipped.
+     */
+    @Override
+    protected void applyVenueState() {
+        for (final ByteBuffer page : this.venueOrderPages) {
+            try (var root = this.jsonDecoder.wrap(page);
+                    var obj = root.asObject()) {
+                while (obj.hasNextKey()) {
+                    try (var entry = obj.nextKey()) {
+                        if (entry.getName().equals("orders")) {
+                            applyOrders(entry);
+                        }
+                    }
+                }
+            }
+        }
+        this.venueOrderPages = List.of();
+    }
+
+    private void applyOrders(final JsonDecoder.JsonNode orders) {
+        try (var list = orders.asArray()) {
+            while (list.hasNextItem()) {
+                applyOrder(list.nextItem());
+            }
+        }
+    }
+
+    private void applyOrder(final JsonDecoder.JsonNode item) {
+        try (item;
+                var order = item.asObject()) {
+            this.parsedEvent.reset();
+            parseMsgObject(order, this.parsedEvent);
+            emitEvent(this.parsedEvent);
+        }
     }
 
     @Override
@@ -145,6 +220,12 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
                     event.remainingCount = field.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR);
                 } else if (name.equals("last_updated_ts_ms")) {
                     event.timestampMs = field.asLong();
+                } else if (name.equals("last_update_time")) {
+                    // The REST order list has only this; updates carry both, with last_updated_ts_ms after it.
+                    final long nanos = Rfc3339.toEpochNanos(field.asString());
+                    if (nanos != Rfc3339.INVALID) {
+                        event.timestampMs = nanos / NANOS_PER_MILLI;
+                    }
                 } else {
                     parseDollarField(name, field, event);
                 }
@@ -203,20 +284,19 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
                     return;
                 }
             }
-            prepareExecReportHeader(ctx);
-            this.execReport.encoder.execType(ExecType.CANCEL);
-            this.execReport.encoder.orderStatus(OrderStatus.CANCELED);
-            setNullFillFields();
-            this.execReport.encoder.cumulativeQty(ctx.cumulativeFilledQty);
-            this.execReport.encoder.leavesQty(0);
-            setTimestamp(event.timestampMs);
-            publishExecReport();
-            releaseOrderContext(key);
+            publishDone(ctx, event, key);
             return;
         }
 
         if (event.fillCount > ctx.cumulativeFilledQty) {
             emitFillEvent(ctx, event, key);
+            return;
+        }
+
+        // Executed with nothing new filled, e.g. amended down to what had already filled: nothing more will
+        // fill, and without a final report the order would stay working in the OMS for good.
+        if (event.statusFlag == STATUS_EXECUTED) {
+            publishDone(ctx, event, key);
             return;
         }
 
@@ -227,8 +307,23 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
         }
     }
 
+    /** Ends an order with no fill of its own: the OMS releases what was still working. */
+    private void publishDone(final OrderContext ctx, final ParsedEvent event, final long key) {
+        prepareExecReportHeader(ctx);
+        this.execReport.encoder.execType(ExecType.CANCEL);
+        this.execReport.encoder.orderStatus(OrderStatus.CANCELED);
+        setNullFillFields();
+        this.execReport.encoder.cumulativeQty(ctx.cumulativeFilledQty);
+        this.execReport.encoder.leavesQty(0);
+        setTimestamp(event.timestampMs);
+        publishExecReport();
+        releaseOrderContext(key);
+    }
+
     private void emitFillEvent(final OrderContext ctx, final ParsedEvent event, final long key) {
-        final boolean fullyFilled = event.remainingCount <= 0 || event.statusFlag == STATUS_EXECUTED;
+        // An update that leaves out remaining_count_fp says nothing about whether the order is done.
+        final boolean fullyFilled = event.statusFlag == STATUS_EXECUTED
+                || (event.remainingCount != OrderContext.QTY_ABSENT && event.remainingCount <= 0);
         publishFill(ctx, event, fullyFilled, !fullyFilled, fullyFilled ? 0 : workingQtyAfter(ctx, event));
         if (fullyFilled) {
             releaseOrderContext(key);
@@ -248,8 +343,8 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
         final long fillDelta = event.fillCount - ctx.cumulativeFilledQty;
         final long totalCost = event.takerFillCost + event.makerFillCost;
         final long costDelta = totalCost - ctx.cumulativeCost;
-        final long fillPrice =
-                fillDelta > 0 ? ScaledMath.multiplyDivide(costDelta, Statics.SIZE_SCALING_FACTOR, fillDelta) : 0;
+        final long fillPrice = listingPrice(
+                ctx, fillDelta > 0 ? ScaledMath.multiplyDivide(costDelta, Statics.SIZE_SCALING_FACTOR, fillDelta) : 0);
 
         // An order that fills on arrival has no `resting` update to acknowledge it. Without a NEW
         // the OMS slot stays PENDING_NEW, so acknowledge it first if it is still working.
@@ -277,12 +372,24 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
         this.execReport.encoder.orderStatus(fullyFilled ? OrderStatus.FILLED : OrderStatus.PARTIALLY_FILLED);
         this.execReport.encoder.filledQty(fillDelta);
         this.execReport.encoder.fillPrice(fillPrice);
+        this.execReport.encoder.rejectReason(RejectReason.NULL_VAL);
         this.execReport.encoder.cumulativeQty(ctx.cumulativeFilledQty);
         this.execReport.encoder.leavesQty(ctx.leavesQty);
         setTimestamp(event.timestampMs);
         this.execReport.encoder.fee(fee);
         this.execReport.encoder.liquidity(liquidity);
         publishExecReport();
+    }
+
+    /**
+     * Kalshi prices a fill at what the side it bought cost. A bid on either listing buys that listing's own side; an
+     * ask buys the other one, so its price on the listing is the complement. Confirmed on the demo exchange.
+     */
+    private static long listingPrice(final OrderContext ctx, final long purchasedSidePrice) {
+        if (ctx.side == Side.Ask && purchasedSidePrice > 0) {
+            return Statics.PRICE_SCALING_FACTOR - purchasedSidePrice;
+        }
+        return purchasedSidePrice;
     }
 
     /**
@@ -305,6 +412,9 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
     private static long workingQtyAfter(final OrderContext ctx, final ParsedEvent event) {
         if (ctx.amendFillCount != OrderContext.QTY_ABSENT && event.fillCount <= ctx.amendFillCount) {
             return ctx.leavesQty;
+        }
+        if (event.remainingCount == OrderContext.QTY_ABSENT) {
+            return Math.max(0, ctx.leavesQty - (event.fillCount - ctx.cumulativeFilledQty));
         }
         return event.remainingCount;
     }
@@ -378,7 +488,7 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
             this.orderIdLength = 0;
             this.statusFlag = 0;
             this.fillCount = 0;
-            this.remainingCount = 0;
+            this.remainingCount = OrderContext.QTY_ABSENT;
             this.takerFillCost = 0;
             this.makerFillCost = 0;
             this.takerFees = 0;

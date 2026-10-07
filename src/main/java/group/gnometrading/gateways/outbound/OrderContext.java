@@ -22,6 +22,13 @@ public final class OrderContext {
      */
     public static final int HANDOFF_QUEUE_CAPACITY = 2 * MAX_IN_FLIGHT_ORDERS;
 
+    /**
+     * The reader's pool. The writer frees an order only once the reader has, so the reader holds at most the
+     * writer's live orders, plus refused submits whose rejection it hasn't reached yet: it takes in a pass's new
+     * orders before that pass's reports, and those can be at most a handoff queue's worth.
+     */
+    public static final int READER_POOL_SIZE = MAX_IN_FLIGHT_ORDERS + HANDOFF_QUEUE_CAPACITY;
+
     /** Marks a quantity the venue did not report. */
     public static final long QTY_ABSENT = -1L;
 
@@ -35,6 +42,8 @@ public final class OrderContext {
     public long cumulativeCost;
     public long cumulativeMakerCost;
     public long cumulativeFees;
+    // When the order was prepared, so a lookup on a venue that can only search by time knows where to look.
+    public long submittedAtMillis;
 
     // Reader-side: the order has been acknowledged to the OMS with an ExecType.NEW.
     public boolean acked;
@@ -66,6 +75,7 @@ public final class OrderContext {
         this.cumulativeCost = 0;
         this.cumulativeMakerCost = 0;
         this.cumulativeFees = 0;
+        this.submittedAtMillis = 0;
         this.acked = false;
         this.amendFillCount = QTY_ABSENT;
         this.amendAccepted = false;
@@ -89,6 +99,7 @@ public final class OrderContext {
         this.cumulativeCost = src.cumulativeCost;
         this.cumulativeMakerCost = src.cumulativeMakerCost;
         this.cumulativeFees = src.cumulativeFees;
+        this.submittedAtMillis = src.submittedAtMillis;
         this.acked = src.acked;
         this.amendFillCount = src.amendFillCount;
         this.amendAccepted = src.amendAccepted;

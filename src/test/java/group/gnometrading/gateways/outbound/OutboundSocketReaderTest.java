@@ -246,6 +246,40 @@ class OutboundSocketReaderTest {
         assertTrue(reader.attachSocketCalled.get());
     }
 
+    // ========== Catching up after a reconnect ==========
+
+    @Test
+    @Timeout(5)
+    void connect_FetchesVenueStateAfterSubscribing_AndAppliesItBeforeReadingTheSocket() throws Exception {
+        startReaderOnThread();
+        reader.steps.clear();
+
+        reader.connect();
+        final long deadline = System.currentTimeMillis() + 2_000;
+        while ((!reader.steps.contains("apply") || reader.steps.lastIndexOf("read") < reader.steps.indexOf("apply"))
+                && System.currentTimeMillis() < deadline) {
+            Thread.yield();
+        }
+
+        final List<String> steps = new ArrayList<>(reader.steps);
+        steps.removeIf(step -> step.equals("read") && steps.indexOf("attach") < 0);
+        assertEquals(List.of("attach", "fetch", "apply"), steps.subList(0, 3), steps.toString());
+        assertEquals("read", steps.get(3), "the socket is read only once the venue's state is applied");
+    }
+
+    @Test
+    @Timeout(5)
+    void connect_VenueStateFetchFails_ConnectFailsAndTheReaderStaysPaused() throws Exception {
+        startReaderOnThread();
+        reader.fetchFails = true;
+
+        assertThrows(IOException.class, () -> reader.connect());
+
+        Thread.sleep(100);
+        assertTrue(reader.pauseControl.isPaused(), "it never resumes without having caught up");
+        assertFalse(reader.steps.contains("apply"));
+    }
+
     @Test
     @Timeout(5)
     void connect_PreservesExistingContexts() throws Exception {
@@ -481,7 +515,7 @@ class OutboundSocketReaderTest {
     }
 
     private void fillReaderPool() throws Exception {
-        for (int i = 0; i < OrderContext.MAX_IN_FLIGHT_ORDERS; i++) {
+        for (int i = 0; i < OrderContext.READER_POOL_SIZE; i++) {
             enqueueNewOrder("hash-" + i, (long) i, 2, 3L, 100L);
             reader.doWork();
         }
@@ -530,6 +564,9 @@ class OutboundSocketReaderTest {
         final AtomicInteger readSocketCallCount = new AtomicInteger(0);
         final AtomicInteger handleMessageCallCount = new AtomicInteger(0);
         final AtomicBoolean attachSocketCalled = new AtomicBoolean(false);
+        // The order connect steps and reader passes happen in, for the reconnect catch-up tests.
+        final List<String> steps = new CopyOnWriteArrayList<>();
+        volatile boolean fetchFails;
         final AtomicBoolean disconnectSocketCalled = new AtomicBoolean(false);
 
         TestOutboundSocketReader(
@@ -550,6 +587,9 @@ class OutboundSocketReaderTest {
         @Override
         protected ByteBuffer readSocket() throws IOException {
             readSocketCallCount.incrementAndGet();
+            if (steps.size() < 50) {
+                steps.add("read");
+            }
             return readResults.isEmpty() ? null : readResults.removeFirst();
         }
 
@@ -561,6 +601,7 @@ class OutboundSocketReaderTest {
         @Override
         protected void attachSocket() throws IOException {
             attachSocketCalled.set(true);
+            steps.add("attach");
         }
 
         @Override
@@ -570,6 +611,19 @@ class OutboundSocketReaderTest {
 
         @Override
         protected void subscribe() throws IOException {}
+
+        @Override
+        protected void fetchVenueState() throws IOException {
+            steps.add("fetch");
+            if (fetchFails) {
+                throw new IOException("venue unreachable");
+            }
+        }
+
+        @Override
+        protected void applyVenueState() {
+            steps.add("apply");
+        }
 
         @Override
         public void keepAlive() throws IOException {}

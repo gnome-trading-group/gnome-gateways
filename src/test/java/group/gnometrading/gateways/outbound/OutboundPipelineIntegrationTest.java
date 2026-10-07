@@ -313,6 +313,74 @@ class OutboundPipelineIntegrationTest {
         assertEquals(20L, findReport(captured, 2L).decoder.securityId());
     }
 
+    // ========== Writer and reader free an order's slots together ==========
+
+    @Test
+    void lostCancelEvents_WriterRefusesNewOrdersInsteadOfOverrunningTheReader() throws Exception {
+        // Every cancel is accepted, but the venue's cancel events never arrive (the reader's socket was down), so
+        // the reader still holds every order. The writer must not count those slots as free.
+        for (long oid = 1; oid <= OrderContext.MAX_IN_FLIGHT_ORDERS; oid++) {
+            publishOrder(Side.Bid, price("0.50"), qty("1.0"), 2, 3L, oid, 1);
+            writer.doWork();
+            reader.doWork();
+            publishCancel(oid);
+            writer.doWork();
+        }
+        final int sent = writer.submitCallCount;
+
+        publishOrder(Side.Bid, price("0.50"), qty("1.0"), 2, 3L, 999L, 1);
+        writer.doWork();
+        assertDoesNotThrow(() -> reader.doWork());
+
+        assertEquals(sent, writer.submitCallCount, "an order the reader has no room for is never sent");
+        waitForReports(1);
+        final OrderExecutionReport reject = captured.stream()
+                .filter(r -> r.decoder.execType() == ExecType.REJECT)
+                .findFirst()
+                .orElseThrow();
+        assertEquals(999L, reject.getClientOidCounter());
+        assertEquals(RejectReason.GATEWAY_REJECTED, reject.decoder.rejectReason());
+
+        // Once a cancel event does arrive, its slots come back on both sides.
+        reader.simulatedMessages.add(ByteBuffer.wrap("CANCEL:hash-1".getBytes(StandardCharsets.UTF_8)));
+        reader.doWork();
+        publishOrder(Side.Bid, price("0.50"), qty("1.0"), 2, 3L, 1000L, 1);
+        writer.doWork();
+        assertDoesNotThrow(() -> reader.doWork());
+        assertEquals(sent + 1, writer.submitCallCount);
+    }
+
+    @Test
+    void rejectBurstWhileNearlyFull_ReaderNeverRunsOutOfSlots() throws Exception {
+        // The writer frees a rejected order at once; the reader takes in a pass's new orders before their rejects.
+        for (long oid = 1; oid < OrderContext.MAX_IN_FLIGHT_ORDERS; oid++) {
+            publishOrder(Side.Bid, price("0.50"), qty("1.0"), 2, 3L, oid, 1);
+            writer.doWork();
+            reader.doWork();
+        }
+        writer.submitResult = false;
+        for (long oid = 1000; oid < 1010; oid++) {
+            publishOrder(Side.Bid, price("0.50"), qty("1.0"), 2, 3L, oid, 1);
+        }
+        writer.doWork();
+
+        assertDoesNotThrow(() -> reader.doWork());
+        waitForReports(10);
+        assertEquals(
+                10,
+                captured.stream()
+                        .filter(r -> r.decoder.execType() == ExecType.REJECT)
+                        .count());
+    }
+
+    private void publishCancel(final long clientOidCounter) {
+        final CancelOrder cancel = new CancelOrder();
+        cancel.encoder.exchangeId(2);
+        cancel.encoder.securityId(3L);
+        cancel.encodeClientOid(clientOidCounter, 1);
+        orderBuffer.publishRaw(cancel.buffer, CancelOrderDecoder.TEMPLATE_ID, cancel.totalMessageSize());
+    }
+
     @Test
     void rejectDoesNotLeakActiveOrder() throws Exception {
         writer.submitResult = false;
@@ -491,6 +559,19 @@ class OutboundPipelineIntegrationTest {
             final byte[] bytes = new byte[buffer.remaining()];
             buffer.get(bytes);
             final String msg = new String(bytes, StandardCharsets.UTF_8);
+            if (msg.startsWith("CANCEL:")) {
+                final byte[] idBytes = msg.substring(7).getBytes(StandardCharsets.UTF_8);
+                final long key = computeKey(idBytes, idBytes.length);
+                final OrderContext ctx = findOrderContext(key);
+                if (ctx != null) {
+                    prepareExecReportHeader(ctx);
+                    execReport.encoder.execType(ExecType.CANCEL);
+                    execReport.encoder.orderStatus(OrderStatus.CANCELED);
+                    publishExecReport();
+                    releaseOrderContext(key);
+                }
+                return;
+            }
             if (!msg.startsWith("FILL:")) {
                 return;
             }

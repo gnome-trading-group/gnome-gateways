@@ -194,6 +194,49 @@ class OutboundSocketWriterTest {
     }
 
     @Test
+    void unknownSubmit_ResendSaysDuplicateButLookupMisses_StaysUnknown() throws Exception {
+        // The duplicate refusal proves the venue has it; a lookup that lags must not reject a live order.
+        writer.submitScript.add(SubmitResult.UNKNOWN);
+        writer.submitScript.add(SubmitResult.DUPLICATE);
+        writer.findScript.add(SubmitResult.REJECTED);
+        publishOrder(
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
+
+        writer.doWork();
+
+        assertEquals(0, drainQueue(writerReportQueue).size(), "not reported rejected");
+        assertEquals(1, writer.activeOrderCount());
+        assertEquals(2, writer.submitCallCount, "and not sent again");
+    }
+
+    @Test
+    void unknownSubmit_ResendSaysDuplicateAndLookupFindsIt_IsAccepted() throws Exception {
+        writer.submitScript.add(SubmitResult.UNKNOWN);
+        writer.submitScript.add(SubmitResult.DUPLICATE);
+        writer.findScript.add(SubmitResult.ACCEPTED);
+        publishOrder(
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 7L, 1);
+
+        writer.doWork();
+        publishCancel(7L, 2, 3L);
+        writer.doWork();
+
+        assertEquals("hash-7", exchangeOrderId(writer.cancelledContexts.get(0)), "cancels route by the found id");
+    }
+
+    @Test
+    void firstSubmitSaysDuplicate_IsRejected() throws Exception {
+        writer.submitScript.add(SubmitResult.DUPLICATE);
+        publishOrder(
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
+
+        writer.doWork();
+
+        assertEquals(ExecType.REJECT, drainQueue(writerReportQueue).get(0).execType);
+        assertEquals(0, writer.activeOrderCount());
+    }
+
+    @Test
     void networkErrorOnSubmit_IsTreatedAsUnknownNotFatal() throws Exception {
         writer.submitScript.add(new IOException("connection reset"));
         writer.submitScript.add(SubmitResult.ACCEPTED);
@@ -225,7 +268,7 @@ class OutboundSocketWriterTest {
     // ========== Cancel path ==========
 
     @Test
-    void cancelExistingOrder_Success_CallsCancelAndRemovesFromActiveOrders() throws Exception {
+    void cancelExistingOrder_Success_OrderHeldUntilTheReaderReleasesIt() throws Exception {
         publishOrder(
                 Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
         writer.doWork();
@@ -237,10 +280,16 @@ class OutboundSocketWriterTest {
         assertEquals(1, writer.cancelCallCount);
         assertEquals(0, drainQueue(writerReportQueue).size());
 
-        // Cancelled order removed from active — second cancel is a no-op
+        // The venue hasn't confirmed it yet, so the order is still the writer's: a second cancel is sent.
         publishCancel(clientOidCounter, 2, 3L);
         writer.doWork();
-        assertEquals(1, writer.cancelCallCount);
+        assertEquals(2, writer.cancelCallCount);
+
+        // Once the reader releases it on the venue's cancel event, it is gone.
+        enqueueCompletion(releasedOrderQueue, clientOidCounter);
+        publishCancel(clientOidCounter, 2, 3L);
+        writer.doWork();
+        assertEquals(2, writer.cancelCallCount);
     }
 
     @Test
@@ -354,20 +403,35 @@ class OutboundSocketWriterTest {
     }
 
     @Test
-    void poolRecycledAfterCancel_CanBeReused() throws Exception {
-        publishOrder(
-                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
+    void cancelledOrder_SlotComesBackOnlyWhenTheReaderReleasesIt() throws Exception {
+        for (long oid = 1; oid <= OrderContext.MAX_IN_FLIGHT_ORDERS; oid++) {
+            publishOrder(
+                    Side.Bid,
+                    price("0.50"),
+                    qty("1.0"),
+                    OrderType.LIMIT,
+                    TimeInForce.GOOD_TILL_CANCELED,
+                    2,
+                    3L,
+                    oid,
+                    1);
+            writer.doWork();
+            drainQueue(newOrderQueue);
+        }
+        publishCancel(1L, 2, 3L);
         writer.doWork();
-        final long clientOidCounter = drainQueue(newOrderQueue).get(0).clientOidCounter;
 
-        publishCancel(clientOidCounter, 2, 3L);
-        writer.doWork();
-
-        // Should succeed — pool slot was returned on cancel
         publishOrder(
-                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 999L, 1);
         writer.doWork();
-        assertEquals(1, drainQueue(newOrderQueue).size());
+        assertEquals(
+                RejectReason.GATEWAY_REJECTED, drainQueue(writerReportQueue).get(0).rejectReason);
+
+        enqueueCompletion(releasedOrderQueue, 1L);
+        publishOrder(
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1000L, 1);
+        writer.doWork();
+        assertEquals(1, drainQueue(newOrderQueue).size(), "the released slot takes the new order");
     }
 
     @Test

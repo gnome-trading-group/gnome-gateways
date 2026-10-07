@@ -5,6 +5,8 @@ import group.gnometrading.codecs.json.JsonEncoder;
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
 import group.gnometrading.gateways.outbound.OrderContext;
 import group.gnometrading.gateways.outbound.OutboundSocketWriter;
+import group.gnometrading.logging.LogMessage;
+import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.http.HTTPClient;
 import group.gnometrading.networking.http.HTTPProtocol;
 import group.gnometrading.networking.http.HTTPResponse;
@@ -19,16 +21,20 @@ import group.gnometrading.strings.GnomeString;
 import group.gnometrading.strings.MutableString;
 import group.gnometrading.strings.ViewString;
 import group.gnometrading.utils.ByteBufferUtils;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import org.agrona.concurrent.EpochNanoClock;
 
 public final class KalshiOutboundWriter extends OutboundSocketWriter {
 
     private static final String ORDER_PATH = "/trade-api/v2/portfolio/events/orders";
-    private static final String ORDERS_LOOKUP_PATH = "/trade-api/v2/portfolio/orders";
+    private static final String EXCHANGE_STATUS_PATH = "/trade-api/v2/exchange/status";
     private static final long LOOKUP_WINDOW_SECONDS = 60L;
-    private static final int LOOKUP_LIMIT = 200;
+    private static final int HTTP_CONFLICT = 409;
+    private static final int HTTP_SERVICE_UNAVAILABLE = 503;
+    private static final int MAX_LOGGED_REASON_CHARS = 500;
     private static final ViewString ORDER_PATH_GS = new ViewString(ORDER_PATH);
     private static final String AMEND_SUFFIX = "/amend";
     private static final byte[] AMEND_SUFFIX_BYTES = AMEND_SUFFIX.getBytes(StandardCharsets.US_ASCII);
@@ -41,7 +47,6 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
     private static final String CONTENT_TYPE_JSON = "application/json";
 
     private static final byte[] ORDER_ID_MARKER = "\"order_id\":\"".getBytes(StandardCharsets.UTF_8);
-    private static final byte[] FILL_COUNT_MARKER = "\"fill_count\":\"".getBytes(StandardCharsets.UTF_8);
     private static final byte[] REMAINING_COUNT_MARKER = "\"remaining_count\":\"".getBytes(StandardCharsets.UTF_8);
 
     // PRICE_SCALING_FACTOR / 10_000 — converts internal price to 4-decimal fractional part
@@ -50,6 +55,7 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
     private static final long SIZE_SCALE_DIVISOR = Statics.SIZE_SCALING_FACTOR / 100L;
     private static final long NANOS_PER_MILLI = 1_000_000L;
 
+    private final Logger logger;
     private final HTTPClient httpClient;
     private final String apiHost;
     private final KalshiAuthSigner authSigner;
@@ -67,14 +73,20 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
     // Each order's id is written here, then copied into its context, so no buffer is made per order.
     private final byte[] clientOrderIdBuf = new byte[OrderContext.EXCHANGE_ORDER_ID_MAX_LENGTH];
     private final ByteBuffer clientOrderIdBuffer = ByteBuffer.wrap(clientOrderIdBuf);
-    private long preparedAtMillis;
     private final byte[] lookupOrderId = new byte[OrderContext.EXCHANGE_ORDER_ID_MAX_LENGTH];
     private int lookupOrderIdLength;
 
-    private final MutableString cancelPath = new MutableString(
-            ORDER_PATH.length() + 1 + OrderContext.EXCHANGE_ORDER_ID_MAX_LENGTH + AMEND_SUFFIX.length());
+    // The market's exchange shard, read from Kalshi at start; -1 until known, when Kalshi routes by ticker alone,
+    // which reaches the right shard but costs every shard's write budget and some latency.
+    private int exchangeIndex = -1;
+    // Cancels take their routing as a query; an order id alone can't name the shard.
+    private byte[] cancelRoutingQuery;
+
+    private final MutableString cancelPath;
+    private final KalshiOrderPages orderPages;
 
     public KalshiOutboundWriter(
+            final Logger logger,
             final SequencedRingBuffer<?> orderOutboundBuffer,
             final ManyToOneRingBuffer<OrderContext> newOrderQueue,
             final ManyToOneRingBuffer<OrderContext> writerReportQueue,
@@ -86,6 +98,7 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
             final Listing listing,
             final String sessionTag) {
         super(orderOutboundBuffer, newOrderQueue, writerReportQueue, releasedOrderQueue);
+        this.logger = logger;
         this.httpClient = httpClient;
         this.apiHost = apiHost;
         this.authSigner = authSigner;
@@ -98,6 +111,42 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
         final String suffix = colonIdx >= 0 ? exchangeSecurityId.substring(colonIdx + 1) : "";
         this.marketTicker = colonIdx >= 0 ? exchangeSecurityId.substring(0, colonIdx) : exchangeSecurityId;
         this.isNoListing = "no".equalsIgnoreCase(suffix);
+        this.cancelRoutingQuery = routingQuery(KalshiApiUtil.SHARD_UNKNOWN);
+        this.orderPages = new KalshiOrderPages(httpClient, apiHost, authSigner, this::epochMillis);
+        // Room for the routing query with any shard number.
+        this.cancelPath = new MutableString(ORDER_PATH.length()
+                + 1
+                + OrderContext.EXCHANGE_ORDER_ID_MAX_LENGTH
+                + AMEND_SUFFIX.length()
+                + this.cancelRoutingQuery.length
+                + "&exchange_index=".length()
+                + 11);
+    }
+
+    /** Reads the market's exchange shard, so every request goes straight to it. */
+    @Override
+    public void onStart() {
+        try {
+            this.exchangeIndex = fetchExchangeIndex();
+        } catch (final IOException | RuntimeException e) {
+            this.exchangeIndex = KalshiApiUtil.SHARD_UNKNOWN;
+        }
+        if (this.exchangeIndex < 0) {
+            this.logger.logf(
+                    LogMessage.UNKNOWN_ERROR,
+                    "Kalshi market %s: exchange shard unknown, orders will route by ticker",
+                    this.marketTicker);
+        }
+        this.cancelRoutingQuery = routingQuery(this.exchangeIndex);
+    }
+
+    private int fetchExchangeIndex() throws IOException {
+        return KalshiApiUtil.fetchExchangeIndex(
+                this.httpClient, this.apiHost, this.authSigner, epochMillis(), this.marketTicker);
+    }
+
+    private byte[] routingQuery(final int shard) {
+        return KalshiApiUtil.routingQuery(this.marketTicker, shard).getBytes(StandardCharsets.US_ASCII);
     }
 
     @Override
@@ -114,7 +163,7 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
             price = Statics.PRICE_SCALING_FACTOR - price;
         }
         writeClientOrderId(ctx);
-        this.preparedAtMillis = epochMillis();
+        ctx.submittedAtMillis = epochMillis();
         buildOrderJson(
                 price,
                 this.order.decoder.size(),
@@ -146,38 +195,146 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
                 CONTENT_TYPE_JSON);
 
         if (!response.isSuccess()) {
-            return classifyFailure(response.getStatusCode());
+            final int status = response.getStatusCode();
+            logRejection("submit", ctx, status, response);
+            // A 503 while the shard isn't trading is Kalshi refusing every order, not a lost answer.
+            if (status == HTTP_SERVICE_UNAVAILABLE && !shardIsTrading()) {
+                return SubmitResult.REJECTED;
+            }
+            // Kalshi's answer to a client_order_id it already has.
+            if (status == HTTP_CONFLICT) {
+                return SubmitResult.DUPLICATE;
+            }
+            return classifyFailure(status);
         }
         return parseOrderId(response, ctx) ? SubmitResult.ACCEPTED : SubmitResult.UNKNOWN;
     }
 
+    /** Whether the market's shard is taking orders; true when that can't be told, so an order isn't given up on. */
+    private boolean shardIsTrading() {
+        try {
+            this.authSigner.sign(epochMillis(), "GET", EXCHANGE_STATUS_PATH);
+            final HTTPResponse response = this.httpClient.get(
+                    HTTPProtocol.HTTPS,
+                    this.apiHost,
+                    EXCHANGE_STATUS_PATH,
+                    HEADER_KEY,
+                    this.authSigner.apiKey(),
+                    HEADER_TIMESTAMP,
+                    this.authSigner.timestamp(),
+                    HEADER_SIGNATURE,
+                    this.authSigner.signature());
+            // Read whatever the status code: in an outage the status endpoint is itself a 503, saying trading is off.
+            if (response.getBody() == null) {
+                return true;
+            }
+            return readTradingActive(response.getBody());
+        } catch (final IOException | RuntimeException e) {
+            return true;
+        }
+    }
+
+    private boolean readTradingActive(final ByteBuffer body) {
+        boolean exchangeTrading = true;
+        int shardTrading = -1;
+        try (var root = this.jsonDecoder.wrap(body);
+                var status = root.asObject()) {
+            while (status.hasNextKey()) {
+                try (var entry = status.nextKey()) {
+                    if (entry.getName().equals("trading_active")) {
+                        exchangeTrading = entry.asBoolean();
+                    } else if (entry.getName().equals("exchange_index_statuses")) {
+                        shardTrading = readShardTrading(entry);
+                    }
+                }
+            }
+        }
+        return shardTrading >= 0 ? shardTrading == 1 : exchangeTrading;
+    }
+
+    /** 1 if this market's shard is listed as trading, 0 if listed as not, -1 if it isn't listed. */
+    private int readShardTrading(final JsonDecoder.JsonNode statuses) {
+        int result = -1;
+        try (var list = statuses.asArray()) {
+            while (list.hasNextItem()) {
+                final int shard = readShardIfOurs(list.nextItem());
+                if (shard >= 0) {
+                    result = shard;
+                }
+            }
+        }
+        return result;
+    }
+
+    /** The shard's trading flag as 1 or 0 if it is this market's shard, else -1. */
+    private int readShardIfOurs(final JsonDecoder.JsonNode item) {
+        int index = -1;
+        boolean trading = true;
+        try (item;
+                var shard = item.asObject()) {
+            while (shard.hasNextKey()) {
+                final var field = shard.nextKey();
+                if (field.getName().equals("exchange_index")) {
+                    index = (int) field.asLong();
+                } else if (field.getName().equals("trading_active")) {
+                    trading = field.asBoolean();
+                }
+                field.close();
+            }
+        }
+        if (index != this.exchangeIndex) {
+            return -1;
+        }
+        return trading ? 1 : 0;
+    }
+
+    /** Logs a refusal with Kalshi's own reason; only on the error path, so building the text is fine. */
+    private void logRejection(
+            final String action, final OrderContext ctx, final int status, final HTTPResponse response) {
+        if (status <= 0) {
+            return;
+        }
+        final ByteBuffer body = response.getBody();
+        String reason = body == null
+                ? ""
+                : StandardCharsets.UTF_8.decode(body.duplicate()).toString();
+        if (reason.length() > MAX_LOGGED_REASON_CHARS) {
+            reason = reason.substring(0, MAX_LOGGED_REASON_CHARS);
+        }
+        this.logger.logf(
+                LogMessage.ORDER_REJECTED_BY_VENUE,
+                "Kalshi refused %s of %s: %d %s",
+                action,
+                new String(ctx.correlationIdBytes, 0, ctx.correlationIdLength, StandardCharsets.US_ASCII),
+                status,
+                reason);
+    }
+
     /**
-     * Looks for the order among this market's recent orders. Kalshi cannot filter by client order id,
-     * so the listing is narrowed to the ticker and to orders created since shortly before the submit.
+     * Looks for the order among this market's recent orders, every page of them. Kalshi cannot filter by client
+     * order id, so the listing is narrowed to the ticker and to orders created since shortly before the order's
+     * own submit.
      */
     @Override
     protected SubmitResult findOrder(final OrderContext ctx) throws Exception {
-        final long minTimestampSeconds = this.preparedAtMillis / 1000L - LOOKUP_WINDOW_SECONDS;
-        final String path = ORDERS_LOOKUP_PATH + "?ticker=" + this.marketTicker + "&min_ts=" + minTimestampSeconds
-                + "&limit=" + LOOKUP_LIMIT;
-        // Kalshi signs the path without its query string.
-        this.authSigner.sign(epochMillis(), "GET", ORDERS_LOOKUP_PATH);
-
-        final HTTPResponse response = this.httpClient.get(
-                HTTPProtocol.HTTPS,
-                this.apiHost,
-                path,
-                HEADER_KEY,
-                this.authSigner.apiKey(),
-                HEADER_TIMESTAMP,
-                this.authSigner.timestamp(),
-                HEADER_SIGNATURE,
-                this.authSigner.signature());
-
-        if (!response.isSuccess() || response.getBody() == null) {
+        final long minTimestampSeconds = ctx.submittedAtMillis / 1000L - LOOKUP_WINDOW_SECONDS;
+        final List<ByteBuffer> pages;
+        try {
+            pages = this.orderPages.fetch(this.marketTicker, "&min_ts=" + minTimestampSeconds);
+        } catch (final IOException e) {
             return SubmitResult.UNKNOWN;
         }
-        return findInOrderList(response.getBody(), ctx) ? SubmitResult.ACCEPTED : SubmitResult.REJECTED;
+        for (final ByteBuffer page : pages) {
+            if (findInOrderList(page, ctx)) {
+                return SubmitResult.ACCEPTED;
+            }
+        }
+        return SubmitResult.REJECTED;
+    }
+
+    /** Whether the order's Kalshi id is known, looking the order up if it isn't yet. */
+    private boolean venueIdKnown(final OrderContext ctx) throws Exception {
+        return ctx.exchangeOrderIdLength > 0 || findOrder(ctx) == SubmitResult.ACCEPTED;
     }
 
     /** Scans {@code {"orders":[...]}} for our client order id, taking the venue's order_id if found. */
@@ -264,8 +421,19 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
 
     @Override
     protected boolean cancelOrder(final OrderContext ctx) throws Exception {
+        if (!venueIdKnown(ctx)) {
+            // The submit's outcome is still unknown and Kalshi lists no such order: nothing can be sent, and the
+            // OMS gets the same answer as for a cancel that never reached the venue.
+            throw new IOException("Kalshi has no order "
+                    + new String(ctx.correlationIdBytes, 0, ctx.correlationIdLength, StandardCharsets.US_ASCII)
+                    + " to cancel");
+        }
         buildOrderPath(ctx);
+        // Kalshi signs the path without its query string.
         this.authSigner.sign(epochMillis(), "DELETE", this.cancelPath);
+        for (final byte b : this.cancelRoutingQuery) {
+            this.cancelPath.append(b);
+        }
 
         final HTTPResponse response = this.httpClient.delete(
                 HTTPProtocol.HTTPS,
@@ -278,7 +446,11 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
                 HEADER_SIGNATURE,
                 this.authSigner.signature());
 
-        return response.isSuccess();
+        if (!response.isSuccess()) {
+            logRejection("cancel", ctx, response.getStatusCode(), response);
+            return false;
+        }
+        return true;
     }
 
     @Override
@@ -286,6 +458,10 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
         final long clientOidCounter = this.modifyOrder.getClientOidCounter();
         final OrderContext ctx = getActiveOrder(clientOidCounter);
         if (ctx == null) {
+            return;
+        }
+        if (!venueIdKnown(ctx)) {
+            enqueueCancelReject(ctx, RejectReason.UNKNOWN);
             return;
         }
 
@@ -321,12 +497,17 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
             // Kalshi acknowledges an amend only in this response body, and only the reader knows the
             // order's fills, so hand it the venue's numbers to build the acknowledgement from.
             ctx.originalQty = this.modifyOrder.decoder.size();
+            // The amended count is what has filled plus what rests, and remaining_count is what rests after the
+            // amend, so the order's fills so far are their difference. The response's own fill_count is only what
+            // the amend filled by crossing the book.
+            final long remaining = parseFixedPointField(response, REMAINING_COUNT_MARKER);
             enqueueAmendAccepted(
                     ctx,
                     ctx.originalQty,
-                    parseFixedPointField(response, FILL_COUNT_MARKER),
-                    parseFixedPointField(response, REMAINING_COUNT_MARKER));
+                    remaining == OrderContext.QTY_ABSENT ? OrderContext.QTY_ABSENT : ctx.originalQty - remaining,
+                    remaining);
         } else {
+            logRejection("amend", ctx, response.getStatusCode(), response);
             enqueueCancelReject(ctx, RejectReason.EXCHANGE_REJECTED);
         }
     }
@@ -361,6 +542,7 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
             this.jsonEncoder.writeComma();
             this.jsonEncoder.writeObjectEntry("post_only", true);
         }
+        writeExchangeIndex();
         this.jsonEncoder.writeObjectEnd();
         this.jsonBodyLength = this.jsonBodyBuffer.position();
     }
@@ -375,8 +557,16 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
         writePriceField(price);
         this.jsonEncoder.writeComma();
         writeSizeField(size);
+        writeExchangeIndex();
         this.jsonEncoder.writeObjectEnd();
         this.jsonBodyLength = this.jsonBodyBuffer.position();
+    }
+
+    private void writeExchangeIndex() {
+        if (this.exchangeIndex >= 0) {
+            this.jsonEncoder.writeComma();
+            this.jsonEncoder.writeObjectEntry("exchange_index", this.exchangeIndex);
+        }
     }
 
     // Kalshi takes fixed-point decimals as JSON strings and refuses numbers.

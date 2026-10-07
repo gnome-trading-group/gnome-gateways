@@ -5,8 +5,11 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import group.gnometrading.gateways.outbound.exchanges.kalshi.KalshiAuthSigner;
@@ -35,6 +38,12 @@ class KalshiVenueOrderQueryTest {
             new Exchange(2, "KALSHI", "Kalshi", "global", SchemaType.MBP_10),
             new Security(3, "T", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
             "KXT-26:no",
+            "KXT");
+    private static final Listing YES_LISTING = new Listing(
+            500,
+            new Exchange(2, "KALSHI", "Kalshi", "global", SchemaType.MBP_10),
+            new Security(3, "T", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
+            "KXT-26:yes",
             "KXT");
 
     private final HTTPClient httpClient = mock(HTTPClient.class);
@@ -112,6 +121,57 @@ class KalshiVenueOrderQueryTest {
         assertTrue(order.terminal());
     }
 
+    // Kalshi reports what a fill cost the side the order bought; recovery books the notional at this listing's price.
+    // Orders as Kalshi's demo exchange returned them on 2026-10-07.
+
+    @Test
+    void askOnTheYesListing_NotionalIsTheYesPrice() throws IOException {
+        // Sold YES into a 0.34 bid: Kalshi reports the 0.66 the NO side cost.
+        respond(200, "{\"orders\":[" + capturedOrder("no", "0.660000") + "],\"cursor\":\"\"}");
+
+        final VenueOrder order = query.listOpenOrders(YES_LISTING).get(0);
+
+        assertEquals(1_000_000, order.filledQty());
+        assertEquals(340_000_000L, order.filledNotional());
+        assertEquals(15_800_000L, order.fees());
+    }
+
+    @Test
+    void bidOnTheYesListing_NotionalIsWhatKalshiReports() throws IOException {
+        respond(200, "{\"orders\":[" + capturedOrder("yes", "0.450000") + "],\"cursor\":\"\"}");
+
+        assertEquals(450_000_000L, query.listOpenOrders(YES_LISTING).get(0).filledNotional());
+    }
+
+    @Test
+    void bidOnTheNoListing_NotionalIsWhatKalshiReports() throws IOException {
+        // Bought NO (sent as a YES ask): Kalshi's cost is already the NO price.
+        respond(200, "{\"orders\":[" + capturedOrder("no", "0.670000") + "],\"cursor\":\"\"}");
+
+        assertEquals(670_000_000L, query.listOpenOrders(NO_LISTING).get(0).filledNotional());
+    }
+
+    @Test
+    void askOnTheNoListing_NotionalIsTheNoPrice() throws IOException {
+        // Sold NO (sent as a YES bid) into a 0.45 YES ask: Kalshi reports the 0.45 YES cost; NO traded at 0.55.
+        respond(200, "{\"orders\":[" + capturedOrder("yes", "0.450000") + "],\"cursor\":\"\"}");
+
+        assertEquals(550_000_000L, query.listOpenOrders(NO_LISTING).get(0).filledNotional());
+    }
+
+    private static String capturedOrder(final String outcomeSide, final String takerFillCost) {
+        return "{\"action\":\"sell\",\"book_side\":\"" + ("yes".equals(outcomeSide) ? "bid" : "ask") + "\","
+                + "\"client_order_id\":\"smokemuyajfmxyes-13\",\"created_time\":\"2026-10-07T15:57:40.3591Z\","
+                + "\"exchange_index\":0,\"fill_count_fp\":\"1.00\",\"initial_count_fp\":\"1.00\","
+                + "\"maker_fees_dollars\":\"0.000000\",\"maker_fill_cost_dollars\":\"0.000000\","
+                + "\"no_price_dollars\":\"0.9900\",\"order_id\":\"01a11715-b120-7628-a6e4-85048df0c327\","
+                + "\"outcome_side\":\"" + outcomeSide + "\",\"remaining_count_fp\":\"0.00\","
+                + "\"self_trade_prevention_type\":\"maker\",\"side\":\"yes\",\"status\":\"executed\","
+                + "\"subaccount_number\":0,\"taker_fees_dollars\":\"0.015800\","
+                + "\"taker_fill_cost_dollars\":\"" + takerFillCost + "\",\"ticker\":\"KXT-26\",\"type\":\"limit\","
+                + "\"yes_price_dollars\":\"0.0100\"}";
+    }
+
     @Test
     void findsAnOrderByClientOrderIdAmongRecentOrders() throws IOException {
         respond(
@@ -133,11 +193,49 @@ class KalshiVenueOrderQueryTest {
     }
 
     @Test
+    void cancel_RoutesStraightToTheMarketsShard_AndSignsThePathWithoutItsQuery() throws IOException {
+        respond(200, "{\"market\":{\"ticker\":\"KXT-26\",\"exchange_index\":2}}");
+        respond(200, "{\"order_id\":\"k-9\",\"reduced_by\":\"1.00\"}");
+
+        query.cancel(NO_LISTING, new VenueOrder("4071-501-9", "k-9", 0, 0, 0, false));
+
+        assertEquals("/trade-api/v2/markets/KXT-26", paths.get(0));
+        assertEquals(
+                "DELETE /trade-api/v2/portfolio/events/orders/k-9?market_ticker=KXT-26&exchange_index=2", paths.get(1));
+        verify(signer).sign(anyLong(), eq("DELETE"), eq("/trade-api/v2/portfolio/events/orders/k-9"));
+    }
+
+    @Test
+    void cancel_ShardLookupFails_RoutesByTickerAlone() throws IOException {
+        // An order id alone can't name the shard; with the ticker, Kalshi routes the cancel itself.
+        respond(500, "{}");
+        respond(200, "{\"order_id\":\"k-9\",\"reduced_by\":\"1.00\"}");
+
+        assertTrue(query.cancel(NO_LISTING, new VenueOrder("4071-501-9", "k-9", 0, 0, 0, false)));
+
+        assertEquals("DELETE /trade-api/v2/portfolio/events/orders/k-9?market_ticker=KXT-26", paths.get(1));
+    }
+
+    @Test
+    void cancel_LooksTheShardUpOncePerMarket() throws IOException {
+        respond(200, "{\"market\":{\"ticker\":\"KXT-26\",\"exchange_index\":2}}");
+        respond(200, "{}");
+        respond(200, "{}");
+
+        query.cancel(NO_LISTING, new VenueOrder("4071-501-1", "k-1", 0, 0, 0, false));
+        query.cancel(NO_LISTING, new VenueOrder("4071-501-2", "k-2", 0, 0, 0, false));
+
+        assertEquals(3, paths.size(), paths.toString());
+        assertTrue(paths.get(2).endsWith("&exchange_index=2"), paths.toString());
+    }
+
+    @Test
     void cancelsByKalshisOwnOrderId() throws IOException {
+        respond(500, "{}");
         respond(200, "{}");
         final VenueOrder order = new VenueOrder("4071-501-3", "k-1", 0, 0, 0, false);
         assertTrue(query.cancel(NO_LISTING, order));
-        assertEquals("DELETE /trade-api/v2/portfolio/events/orders/k-1", paths.get(0));
+        assertEquals("DELETE /trade-api/v2/portfolio/events/orders/k-1?market_ticker=KXT-26", paths.get(1));
     }
 
     @Test

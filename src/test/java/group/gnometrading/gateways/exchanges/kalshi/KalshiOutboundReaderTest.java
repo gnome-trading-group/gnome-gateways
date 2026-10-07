@@ -6,9 +6,12 @@ import static org.mockito.Mockito.*;
 import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
 import group.gnometrading.gateways.outbound.OrderContext;
+import group.gnometrading.gateways.outbound.OutboundSocketReader;
 import group.gnometrading.gateways.outbound.exchanges.kalshi.KalshiAuthSigner;
 import group.gnometrading.gateways.outbound.exchanges.kalshi.KalshiOutboundReader;
 import group.gnometrading.logging.NullLogger;
+import group.gnometrading.networking.http.HTTPClient;
+import group.gnometrading.networking.http.HTTPResponse;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.networking.websockets.WebSocketResponse;
 import group.gnometrading.networking.websockets.enums.Opcode;
@@ -18,12 +21,15 @@ import group.gnometrading.schemas.OrderExecutionReport;
 import group.gnometrading.schemas.OrderStatus;
 import group.gnometrading.schemas.RejectReason;
 import group.gnometrading.schemas.SchemaType;
+import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
 import group.gnometrading.sequencer.GlobalSequence;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Exchange;
 import group.gnometrading.sm.Listing;
 import group.gnometrading.sm.Security;
+import java.io.IOException;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -33,8 +39,10 @@ import java.security.PrivateKey;
 import java.security.Signature;
 import java.security.spec.MGF1ParameterSpec;
 import java.security.spec.PSSParameterSpec;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import org.junit.jupiter.api.AfterEach;
@@ -48,6 +56,7 @@ class KalshiOutboundReaderTest {
     private static final long FIXED_NANO = 1_700_000_000_000_000_000L;
     private static final long ORIG_QTY = qty("10.0");
     private static final long EVENT_MS = 1_700_000_000_000L;
+    private static final long SUBMITTED_AT_MS = 1_791_398_000_000L;
     private static final long SENTINEL_ORDER_ID = 99L;
 
     private static final PrivateKey TEST_PRIVATE_KEY;
@@ -66,9 +75,12 @@ class KalshiOutboundReaderTest {
     private ManyToOneRingBuffer<OrderContext> writerReportQueue;
     private ManyToOneRingBuffer<OrderContext> releasedOrderQueue;
     private WebSocketClient client;
+    private HTTPClient restClient;
+    private final List<String> restPaths = new ArrayList<>();
     private WebSocketResponse response;
     private KalshiOutboundReader reader;
     private List<OrderExecutionReport> captured;
+    private Side nextOrderSide = Side.Bid;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -87,6 +99,7 @@ class KalshiOutboundReaderTest {
         releasedOrderQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
 
         client = mock(WebSocketClient.class);
+        restClient = mock(HTTPClient.class);
         response = mock(WebSocketResponse.class);
         when(response.isSuccess()).thenReturn(true);
         when(response.isClosed()).thenReturn(false);
@@ -110,6 +123,8 @@ class KalshiOutboundReaderTest {
                 client,
                 new JsonDecoder(),
                 new KalshiAuthSigner("test-api-key", TEST_PRIVATE_KEY),
+                restClient,
+                "api.test",
                 0.07,
                 0.0175);
         reader.pauseControl.release();
@@ -182,6 +197,8 @@ class KalshiOutboundReaderTest {
                 client,
                 new JsonDecoder(),
                 new KalshiAuthSigner("test-api-key", key),
+                restClient,
+                "api.test",
                 0.07,
                 0.0175);
     }
@@ -725,6 +742,329 @@ class KalshiOutboundReaderTest {
         assertEquals(ORDER_ID, report.decoder.exchangeOrderId());
     }
 
+    // ========== Catching up after a reconnect ==========
+    // Orders as Kalshi's REST order list returns them; the reader takes them through the same handling as its
+    // user_order updates, before anything queued on the new socket.
+
+    @Test
+    void reconnect_FillWhileDisconnected_IsReportedOnce() throws Exception {
+        enqueueLiveOrder(ORDER_ID, ORIG_QTY, 0);
+        process("{\"type\":\"subscribed\",\"id\":1,\"msg\":{\"channel\":\"user_orders\",\"sid\":1}}");
+        respondRest(restPage(restOrder(ORDER_ID, "resting", "4.00", "6.00", "2.000000")));
+        reader.recvTimestamp = (SUBMITTED_AT_MS + 5_000) * 1_000_000L;
+
+        catchUp();
+        waitForReports(1);
+
+        final OrderExecutionReport fill = captured.get(0);
+        assertEquals(ExecType.PARTIAL_FILL, fill.decoder.execType());
+        assertEquals(qty("4.0"), fill.decoder.filledQty());
+        assertEquals(qty("6.0"), fill.decoder.leavesQty());
+        assertEquals(1_791_396_100_250_000_000L, fill.decoder.timestampEvent(), "from the order's last_update_time");
+        assertTrue(
+                restPaths.get(0).contains("&min_ts=" + (SUBMITTED_AT_MS / 1000 - 60)),
+                "orders since just before the oldest one held: " + restPaths);
+
+        // The same update arriving late on the new socket adds nothing.
+        process(userOrderEvent(ORDER_ID, "resting", "4.00", "6.00", "2.0000", "0.0000", EVENT_MS));
+        assertNoFurtherReports(1);
+    }
+
+    @Test
+    void reconnect_FilledThenCanceledWhileDisconnected_ReportsBothAndReleasesTheOrder() throws Exception {
+        enqueueLiveOrder(ORDER_ID, ORIG_QTY, 0);
+        process("{\"type\":\"subscribed\",\"id\":1,\"msg\":{\"channel\":\"user_orders\",\"sid\":1}}");
+        drainCompletionQueue();
+        respondRest(restPage(restOrder(ORDER_ID, "canceled", "1.00", "0.00", "0.500000")));
+
+        catchUp();
+        waitForReports(2);
+
+        assertEquals(ExecType.PARTIAL_FILL, captured.get(0).decoder.execType());
+        assertEquals(qty("1.0"), captured.get(0).decoder.filledQty());
+        assertEquals(ExecType.CANCEL, captured.get(1).decoder.execType());
+        assertEquals(qty("1.0"), captured.get(1).decoder.cumulativeQty());
+        assertEquals(List.of(1L), drainCompletionQueue(), "its slots come back, so a lost cancel event leaks nothing");
+    }
+
+    @Test
+    void reconnect_OrdersWeDontHoldAreSkipped_AndOursNotListedIsLeftAlone() throws Exception {
+        enqueueLiveOrder(ORDER_ID, ORIG_QTY, 0);
+        process("{\"type\":\"subscribed\",\"id\":1,\"msg\":{\"channel\":\"user_orders\",\"sid\":1}}");
+        respondRest(restPage(restOrder("someone-elses-order", "executed", "10.00", "0.00", "5.000000")));
+
+        catchUp();
+        assertNoFurtherReports(0);
+
+        process(userOrderEvent(ORDER_ID, "executed", "10.00", "0.00", "5.0000", "0.0000", EVENT_MS));
+        waitForReports(2);
+        assertEquals(ExecType.FILL, captured.get(1).decoder.execType(), "still tracked, after the sentinel");
+    }
+
+    @Test
+    void reconnect_FollowsEveryPage() throws Exception {
+        enqueueLiveOrder(ORDER_ID, ORIG_QTY, 0);
+        process("{\"type\":\"subscribed\",\"id\":1,\"msg\":{\"channel\":\"user_orders\",\"sid\":1}}");
+        respondRest(
+                "{\"cursor\":\"c2\",\"orders\":[" + restOrder("other", "resting", "0.00", "1.00", "0") + "]}",
+                restPage(restOrder(ORDER_ID, "resting", "2.00", "8.00", "1.000000")));
+
+        catchUp();
+        waitForReports(1);
+
+        assertEquals(qty("2.0"), captured.get(0).decoder.filledQty());
+        assertTrue(restPaths.get(1).contains("&cursor=c2"), restPaths.toString());
+    }
+
+    @Test
+    void reconnect_HoldingNoOrders_FetchesSinceTheSocketLastHeardAnything() throws Exception {
+        // The writer keeps sending while the socket is down; those orders wait in the queue, not among those held.
+        respondRest(restPage());
+        reader.recvTimestamp = SUBMITTED_AT_MS * 1_000_000L;
+
+        catchUp();
+
+        assertTrue(restPaths.get(0).contains("&min_ts=" + (SUBMITTED_AT_MS / 1000 - 60)), restPaths.toString());
+        assertNoFurtherReports(0);
+    }
+
+    @Test
+    void reconnect_NeverConnectedBefore_FetchesSinceTheReaderWasMade() throws Exception {
+        respondRest(restPage());
+
+        catchUp();
+
+        assertTrue(restPaths.get(0).contains("&min_ts=" + (FIXED_NANO / 1_000_000_000L - 60)), restPaths.toString());
+    }
+
+    @Test
+    void reconnect_AnOrderSentWhileTheSocketWasDown_IsCaughtUp() throws Exception {
+        reader.recvTimestamp = SUBMITTED_AT_MS * 1_000_000L;
+        enqueueSubmittedOrder(ORDER_ID, ORIG_QTY);
+        respondRest(restPage(restOrder(ORDER_ID, "executed", "10.00", "0.00", "5.000000")));
+
+        findMethod("fetchVenueState").invoke(reader);
+        final Field pending = OutboundSocketReader.class.getDeclaredField("venueStatePending");
+        pending.setAccessible(true);
+        pending.setBoolean(reader, true);
+        process("{\"type\":\"subscribed\",\"id\":1,\"msg\":{\"channel\":\"user_orders\",\"sid\":1}}");
+
+        waitForReports(1);
+        assertEquals(ExecType.FILL, captured.get(captured.size() - 1).decoder.execType(), captured.toString());
+        assertEquals(qty("10.0"), captured.get(captured.size() - 1).decoder.cumulativeQty());
+    }
+
+    @Test
+    void reconnect_OrderListFails_TheConnectFails() throws Exception {
+        enqueueLiveOrder(ORDER_ID, ORIG_QTY, 0);
+        process("{\"type\":\"subscribed\",\"id\":1,\"msg\":{\"channel\":\"user_orders\",\"sid\":1}}");
+        final HTTPResponse failed = mock(HTTPResponse.class);
+        when(failed.isSuccess()).thenReturn(false);
+        when(failed.getStatusCode()).thenReturn(500);
+        when(restClient.get(
+                        any(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString()))
+                .thenReturn(failed);
+
+        final Method fetch = findMethod("fetchVenueState");
+        final Exception thrown = assertThrows(Exception.class, () -> fetch.invoke(reader));
+        assertInstanceOf(IOException.class, thrown.getCause(), "so the reader is never resumed without catching up");
+    }
+
+    /** What a reconnect does: fetch on the supervisor's side, then apply on the reader's next pass. */
+    private void catchUp() throws Exception {
+        findMethod("fetchVenueState").invoke(reader);
+        findMethod("applyVenueState").invoke(reader);
+    }
+
+    private static Method findMethod(final String name) throws NoSuchMethodException {
+        Class<?> type = KalshiOutboundReader.class;
+        while (type != null) {
+            try {
+                final Method method = type.getDeclaredMethod(name);
+                method.setAccessible(true);
+                return method;
+            } catch (final NoSuchMethodException e) {
+                type = type.getSuperclass();
+            }
+        }
+        throw new NoSuchMethodException(name);
+    }
+
+    private void respondRest(final String... pages) throws Exception {
+        final Deque<HTTPResponse> responses = new ArrayDeque<>();
+        for (final String page : pages) {
+            final HTTPResponse response = mock(HTTPResponse.class);
+            when(response.isSuccess()).thenReturn(true);
+            when(response.getStatusCode()).thenReturn(200);
+            when(response.getBody()).thenReturn(ByteBuffer.wrap(page.getBytes(StandardCharsets.UTF_8)));
+            responses.add(response);
+        }
+        when(restClient.get(
+                        any(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString()))
+                .thenAnswer(call -> {
+                    restPaths.add(call.getArgument(2));
+                    return responses.size() > 1 ? responses.poll() : responses.peek();
+                });
+    }
+
+    private static String restPage(final String... orders) {
+        return "{\"cursor\":\"\",\"orders\":[" + String.join(",", orders) + "]}";
+    }
+
+    private static String restOrder(
+            final String clientOrderId,
+            final String status,
+            final String fillCount,
+            final String remainingCount,
+            final String makerFillCost) {
+        return "{\"action\":\"sell\",\"book_side\":\"bid\",\"client_order_id\":\"" + clientOrderId + "\","
+                + "\"created_time\":\"2026-10-07T18:00:00.000000Z\",\"exchange_index\":0,"
+                + "\"fill_count_fp\":\"" + fillCount + "\",\"initial_count_fp\":\"10.00\","
+                + "\"last_update_time\":\"2026-10-07T18:01:40.25Z\",\"maker_fees_dollars\":\"0.000000\","
+                + "\"maker_fill_cost_dollars\":\"" + makerFillCost + "\",\"order_id\":\"venue-" + clientOrderId
+                + "\",\"outcome_side\":\"yes\",\"remaining_count_fp\":\"" + remainingCount + "\","
+                + "\"status\":\"" + status + "\",\"taker_fees_dollars\":\"0.000000\","
+                + "\"taker_fill_cost_dollars\":\"0.000000\",\"ticker\":\"KALSHI-MARKET\",\"type\":\"limit\","
+                + "\"yes_price_dollars\":\"0.5000\"}";
+    }
+
+    // ========== Updates that leave out fields or carry no new fill ==========
+
+    @Test
+    void fillWithoutRemainingCount_IsAPartialFill() throws Exception {
+        // Read as 0, a missing remaining count would close the order and drop every later fill.
+        enqueueLiveOrder(ORDER_ID, ORIG_QTY, 0);
+        process(updateWithoutRemaining(ORDER_ID, "resting", "4.00", "2.0000"));
+        waitForReports(1);
+
+        final OrderExecutionReport partial = captured.get(0);
+        assertEquals(ExecType.PARTIAL_FILL, partial.decoder.execType());
+        assertEquals(qty("4.0"), partial.decoder.filledQty());
+        assertEquals(qty("6.0"), partial.decoder.leavesQty(), "what was working less the fill");
+        assertTrue(drainCompletionQueue().isEmpty(), "the order is still working");
+
+        process(userOrderEvent(ORDER_ID, "executed", "10.00", "0.00", "5.0000", "0.0000", EVENT_MS));
+        waitForReports(2);
+        assertEquals(ExecType.FILL, captured.get(1).decoder.execType());
+        assertEquals(qty("6.0"), captured.get(1).decoder.filledQty(), "the later fill still matches the order");
+    }
+
+    @Test
+    void executedWithNoNewFill_EndsTheOrder() throws Exception {
+        // e.g. amended down to what had already filled: Kalshi reports it executed, with nothing more filled.
+        enqueueLiveOrder(ORDER_ID, ORIG_QTY, 0);
+        process(userOrderEvent(ORDER_ID, "resting", "4.00", "6.00", "2.0000", "0.0000", EVENT_MS));
+        waitForReports(1);
+        drainCompletionQueue();
+
+        process(userOrderEvent(ORDER_ID, "executed", "4.00", "0.00", "2.0000", "0.0000", EVENT_MS + 1));
+        waitForReports(2);
+
+        final OrderExecutionReport done = captured.get(1);
+        assertEquals(ExecType.CANCEL, done.decoder.execType(), "nothing more will fill");
+        assertEquals(qty("4.0"), done.decoder.cumulativeQty());
+        assertEquals(0, done.decoder.leavesQty());
+        assertEquals(List.of(1L), drainCompletionQueue(), "the order's slots are released");
+    }
+
+    private static String updateWithoutRemaining(
+            final String orderId, final String status, final String fillCountFp, final String takerFillCost) {
+        return "{\"type\":\"user_order\",\"msg\":{\"order_id\":\"venue-" + orderId + "\",\"client_order_id\":\""
+                + orderId + "\",\"status\":\"" + status + "\",\"fill_count_fp\":\"" + fillCountFp + "\","
+                + "\"taker_fill_cost_dollars\":\"" + takerFillCost + "\",\"maker_fill_cost_dollars\":\"0.0000\","
+                + "\"last_updated_ts_ms\":" + EVENT_MS + "}}";
+    }
+
+    // ========== Fill price in the listing's terms ==========
+    // Kalshi reports a fill's cost as what the side it bought cost: a bid on either listing buys that listing's own
+    // side, an ask buys the other one. Fixtures are user_order updates captured from the demo exchange on 2026-10-07.
+
+    @Test
+    void fill_YesListingAsk_IsPricedOnTheYesListing() throws Exception {
+        // Sold YES into a 0.31 YES bid: Kalshi reports the 0.69 the NO side cost.
+        assertFillPrice("KALSHI-MARKET:yes", Side.Ask, "0.690000", "0.015000", price("0.31"));
+    }
+
+    @Test
+    void fill_YesListingBid_IsPricedOnTheYesListing() throws Exception {
+        assertFillPrice("KALSHI-MARKET:yes", Side.Bid, "0.450000", "0.017400", price("0.45"));
+    }
+
+    @Test
+    void fill_NoListingBid_IsPricedOnTheNoListing() throws Exception {
+        // Bought NO (sent as a YES ask) into a 0.33 YES bid: Kalshi reports the 0.67 NO cost, already NO terms.
+        assertFillPrice("KALSHI-MARKET:no", Side.Bid, "0.670000", "0.015500", price("0.67"));
+    }
+
+    @Test
+    void fill_NoListingAsk_IsPricedOnTheNoListing() throws Exception {
+        // Sold NO (sent as a YES bid) into a 0.45 YES ask: Kalshi reports the 0.45 YES cost; NO traded at 0.55.
+        assertFillPrice("KALSHI-MARKET:no", Side.Ask, "0.450000", "0.017400", price("0.55"));
+    }
+
+    @Test
+    void fill_CarriesNoRejectReason() throws Exception {
+        enqueueSubmittedOrderOnSide(ORDER_ID, qty("1.0"), Side.Bid);
+        process(capturedFill(ORDER_ID, "0.450000", "0.017400"));
+        waitForReports(1);
+
+        assertEquals(RejectReason.NULL_VAL, captured.get(0).decoder.rejectReason());
+    }
+
+    private void assertFillPrice(
+            final String exchangeSecurityId,
+            final Side side,
+            final String takerFillCost,
+            final String takerFees,
+            final long expectedPrice)
+            throws Exception {
+        reader = readerFor(exchangeSecurityId, TEST_PRIVATE_KEY);
+        reader.pauseControl.release();
+        enqueueSubmittedOrderOnSide(ORDER_ID, qty("1.0"), side);
+
+        process(capturedFill(ORDER_ID, takerFillCost, takerFees));
+        waitForReports(1);
+
+        final OrderExecutionReport report = captured.get(0);
+        assertEquals(ExecType.FILL, report.decoder.execType());
+        assertEquals(qty("1.0"), report.decoder.filledQty());
+        assertEquals(expectedPrice, report.decoder.fillPrice());
+        assertEquals(price(takerFees.substring(0, 6)), report.decoder.fee(), "Kalshi's own fee, unchanged");
+    }
+
+    /** A 1-contract IOC that filled at once as a taker, as Kalshi's user_orders channel reported it. */
+    private static String capturedFill(final String orderId, final String takerFillCost, final String takerFees) {
+        return "{\"type\":\"user_order\",\"sid\":1,\"msg\":{\"order_id\":\"01a11706-99d8-7ad3-83b2-5cd731cc7296\","
+                + "\"ticker\":\"KALSHI-MARKET\",\"exchange_index\":0,\"status\":\"executed\",\"side\":\"yes\","
+                + "\"yes_price_dollars\":\"0.0100\",\"fill_count_fp\":\"1.00\",\"remaining_count_fp\":\"0.00\","
+                + "\"initial_count_fp\":\"1.00\",\"taker_fill_cost_dollars\":\"" + takerFillCost + "\","
+                + "\"maker_fill_cost_dollars\":\"0.000000\",\"taker_fees_dollars\":\"" + takerFees + "\","
+                + "\"maker_fees_dollars\":\"0.000000\",\"client_order_id\":\"" + orderId + "\","
+                + "\"created_ts_ms\":1791387671380,\"last_updated_ts_ms\":1791387671380,\"subaccount_number\":0},"
+                + "\"sending_ts_ms\":1791387671382}";
+    }
+
+    private void enqueueSubmittedOrderOnSide(final String orderId, final long originalQty, final Side side) {
+        nextOrderSide = side;
+        enqueueSubmittedOrder(orderId, originalQty);
+    }
+
     // ========== Helpers ==========
 
     private void process(final String json) throws Exception {
@@ -765,6 +1105,8 @@ class KalshiOutboundReaderTest {
         final OrderContext ctx = newOrderQueue.indexAt(idx);
         ctx.reset();
         ctx.acked = acked;
+        ctx.side = nextOrderSide;
+        ctx.submittedAtMillis = SUBMITTED_AT_MS;
         ctx.clientOidCounter = internalOrderId;
         ctx.exchangeId = 2;
         ctx.securityId = 3L;

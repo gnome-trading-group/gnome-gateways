@@ -107,7 +107,7 @@ public final class ReaderPauseControl {
         this.pause = false;
     }
 
-    @VisibleForTesting
+    /** Whether the reader is held off its socket: while the supervisor connects, reconnects or shuts it down. */
     public boolean isPauseRequested() {
         return this.pause;
     }

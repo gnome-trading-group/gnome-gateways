@@ -1,6 +1,7 @@
 package group.gnometrading.gateways.inbound;
 
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
+import group.gnometrading.collections.buffer.MessageConsumer;
 import group.gnometrading.collections.buffer.RingBuffer;
 import group.gnometrading.concurrent.GnomeAgent;
 import java.io.IOException;
@@ -16,6 +17,8 @@ public abstract class InboundSocketWriter implements GnomeAgent {
     private final Object socketLock = new Object();
     private final RingBuffer<ByteBuffer> writeBuffer;
     private final RingBuffer<ByteBuffer> controlWriteBuffer;
+    // Held once, so the hot loop doesn't create a method reference on every pass.
+    private final MessageConsumer<ByteBuffer> writeHandler = this::handleWrite;
     private final int writeBufferSize;
 
     public InboundSocketWriter() {
@@ -46,8 +49,8 @@ public abstract class InboundSocketWriter implements GnomeAgent {
 
     @Override
     public final int doWork() {
-        this.writeBuffer.read(this::handleWrite);
-        this.controlWriteBuffer.read(this::handleWrite);
+        this.writeBuffer.read(this.writeHandler);
+        this.controlWriteBuffer.read(this.writeHandler);
         return 0;
     }
 

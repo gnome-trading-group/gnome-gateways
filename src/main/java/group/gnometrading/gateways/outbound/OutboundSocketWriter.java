@@ -2,6 +2,7 @@ package group.gnometrading.gateways.outbound;
 
 import group.gnometrading.annotations.VisibleForTesting;
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
+import group.gnometrading.collections.buffer.MessageConsumer;
 import group.gnometrading.concurrent.GnomeAgent;
 import group.gnometrading.concurrent.ThreadProfile;
 import group.gnometrading.schemas.CancelOrder;
@@ -32,6 +33,8 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
     private int writerPoolHead;
 
     private final ManyToOneRingBuffer<OrderContext> releasedOrderQueue;
+    // Held once, so the hot loop doesn't create a method reference on every pass.
+    private final MessageConsumer<OrderContext> releasedOrderHandler = this::consumeReleasedOrder;
     // The queue read doesn't report how many entries it consumed; a back-off idle strategy needs the count.
     private int releasedThisPass;
     // Thrown from doWork once the poll has moved past the message: thrown inside it, the poller would
@@ -72,7 +75,7 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
 
     @Override
     public final int doWork() throws Exception {
-        this.releasedOrderQueue.read(this::consumeReleasedOrder, OrderContext.HANDOFF_QUEUE_CAPACITY);
+        this.releasedOrderQueue.read(this.releasedOrderHandler, OrderContext.HANDOFF_QUEUE_CAPACITY);
         final int released = this.releasedThisPass;
         this.releasedThisPass = 0;
         final int polled = this.orderPoller.poll();
@@ -167,7 +170,8 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         if (result == SubmitResult.UNKNOWN) {
             result = resolveUnknownSubmit(ctx);
         }
-        if (result == SubmitResult.REJECTED) {
+        // A first send can't be a duplicate of our own: the id is new, so the venue is refusing it for its own reasons.
+        if (result == SubmitResult.REJECTED || result == SubmitResult.DUPLICATE) {
             this.activeOrders.remove(ctx.clientOidCounter);
             rejectSubmit(ctx, RejectReason.EXCHANGE_REJECTED);
         }
@@ -186,6 +190,11 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
             final SubmitResult resent = send(ctx);
             if (resent == SubmitResult.ACCEPTED) {
                 return resent;
+            }
+            if (resent == SubmitResult.DUPLICATE) {
+                // The earlier send landed. Only the lookup can give its venue id, and a miss means the venue's
+                // records lag, not that it's gone: it stays registered and the venue's events settle it.
+                return find(ctx) == SubmitResult.ACCEPTED ? SubmitResult.ACCEPTED : SubmitResult.UNKNOWN;
             }
             if (resent == SubmitResult.REJECTED) {
                 final SubmitResult found = find(ctx);
@@ -237,11 +246,11 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
             enqueueCancelReject(ctx, RejectReason.UNKNOWN);
             throw e;
         }
+        // An accepted cancel keeps the order's slot until the reader releases it on the venue's cancel event.
+        // Freed here, the writer would count slots the reader still holds, and could send an order the reader
+        // has no room to track.
         if (!accepted) {
             enqueueCancelReject(ctx, RejectReason.EXCHANGE_REJECTED);
-        } else {
-            this.activeOrders.remove(clientOidCounter);
-            returnToPool(ctx);
         }
     }
 
@@ -280,7 +289,9 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         ACCEPTED,
         REJECTED,
         /** No clear answer (timeout, dropped connection, 5xx, unreadable reply): it may be live. */
-        UNKNOWN
+        UNKNOWN,
+        /** Refused because the venue already has an order with this id. */
+        DUPLICATE
     }
 
     /**
