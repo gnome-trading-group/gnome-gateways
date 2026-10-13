@@ -9,7 +9,9 @@ import group.gnometrading.strings.GnomeString;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicIntegerArray;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicLongArray;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.LongConsumer;
 import org.agrona.concurrent.EpochClock;
@@ -20,8 +22,10 @@ import org.agrona.concurrent.NanoClock;
  * order writers, readers and recovery of every listing in the process. Thread-safe.
  *
  * <p>Other processes may share the account and come and go, so this process can't know its share of the budget.
- * It starts at {@link #INITIAL_BUDGET} of the venue's rate, halves it when the venue answers 429, and gives back
- * {@link #BUDGET_STEP} for each second without one, up to the configured share.
+ * Each bucket starts at {@link #INITIAL_BUDGET} of the venue's rate, halves when the venue answers 429 to a request
+ * that drew on it, and gets back {@link #BUDGET_STEP} for each second in which it held a request back without the
+ * venue answering 429, up to the configured share. A second in which a bucket held nothing back proves nothing about
+ * what the venue would take, so it gets nothing back; nor does one bucket's pressure say anything about another's.
  */
 public final class VenueRateLimiter implements RequestGate {
 
@@ -65,9 +69,13 @@ public final class VenueRateLimiter implements RequestGate {
 
     private final AtomicLong refusals = new AtomicLong();
     private volatile boolean throttling;
-    private volatile long lastAdjustNanos;
-    private double budget;
-    private long lastDecreaseNanos;
+    // Per bucket. The budgets and decreases change only under this object's lock; the adjust times and held-back flags
+    // are also read without it, on every request.
+    private final double[] budgets;
+    private final long[] lastDecreaseNanos;
+    private final AtomicLongArray lastAdjustNanos;
+    // Whether the bucket has made a request wait, or refused one, since its budget was last adjusted.
+    private final AtomicIntegerArray heldBack;
 
     VenueRateLimiter(
             final VenueRateLimits limits, final Logger logger, final NanoClock clock, final EpochClock epochClock) {
@@ -87,19 +95,24 @@ public final class VenueRateLimiter implements RequestGate {
         this.clock = clock;
         this.epochClock = epochClock;
         final long now = clock.nanoTime();
-        this.budget = Math.min(INITIAL_BUDGET, limits.share());
-        this.lastAdjustNanos = now;
-        this.lastDecreaseNanos = now - ADJUST_INTERVAL_NANOS;
+        final double initialBudget = Math.min(INITIAL_BUDGET, limits.share());
 
         final List<VenueRateLimits.Bucket> specs = limits.buckets();
         this.buckets = new RateBucket[specs.size()];
         this.baseRates = new double[specs.size()];
+        this.budgets = new double[specs.size()];
+        this.lastDecreaseNanos = new long[specs.size()];
+        this.lastAdjustNanos = new AtomicLongArray(specs.size());
+        this.heldBack = new AtomicIntegerArray(specs.size());
         for (int i = 0; i < specs.size(); i++) {
             final VenueRateLimits.Bucket spec = specs.get(i);
             this.baseRates[i] = spec.tokensPerSecond();
+            this.budgets[i] = initialBudget;
+            this.lastDecreaseNanos[i] = now - ADJUST_INTERVAL_NANOS;
+            this.lastAdjustNanos.set(i, now);
             this.buckets[i] = new RateBucket(
                     spec.name(),
-                    spec.tokensPerSecond() * this.budget,
+                    spec.tokensPerSecond() * initialBudget,
                     spec.burst(),
                     Math.round(spec.burst() * spec.cancelReserve()),
                     Math.round(spec.burst() * VenueRateLimits.BACKGROUND_HEADROOM),
@@ -157,9 +170,14 @@ public final class VenueRateLimiter implements RequestGate {
         }
     }
 
-    /** The share of the venue's rate this process currently allows itself. */
-    synchronized double budget() {
-        return this.budget;
+    /** The share of {@code bucket}'s rate this process currently allows itself. */
+    synchronized double budget(final String bucket) {
+        for (int i = 0; i < this.buckets.length; i++) {
+            if (this.buckets[i].name().equals(bucket)) {
+                return this.budgets[i];
+            }
+        }
+        throw new IllegalArgumentException("No rate-limit bucket " + bucket);
     }
 
     int classify(final HTTPMethod method, final String path) {
@@ -200,7 +218,7 @@ public final class VenueRateLimiter implements RequestGate {
         final long cost = this.ruleCosts[rule];
         final long headroom = bucket.headroomFor(type);
         final long start = this.clock.nanoTime();
-        maybeRaiseBudget(start);
+        maybeRaiseBudget(bucketIndex, start);
         long now = start;
         while (true) {
             if (tryTake(bucket, type, cost, headroom, now)) {
@@ -208,13 +226,14 @@ public final class VenueRateLimiter implements RequestGate {
                 return rule;
             }
             if (type == RequestClass.ORDER) {
-                return refuse(bucket);
+                return refuse(bucketIndex);
             }
             final long wait = nanosToWait(bucket, type, cost, headroom, now);
             final long maxWait = type == RequestClass.CANCEL ? CANCEL_WAIT_NANOS : BACKGROUND_WAIT_NANOS;
             if (now + wait - (start + maxWait) > 0) {
-                return giveUpWaiting(rule, bucket, type, cost, now);
+                return giveUpWaiting(rule, bucketIndex, type, cost, now);
             }
+            this.heldBack.set(bucketIndex, 1);
             this.pause.accept(Math.max(1, wait));
             now = this.clock.nanoTime();
         }
@@ -233,12 +252,13 @@ public final class VenueRateLimiter implements RequestGate {
 
     /** A cancel goes anyway, since the venue is the authority on whether it fits; anything else is refused. */
     private int giveUpWaiting(
-            final int rule, final RateBucket bucket, final RequestClass type, final long cost, final long now) {
+            final int rule, final int bucketIndex, final RequestClass type, final long cost, final long now) {
         if (type == RequestClass.CANCEL) {
-            bucket.forceAcquire(now, cost);
+            this.heldBack.set(bucketIndex, 1);
+            this.buckets[bucketIndex].forceAcquire(now, cost);
             return rule;
         }
-        return refuse(bucket);
+        return refuse(bucketIndex);
     }
 
     private void onAdmitted(final RequestClass type) {
@@ -247,15 +267,16 @@ public final class VenueRateLimiter implements RequestGate {
         }
     }
 
-    private int refuse(final RateBucket bucket) {
+    private int refuse(final int bucketIndex) {
+        this.heldBack.set(bucketIndex, 1);
         this.refusals.incrementAndGet();
         if (!this.throttling) {
-            startThrottling(bucket);
+            startThrottling(bucketIndex);
         }
         return REFUSE;
     }
 
-    private synchronized void startThrottling(final RateBucket bucket) {
+    private synchronized void startThrottling(final int bucketIndex) {
         if (this.throttling) {
             return;
         }
@@ -264,8 +285,8 @@ public final class VenueRateLimiter implements RequestGate {
                 LogMessage.RATE_LIMIT_THROTTLING,
                 "%s rate limit: refusing requests locally, %s bucket spent (budget %.0f%% of the venue's rate)",
                 this.limits.venue(),
-                bucket.name(),
-                this.budget * 100);
+                this.buckets[bucketIndex].name(),
+                this.budgets[bucketIndex] * 100);
     }
 
     private synchronized void endThrottling() {
@@ -287,16 +308,24 @@ public final class VenueRateLimiter implements RequestGate {
         final long penalty = retryAfterSeconds < 0
                 ? DEFAULT_PENALTY_NANOS
                 : Math.min(MAX_PENALTY_NANOS, TimeUnit.SECONDS.toNanos(retryAfterSeconds));
-        if (bucket != NO_BUCKET) {
-            this.buckets[bucket].blockUntil(now + penalty);
+        if (bucket == NO_BUCKET) {
+            // A request the catalogue leaves unlimited: there is no budget of ours to lower or hold.
+            this.logger.logf(
+                    LogMessage.VENUE_RATE_LIMITED,
+                    "%s answered 429 to a %s request it isn't known to limit",
+                    this.limits.venue(),
+                    this.ruleTypes[rule]);
+            return;
         }
-        final double lowered = lowerBudget(now);
+        this.buckets[bucket].blockUntil(now + penalty);
+        final double lowered = lowerBudget(bucket, now);
         this.logger.logf(
                 LogMessage.VENUE_RATE_LIMITED,
-                "%s answered 429 to a %s request: holding for %d ms, budget now %.0f%% of the venue's rate",
+                "%s answered 429 to a %s request: holding for %d ms, %s budget now %.0f%% of the venue's rate",
                 this.limits.venue(),
                 this.ruleTypes[rule],
                 TimeUnit.NANOSECONDS.toMillis(penalty),
+                this.buckets[bucket].name(),
                 lowered * 100);
     }
 
@@ -315,41 +344,41 @@ public final class VenueRateLimiter implements RequestGate {
         }
     }
 
-    private synchronized double lowerBudget(final long now) {
+    private synchronized double lowerBudget(final int bucket, final long now) {
         // A burst of 429s answers one overspend; halving for each would throw away far more than it needs.
-        if (now - this.lastDecreaseNanos >= ADJUST_INTERVAL_NANOS) {
-            this.budget = Math.max(MIN_BUDGET, this.budget / 2);
-            this.lastDecreaseNanos = now;
-            applyBudget(now);
+        if (now - this.lastDecreaseNanos[bucket] >= ADJUST_INTERVAL_NANOS) {
+            this.budgets[bucket] = Math.max(MIN_BUDGET, this.budgets[bucket] / 2);
+            this.lastDecreaseNanos[bucket] = now;
+            applyBudget(bucket, now);
         }
-        this.lastAdjustNanos = now;
-        return this.budget;
+        this.lastAdjustNanos.set(bucket, now);
+        this.heldBack.set(bucket, 0);
+        return this.budgets[bucket];
     }
 
-    private void maybeRaiseBudget(final long now) {
-        if (now - this.lastAdjustNanos >= ADJUST_INTERVAL_NANOS) {
-            raiseBudget(now);
+    private void maybeRaiseBudget(final int bucket, final long now) {
+        if (now - this.lastAdjustNanos.get(bucket) >= ADJUST_INTERVAL_NANOS) {
+            raiseBudget(bucket, now);
         }
     }
 
-    private synchronized void raiseBudget(final long now) {
-        final long elapsed = now - this.lastAdjustNanos;
-        if (elapsed < ADJUST_INTERVAL_NANOS) {
+    private synchronized void raiseBudget(final int bucket, final long now) {
+        if (now - this.lastAdjustNanos.get(bucket) < ADJUST_INTERVAL_NANOS) {
             return;
         }
-        final long steps = elapsed / ADJUST_INTERVAL_NANOS;
-        this.lastAdjustNanos += steps * ADJUST_INTERVAL_NANOS;
-        final double raised = Math.min(this.limits.share(), this.budget + steps * BUDGET_STEP);
-        if (raised != this.budget) {
-            this.budget = raised;
-            applyBudget(now);
+        this.lastAdjustNanos.set(bucket, now);
+        if (this.heldBack.getAndSet(bucket, 0) == 0) {
+            return;
+        }
+        final double raised = Math.min(this.limits.share(), this.budgets[bucket] + BUDGET_STEP);
+        if (raised != this.budgets[bucket]) {
+            this.budgets[bucket] = raised;
+            applyBudget(bucket, now);
         }
     }
 
-    private void applyBudget(final long now) {
-        for (int i = 0; i < this.buckets.length; i++) {
-            this.buckets[i].setRate(this.baseRates[i] * this.budget, now);
-        }
+    private void applyBudget(final int bucket, final long now) {
+        this.buckets[bucket].setRate(this.baseRates[bucket] * this.budgets[bucket], now);
     }
 
     private boolean methodMatches(final int rule, final HTTPMethod method) {

@@ -202,18 +202,17 @@ class VenueRateLimiterTest {
     @Test
     void venue429HalvesTheBudgetOncePerBurst() {
         final VenueRateLimiter limiter = limiter(VenueRateLimits.polymarketUs());
-        assertEquals(0.8, limiter.budget(), 1e-9);
+        assertEquals(0.8, limiter.budget("key"), 1e-9);
 
         for (int i = 0; i < 5; i++) {
             limiter.afterResponse(
                     limiter.beforeRequest(HTTPMethod.POST, "/v1/order/1/cancel"), FakeResponse.status(429));
         }
-        assertEquals(0.4, limiter.budget(), 1e-9);
+        assertEquals(0.4, limiter.budget("key"), 1e-9);
 
-        // A second on, the budget has first won back a step, then halves again.
         clock.now += SECOND;
         limiter.afterResponse(limiter.beforeRequest(HTTPMethod.POST, "/v1/order/1/cancel"), FakeResponse.status(429));
-        assertEquals((0.4 + VenueRateLimiter.BUDGET_STEP) / 2, limiter.budget(), 1e-9);
+        assertEquals(0.2, limiter.budget("key"), 1e-9);
     }
 
     @Test
@@ -226,27 +225,90 @@ class VenueRateLimiterTest {
                     limiter.beforeRequest(HTTPMethod.POST, "/v1/order/1/cancel"), FakeResponse.status(429));
         }
 
-        assertEquals(VenueRateLimiter.MIN_BUDGET, limiter.budget(), 1e-9);
+        assertEquals(VenueRateLimiter.MIN_BUDGET, limiter.budget("key"), 1e-9);
     }
 
     @Test
-    void budgetRecoversSlowlyUpToTheShare() {
+    void budgetRecoversAStepForEachSecondItHeldRequestsBackUpToTheShare() {
         final VenueRateLimiter limiter = limiter(VenueRateLimits.polymarketUs().withShare(0.9));
         limiter.afterResponse(limiter.beforeRequest(HTTPMethod.POST, "/v1/order/1/cancel"), FakeResponse.status(429));
-        assertEquals(0.4, limiter.budget(), 1e-9);
+        assertEquals(0.4, limiter.budget("key"), 1e-9);
 
-        clock.now += 3 * SECOND;
-        limiter.beforeRequest(HTTPMethod.POST, "/v1/order/1/cancel");
-        assertEquals(0.55, limiter.budget(), 1e-9);
+        // Each second the orders outrun the budget, and the venue doesn't object.
+        for (int second = 0; second < 4; second++) {
+            clock.now += SECOND;
+            admitAll(limiter, HTTPMethod.POST, "/v1/orders");
+        }
+        assertEquals(0.4 + 3 * VenueRateLimiter.BUDGET_STEP, limiter.budget("key"), 1e-9);
+
+        for (int second = 0; second < 40; second++) {
+            clock.now += SECOND;
+            admitAll(limiter, HTTPMethod.POST, "/v1/orders");
+        }
+        assertEquals(0.9, limiter.budget("key"), 1e-9);
+    }
+
+    @Test
+    void secondsThatHeldNothingBackGiveNothingBack() {
+        final VenueRateLimiter limiter = limiter(VenueRateLimits.polymarketUs());
 
         clock.now += 60 * SECOND;
+        limiter.beforeRequest(HTTPMethod.POST, "/v1/orders");
+        clock.now += 60 * SECOND;
+        limiter.beforeRequest(HTTPMethod.POST, "/v1/orders");
+
+        assertEquals(VenueRateLimiter.INITIAL_BUDGET, limiter.budget("key"), 1e-9);
+    }
+
+    @Test
+    void secondWithA429GivesNothingBack() {
+        final VenueRateLimiter limiter = limiter(VenueRateLimits.polymarketUs());
+        admitAll(limiter, HTTPMethod.POST, "/v1/orders");
+        limiter.afterResponse(limiter.beforeRequest(HTTPMethod.POST, "/v1/order/1/cancel"), FakeResponse.status(429));
+
+        clock.now += SECOND;
         limiter.beforeRequest(HTTPMethod.POST, "/v1/order/1/cancel");
-        assertEquals(0.9, limiter.budget(), 1e-9);
+
+        assertEquals(0.4, limiter.budget("key"), 1e-9);
+    }
+
+    @Test
+    void eachBucketAdaptsOnItsOwn() {
+        final VenueRateLimiter limiter = limiter(VenueRateLimits.kalshi());
+        final String orders = "/trade-api/v2/portfolio/events/orders";
+
+        // Reads wait on the read bucket, second after second, without a 429...
+        for (int second = 0; second < 5; second++) {
+            clock.now += SECOND;
+            for (int i = 0; i < 20; i++) {
+                limiter.beforeRequest(HTTPMethod.GET, "/trade-api/v2/portfolio/orders");
+            }
+        }
+        // ...which says nothing about the write bucket.
+        assertEquals(VenueRateLimiter.INITIAL_BUDGET, limiter.budget("write"), 1e-9);
+        assertTrue(limiter.budget("read") > VenueRateLimiter.INITIAL_BUDGET);
+
+        // A 429 to an order lowers only the write bucket.
+        final double read = limiter.budget("read");
+        limiter.afterResponse(limiter.beforeRequest(HTTPMethod.POST, orders), FakeResponse.status(429));
+        assertEquals(VenueRateLimiter.INITIAL_BUDGET / 2, limiter.budget("write"), 1e-9);
+        assertEquals(read, limiter.budget("read"), 1e-9);
+    }
+
+    @Test
+    void venue429ToAnUnlimitedRequestHoldsNothing() {
+        final VenueRateLimiter limiter = limiter(VenueRateLimits.polymarketIntl());
+
+        limiter.afterResponse(limiter.beforeRequest(HTTPMethod.GET, "/data/orders"), FakeResponse.status(429));
+
+        assertEquals(List.of(LogMessage.VENUE_RATE_LIMITED), logger.messages);
+        assertEquals(VenueRateLimiter.INITIAL_BUDGET, limiter.budget("order"), 1e-9);
+        assertNotEquals(RequestGate.REFUSE, limiter.beforeRequest(HTTPMethod.POST, "/order"));
     }
 
     @Test
     void shareBelowTheStartingBudgetCapsItFromTheStart() {
-        assertEquals(0.5, limiter(VenueRateLimits.polymarketUs().withShare(0.5)).budget(), 1e-9);
+        assertEquals(0.5, limiter(VenueRateLimits.polymarketUs().withShare(0.5)).budget("key"), 1e-9);
     }
 
     @Test
@@ -255,7 +317,7 @@ class VenueRateLimiterTest {
         final VenueRateLimiter healthy = limiter(VenueRateLimits.polymarketUs(), healthyClock);
         final VenueRateLimiter limited = limiter(VenueRateLimits.polymarketUs(), clock);
         limited.afterResponse(limited.beforeRequest(HTTPMethod.POST, "/v1/order/1/cancel"), FakeResponse.status(429));
-        assertEquals(0.4, limited.budget(), 1e-9);
+        assertEquals(0.4, limited.budget("key"), 1e-9);
         admitWithoutWaiting(healthy, healthyClock, HTTPMethod.POST, "/v1/order/1/cancel", 100);
         admitWithoutWaiting(limited, clock, HTTPMethod.POST, "/v1/order/1/cancel", 100);
 
@@ -273,7 +335,7 @@ class VenueRateLimiterTest {
 
         limiter.afterResponse(0, FakeResponse.status(429).refusedLocally());
 
-        assertEquals(0.8, limiter.budget(), 1e-9);
+        assertEquals(0.8, limiter.budget("key"), 1e-9);
         assertNotEquals(RequestGate.REFUSE, limiter.beforeRequest(HTTPMethod.POST, "/v1/orders"));
     }
 
