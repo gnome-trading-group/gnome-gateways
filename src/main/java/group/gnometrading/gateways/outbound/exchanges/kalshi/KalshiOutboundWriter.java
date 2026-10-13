@@ -21,6 +21,7 @@ import group.gnometrading.sm.Listing;
 import group.gnometrading.strings.GnomeString;
 import group.gnometrading.strings.MutableString;
 import group.gnometrading.strings.ViewString;
+import group.gnometrading.utils.AsciiParsing;
 import group.gnometrading.utils.ByteBufferUtils;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -53,6 +54,7 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
     private static final String CONTENT_TYPE_JSON = "application/json";
 
     private static final byte[] ORDER_ID_MARKER = "\"order_id\":\"".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] QUOTE = {'"'};
     private static final byte[] REMAINING_COUNT_MARKER = "\"remaining_count\":\"".getBytes(StandardCharsets.UTF_8);
 
     // PRICE_SCALING_FACTOR / 10_000 — converts internal price to 4-decimal fractional part
@@ -624,16 +626,13 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
         }
         final int from = body.position();
         final int to = body.limit();
-        final int markerPos = indexOfBytes(body, from, to, ORDER_ID_MARKER);
+        final int markerPos = AsciiParsing.indexOf(body, from, to, ORDER_ID_MARKER);
         if (markerPos < 0) {
             return false;
         }
         final int valueStart = markerPos + ORDER_ID_MARKER.length;
-        int valueEnd = valueStart;
-        while (valueEnd < to && body.get(valueEnd) != '"') {
-            valueEnd++;
-        }
-        if (valueEnd >= to) {
+        final int valueEnd = AsciiParsing.indexOf(body, valueStart, to, QUOTE);
+        if (valueEnd < 0) {
             return false;
         }
         ctx.exchangeOrderIdLength = Math.min(valueEnd - valueStart, OrderContext.EXCHANGE_ORDER_ID_MAX_LENGTH);
@@ -653,62 +652,18 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
         if (body == null || !body.hasRemaining()) {
             return OrderContext.QTY_ABSENT;
         }
-        final int markerPos = indexOfBytes(body, body.position(), body.limit(), marker);
+        final int markerPos = AsciiParsing.indexOf(body, body.position(), body.limit(), marker);
         if (markerPos < 0) {
             return OrderContext.QTY_ABSENT;
         }
-        return scanFixedPoint(body, markerPos + marker.length, body.limit());
-    }
-
-    private static long scanFixedPoint(final ByteBuffer body, final int start, final int to) {
-        int pos = start;
-        long whole = 0;
-        while (pos < to) {
-            final int digit = body.get(pos) - '0';
-            if (digit < 0 || digit > 9) {
-                break;
-            }
-            whole = whole * 10 + digit;
-            pos++;
+        // The value is quoted: it ends where its digits do, after an optional point.
+        final int start = markerPos + marker.length;
+        int end = AsciiParsing.skipDigits(body, start, body.limit());
+        if (end < body.limit() && body.get(end) == '.') {
+            end = AsciiParsing.skipDigits(body, end + 1, body.limit());
         }
-        if (pos == start) {
-            return OrderContext.QTY_ABSENT;
-        }
-
-        final long value = whole * Statics.SIZE_SCALING_FACTOR;
-        if (pos >= to || body.get(pos) != '.') {
-            return value;
-        }
-        return value + scanFraction(body, pos + 1, to);
-    }
-
-    private static long scanFraction(final ByteBuffer body, final int start, final int to) {
-        long frac = 0;
-        long place = Statics.SIZE_SCALING_FACTOR / 10;
-        int pos = start;
-        while (pos < to && place > 0) {
-            final int digit = body.get(pos) - '0';
-            if (digit < 0 || digit > 9) {
-                break;
-            }
-            frac += digit * place;
-            place /= 10;
-            pos++;
-        }
-        return frac;
-    }
-
-    private static int indexOfBytes(final ByteBuffer buf, final int from, final int to, final byte[] pattern) {
-        outer:
-        for (int i = from; i <= to - pattern.length; i++) {
-            for (int j = 0; j < pattern.length; j++) {
-                if (buf.get(i + j) != pattern[j]) {
-                    continue outer;
-                }
-            }
-            return i;
-        }
-        return -1;
+        return AsciiParsing.parseNaturalFixedPoint(
+                body, start, end, Statics.SIZE_SCALING_FACTOR, OrderContext.QTY_ABSENT);
     }
 
     private static String resolveTimeInForce(final OrderType orderType, final TimeInForce tif) {

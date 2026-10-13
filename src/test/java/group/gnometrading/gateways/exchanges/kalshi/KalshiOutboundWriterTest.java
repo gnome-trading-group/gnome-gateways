@@ -49,6 +49,8 @@ import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.ArgumentCaptor;
 
 class KalshiOutboundWriterTest {
@@ -856,6 +858,41 @@ class KalshiOutboundWriterTest {
         final List<OrderContext> rejects = drainQueue(writerReportQueue);
         assertEquals(1, rejects.size());
         assertEquals(ExecType.CANCEL_REJECT, rejects.get(0).execType);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"2, 2.0", "2.5, 2.5", "2., 2.0", "1.1234567, 1.123456"})
+    void amendOrder_ReadsTheRemainingCountInEveryFormKalshiCouldSend(final String remaining, final String expected)
+            throws Exception {
+        mockPostSuccess(orderResponse("exchange-order-forms"));
+        publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
+        writer.doWork();
+        final long clientOidCounter = drainQueue(newOrderQueue).get(0).clientOidCounter;
+
+        mockPostSuccess(amendResponse("exchange-order-forms", "0.00", remaining));
+        publishModify(clientOidCounter, price("0.60"), qty("5.0"));
+        writer.doWork();
+
+        final OrderContext notice = drainQueue(writerReportQueue).get(0);
+        assertEquals(qty(expected), notice.leavesQty, "digits past the size scale are dropped");
+    }
+
+    @ParameterizedTest
+    @CsvSource({"''", "abc", "-1", ".5"})
+    void amendOrder_UnreadableRemainingCountLeavesTheCountsToTheReader(final String remaining) throws Exception {
+        mockPostSuccess(orderResponse("exchange-order-bad"));
+        publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
+        writer.doWork();
+        final long clientOidCounter = drainQueue(newOrderQueue).get(0).clientOidCounter;
+
+        mockPostSuccess(amendResponse("exchange-order-bad", "0.00", remaining));
+        publishModify(clientOidCounter, price("0.60"), qty("5.0"));
+        writer.doWork();
+
+        final OrderContext notice = drainQueue(writerReportQueue).get(0);
+        assertTrue(notice.amendAccepted);
+        assertEquals(OrderContext.QTY_ABSENT, notice.leavesQty);
+        assertEquals(OrderContext.QTY_ABSENT, notice.cumulativeFilledQty);
     }
 
     @Test

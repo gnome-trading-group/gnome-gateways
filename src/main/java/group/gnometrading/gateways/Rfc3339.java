@@ -1,6 +1,8 @@
 package group.gnometrading.gateways;
 
 import group.gnometrading.strings.GnomeString;
+import group.gnometrading.utils.AsciiEncoding;
+import group.gnometrading.utils.AsciiParsing;
 
 /**
  * Allocation-free parser for RFC 3339 timestamps such as {@code 2026-10-02T14:22:56.542213551Z}
@@ -73,23 +75,18 @@ public final class Rfc3339 {
             return SECONDS_END;
         }
         int pos = SECONDS_END + 1;
-        while (pos < text.length() && isDigit(text.byteAt(pos))) {
+        while (pos < text.length() && AsciiParsing.isDigit(text.byteAt(pos))) {
             pos++;
         }
         return pos == SECONDS_END + 1 ? -1 : pos;
     }
 
+    /** Digits past nanoseconds are dropped. The fraction's digits were checked by {@link #fractionEnd}. */
     private static long fractionNanos(final GnomeString text, final int fractionEnd) {
-        long nanos = 0;
-        int digitCount = 0;
-        for (int pos = SECONDS_END + 1; pos < fractionEnd && digitCount < MAX_FRACTION_DIGITS; pos++) {
-            nanos = nanos * 10 + (text.byteAt(pos) - '0');
-            digitCount++;
-        }
-        for (; digitCount < MAX_FRACTION_DIGITS; digitCount++) {
-            nanos *= 10;
-        }
-        return nanos;
+        final int digitCount = Math.min(fractionEnd - (SECONDS_END + 1), MAX_FRACTION_DIGITS);
+        final int start = text.offset() + SECONDS_END + 1;
+        return AsciiParsing.parseNaturalLong(text.getBytes(), start, start + digitCount, 0)
+                * AsciiEncoding.LONG_POW_10[MAX_FRACTION_DIGITS - digitCount];
     }
 
     /** Returns the UTC offset in seconds, or {@link #INVALID} if the zone is malformed or has trailing text. */
@@ -121,20 +118,10 @@ public final class Rfc3339 {
         return positive ? magnitude : -magnitude;
     }
 
-    private static boolean isDigit(final byte value) {
-        return value >= '0' && value <= '9';
-    }
-
+    /** The {@code count} digits at {@code offset} as a number, or -1 if they aren't all digits. */
     private static int digits(final GnomeString text, final int offset, final int count) {
-        int value = 0;
-        for (int i = offset; i < offset + count; i++) {
-            final byte at = text.byteAt(i);
-            if (!isDigit(at)) {
-                return -1;
-            }
-            value = value * 10 + (at - '0');
-        }
-        return value;
+        final int start = text.offset() + offset;
+        return (int) AsciiParsing.parseNaturalLong(text.getBytes(), start, start + count, -1);
     }
 
     // Howard Hinnant's days_from_civil: proleptic Gregorian date to days since 1970-01-01.

@@ -4,6 +4,7 @@ import group.gnometrading.gateways.ratelimit.RateLimitedRetry;
 import group.gnometrading.networking.http.HTTPClient;
 import group.gnometrading.networking.http.HTTPProtocol;
 import group.gnometrading.networking.http.HTTPResponse;
+import group.gnometrading.utils.AsciiParsing;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -68,29 +69,13 @@ final class KalshiApiUtil {
     }
 
     private static int readExchangeIndex(final ByteBuffer body) {
-        final int markerPos = indexOf(body, EXCHANGE_INDEX_MARKER);
+        final int markerPos = AsciiParsing.indexOf(body, body.position(), body.limit(), EXCHANGE_INDEX_MARKER);
         if (markerPos < 0) {
             return SHARD_UNKNOWN;
         }
-        int pos = markerPos + EXCHANGE_INDEX_MARKER.length;
-        int value = SHARD_UNKNOWN;
-        while (pos < body.limit() && body.get(pos) >= '0' && body.get(pos) <= '9') {
-            value = (value < 0 ? 0 : value * 10) + (body.get(pos) - '0');
-            pos++;
-        }
-        return value;
-    }
-
-    private static int indexOf(final ByteBuffer buf, final byte[] pattern) {
-        outer:
-        for (int i = buf.position(); i <= buf.limit() - pattern.length; i++) {
-            for (int j = 0; j < pattern.length; j++) {
-                if (buf.get(i + j) != pattern[j]) {
-                    continue outer;
-                }
-            }
-            return i;
-        }
-        return -1;
+        final int start = markerPos + EXCHANGE_INDEX_MARKER.length;
+        final long shard = AsciiParsing.parseNaturalLong(
+                body, start, AsciiParsing.skipDigits(body, start, body.limit()), SHARD_UNKNOWN);
+        return shard > Integer.MAX_VALUE ? SHARD_UNKNOWN : (int) shard;
     }
 }

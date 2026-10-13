@@ -3,6 +3,8 @@ package group.gnometrading.gateways;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import group.gnometrading.strings.MutableString;
+import group.gnometrading.strings.ViewString;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -53,5 +55,16 @@ class Rfc3339Test {
         assertEquals(
                 expected.getEpochSecond() * 1_000_000_000L + expected.getNano(),
                 Rfc3339.toEpochNanos(new MutableString(text)));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"2026-10-02T14:22:56.542213551Z", "2026-10-02T19:52:56.25+05:30", "1970-01-01T00:00:00Z"})
+    void parsesAViewIntoALargerBuffer(final String text) {
+        // As the JSON decoder hands it over: a view of the timestamp inside the whole message.
+        final byte[] message = ("{\"time\":\"" + text + "\",\"n\":9}").getBytes(StandardCharsets.US_ASCII);
+        final ViewString view = new ViewString(message, 9, text.length());
+        final OffsetDateTime expected = OffsetDateTime.parse(text);
+
+        assertEquals(expected.toEpochSecond() * 1_000_000_000L + expected.getNano(), Rfc3339.toEpochNanos(view));
     }
 }
