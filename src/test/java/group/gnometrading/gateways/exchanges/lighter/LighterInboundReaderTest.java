@@ -207,6 +207,37 @@ public class LighterInboundReaderTest {
         }
     }
 
+    /** Thrown, a snapshot level that can't be read would reconnect to the same snapshot and never get a book. */
+    @Test
+    void unreadableSnapshotLevelIsLeftOut() throws Exception {
+        processMessage("{\"channel\":\"order_book:0\",\"offset\":1,\"order_book\":{\"code\":0,"
+                + "\"asks\":[{\"price\":\"n/a\",\"size\":\"1.0\"},{\"price\":\"4212.00\",\"size\":\"2.0\"}],"
+                + "\"bids\":[{\"price\":\"4210.00\",\"size\":\"\"},{\"price\":\"4209.00\",\"size\":\"3.0\"}],"
+                + "\"offset\":1},\"timestamp\":1761585003166,\"type\":\"subscribed/order_book\"}");
+
+        final Mbp10Schema schema = capturedSchemas.get(capturedSchemas.size() - 1);
+        assertEquals(4_212L * Statics.PRICE_SCALING_FACTOR, schema.decoder.askPrice0());
+        assertEquals(4_209L * Statics.PRICE_SCALING_FACTOR, schema.decoder.bidPrice0());
+    }
+
+    /** Skipped, an update that can't be read would leave its level wrong; the reconnect brings a fresh snapshot. */
+    @Test
+    void unreadableUpdateFailsTheConnectionForAFreshSnapshot() throws Exception {
+        processMessage("{\"channel\":\"order_book:0\",\"offset\":1,\"order_book\":{\"code\":0,"
+                + "\"asks\":[{\"price\":\"4212.00\",\"size\":\"2.0\"}],"
+                + "\"bids\":[{\"price\":\"4209.00\",\"size\":\"3.0\"}],"
+                + "\"offset\":1},\"timestamp\":1761585003166,\"type\":\"subscribed/order_book\"}");
+
+        when(mockClient.read()).thenReturn(mockResponse);
+        when(mockResponse.getBody())
+                .thenReturn(ByteBuffer.wrap(("{\"channel\":\"order_book:0\",\"offset\":2,\"order_book\":{\"code\":0,"
+                                + "\"asks\":[{\"price\":\"4212.00\",\"size\":\"lots\"}],\"bids\":[],\"offset\":2},"
+                                + "\"timestamp\":1761585003167,\"type\":\"update/order_book\"}")
+                        .getBytes(StandardCharsets.UTF_8)));
+
+        assertThrows(NumberFormatException.class, () -> socketReader.doWork());
+    }
+
     // ========== Helper Methods ==========
 
     private void processMessage(String message) throws Exception {

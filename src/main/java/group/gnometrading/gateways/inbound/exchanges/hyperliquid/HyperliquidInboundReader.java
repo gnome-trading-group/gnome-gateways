@@ -26,6 +26,8 @@ public final class HyperliquidInboundReader extends InboundJsonWebSocketReader<M
 
     private static final int MAX_LEVEL_DEPTH = 10;
     private static final long NANOS_PER_MILLI = 1_000_000L;
+    // What a venue number that can't be read parses to; every real price and size is non-negative.
+    private static final long UNREADABLE = -1L;
 
     private enum Channel {
         L2BOOK,
@@ -37,6 +39,8 @@ public final class HyperliquidInboundReader extends InboundJsonWebSocketReader<M
     private long lastTradePrice;
     private long lastTradeSize;
     private boolean initialTradesBatchReceived;
+    // Whether the book message being read had a level that couldn't be read.
+    private boolean unreadableLevel;
 
     public HyperliquidInboundReader(
             Logger logger,
@@ -132,9 +136,9 @@ public final class HyperliquidInboundReader extends InboundJsonWebSocketReader<M
             while (level.hasNextKey()) {
                 try (var key = level.nextKey()) {
                     if (key.getName().equals("px")) {
-                        price = key.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR);
+                        price = key.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR, UNREADABLE);
                     } else if (key.getName().equals("sz")) {
-                        size = key.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR);
+                        size = key.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR, UNREADABLE);
                     } else if (key.getName().equals("n")) {
                         orderCount = key.asLong();
                     }
@@ -142,6 +146,9 @@ public final class HyperliquidInboundReader extends InboundJsonWebSocketReader<M
             }
         }
 
+        if (price == UNREADABLE || size == UNREADABLE) {
+            this.unreadableLevel = true;
+        }
         return existingLevel.update(price, size, orderCount);
     }
 
@@ -196,12 +203,18 @@ public final class HyperliquidInboundReader extends InboundJsonWebSocketReader<M
         this.schema.encoder.flags().clear();
         this.schema.encoder.flags().marketByPrice(true);
 
+        this.unreadableLevel = false;
         try (var object = node.asObject()) {
             while (object.hasNextKey()) {
                 parseL2BookKey(object);
             }
         }
 
+        // Every message is the whole book, about twice a second: one with a level that can't be read isn't published,
+        // and the next replaces it. Thrown, it would reconnect to the same.
+        if (this.unreadableLevel) {
+            return;
+        }
         this.book.writeTo(this.schema);
         offer();
     }
@@ -209,6 +222,8 @@ public final class HyperliquidInboundReader extends InboundJsonWebSocketReader<M
     private void parseTrade(final JsonDecoder.JsonObject trade, boolean emit) {
         Side side = Side.None;
         long timestampEvent = Mbp10Encoder.timestampEventNullValue();
+        long price = UNREADABLE;
+        long size = UNREADABLE;
 
         while (trade.hasNextKey()) {
             try (var key = trade.nextKey()) {
@@ -219,15 +234,21 @@ public final class HyperliquidInboundReader extends InboundJsonWebSocketReader<M
                         side = Side.Bid;
                     }
                 } else if (key.getName().equals("px")) {
-                    this.lastTradePrice = key.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR);
+                    price = key.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR, UNREADABLE);
                 } else if (key.getName().equals("sz")) {
-                    this.lastTradeSize = key.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR);
+                    size = key.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR, UNREADABLE);
                 } else if (key.getName().equals("time")) {
                     timestampEvent = key.asLong() * NANOS_PER_MILLI;
                 }
             }
         }
 
+        // A trade with a price or size that can't be read is neither published nor kept as the last trade.
+        if (price == UNREADABLE || size == UNREADABLE) {
+            return;
+        }
+        this.lastTradePrice = price;
+        this.lastTradeSize = size;
         if (!emit) {
             return;
         }

@@ -48,6 +48,8 @@ public final class PolymarketUsInboundReader extends InboundJsonWebSocketReader<
 
     private static final int MAX_LEVEL_DEPTH = 10;
     private static final long NANOS_PER_MILLI = 1_000_000L;
+    // What a venue number that can't be read parses to; every real price and size is non-negative.
+    private static final long UNREADABLE = -1L;
     private static final String MARKET_DATA_REQUEST_ID = "md";
     private static final String TRADE_REQUEST_ID = "tr";
 
@@ -198,7 +200,8 @@ public final class PolymarketUsInboundReader extends InboundJsonWebSocketReader<
                 try (var levelNode = array.nextItem()) {
                     parseLevel(levelNode);
                 }
-                if (idx < MAX_LEVEL_DEPTH && this.levelSize > 0) {
+                // Every message is the whole book, so a level that can't be read is left out of this one only.
+                if (idx < MAX_LEVEL_DEPTH && this.levelPrice > 0 && this.levelSize > 0) {
                     levels[idx++].update(this.levelPrice, this.levelSize, 1L);
                 }
             }
@@ -215,7 +218,7 @@ public final class PolymarketUsInboundReader extends InboundJsonWebSocketReader<
                     if (key.getName().equals("px")) {
                         this.levelPrice = parseAmount(key, Statics.PRICE_SCALING_FACTOR);
                     } else if (key.getName().equals("qty")) {
-                        this.levelSize = key.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR);
+                        this.levelSize = key.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR, UNREADABLE);
                     }
                 }
             }
@@ -251,6 +254,10 @@ public final class PolymarketUsInboundReader extends InboundJsonWebSocketReader<
             }
         }
 
+        // A trade with a price or size that can't be read isn't published: it would read as a real trade.
+        if (this.tradePrice < 0 || this.tradeSize < 0) {
+            return;
+        }
         prepareEncoder();
         this.schema.encoder.timestampEvent(this.tradeTimestamp);
         this.schema.encoder.sequence(Mbp10Encoder.sequenceNullValue());
@@ -306,14 +313,17 @@ public final class PolymarketUsInboundReader extends InboundJsonWebSocketReader<
         return Side.None;
     }
 
-    /** Reads an {@code Amount} object: {@code {"value":"0.555","currency":"USD"}}. */
+    /**
+     * Reads an {@code Amount} object: {@code {"value":"0.555","currency":"USD"}}; {@link #UNREADABLE} if the value
+     * can't be read.
+     */
     private static long parseAmount(final JsonDecoder.JsonNode amountNode, final long scalingFactor) {
-        long value = 0;
+        long value = UNREADABLE;
         try (var amount = amountNode.asObject()) {
             while (amount.hasNextKey()) {
                 try (var key = amount.nextKey()) {
                     if (key.getName().equals("value")) {
-                        value = key.asString().toFixedPointLong(scalingFactor);
+                        value = key.asString().toFixedPointLong(scalingFactor, UNREADABLE);
                     }
                 }
             }

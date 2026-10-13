@@ -1,6 +1,7 @@
 package group.gnometrading.gateways.exchanges.polymarket.intl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -182,6 +183,103 @@ class PolymarketIntlInboundReaderTest {
     void pongIsConsumedWithoutJsonDecoding() throws Exception {
         process("PONG");
         assertEquals(0, captured.size());
+    }
+
+    /** A market that has never traded sends an empty last_trade_price; it used to throw and reconnect forever. */
+    @Test
+    void bookWithNoLastTradePriceIsStillPublished() throws Exception {
+        process(
+                """
+                [{"market":"condition-1","asset_id":"token-yes",\
+                "timestamp":"1782753357257",\
+                "bids":[{"price":"0.08","size":"3"}],\
+                "asks":[{"price":"0.10","size":"6"}],\
+                "event_type":"book","last_trade_price":""}]
+                """);
+
+        Mbp10Schema schema = captured.get(0);
+        assertEquals(price("0.08"), schema.decoder.bidPrice0());
+        assertEquals(price("0.10"), schema.decoder.askPrice0());
+        assertEquals(Mbp10Encoder.priceNullValue(), schema.decoder.price(), "no trade yet");
+    }
+
+    @Test
+    void unreadableLevelIsSkippedAndTheRestOfTheBookKept() throws Exception {
+        process(
+                """
+                [{"market":"condition-1","asset_id":"token-yes",\
+                "timestamp":"1782753357257",\
+                "bids":[{"price":"n/a","size":"4"},{"price":"0.08","size":"3"},{"price":"0.07","size":""}],\
+                "asks":[{"price":"0.10","size":"6"}],\
+                "event_type":"book","last_trade_price":"0.09"}]
+                """);
+
+        Mbp10Schema schema = captured.get(0);
+        assertEquals(price("0.08"), schema.decoder.bidPrice0());
+        assertEquals(size("3"), schema.decoder.bidSize0());
+        assertEquals(Mbp10Encoder.bidPrice1NullValue(), schema.decoder.bidPrice1());
+    }
+
+    @Test
+    void pricesInExponentFormAreRead() throws Exception {
+        process(
+                """
+                [{"market":"condition-1","asset_id":"token-yes",\
+                "timestamp":"1782753357257",\
+                "bids":[{"price":"8e-02","size":"3E+1"}],\
+                "asks":[{"price":"0.10","size":"6"}],\
+                "event_type":"book","last_trade_price":"9.0e-2"}]
+                """);
+
+        Mbp10Schema schema = captured.get(0);
+        assertEquals(price("0.08"), schema.decoder.bidPrice0());
+        assertEquals(size("30"), schema.decoder.bidSize0());
+    }
+
+    @Test
+    void tradeWithNoReadablePriceIsNotPublished() throws Exception {
+        process(
+                """
+                {"market":"condition-1","asset_id":"token-yes","price":"","size":"5","side":"BUY",\
+                "timestamp":"1782753357300","event_type":"last_trade_price"}
+                """);
+        assertEquals(0, captured.size());
+
+        process(
+                """
+                {"market":"condition-1","asset_id":"token-yes","price":"0.4","size":"5","side":"BUY",\
+                "timestamp":"1782753357301","event_type":"last_trade_price"}
+                """);
+        assertEquals(1, captured.size(), "the feed carries on");
+        assertEquals(price("0.4"), captured.get(0).decoder.price());
+    }
+
+    @Test
+    void eventWithAnUnreadableTimestampIsNotPublished() throws Exception {
+        process(
+                """
+                [{"market":"condition-1","asset_id":"token-yes",\
+                "timestamp":"soon",\
+                "bids":[{"price":"0.08","size":"3"}],\
+                "asks":[{"price":"0.10","size":"6"}],\
+                "event_type":"book","last_trade_price":"0.09"}]
+                """);
+
+        assertEquals(0, captured.size());
+    }
+
+    /** Skipped, a change that can't be read would leave its level wrong; the reconnect brings a fresh snapshot. */
+    @Test
+    void unreadablePriceChangeFailsTheConnectionForAFreshSnapshot() throws Exception {
+        when(client.read()).thenReturn(response);
+        when(response.getBody())
+                .thenReturn(
+                        ByteBuffer.wrap(("{\"market\":\"condition-1\",\"price_changes\":[{\"asset_id\":\"token-yes\","
+                                        + "\"price\":\"0.08\",\"size\":\"\",\"side\":\"BUY\"}],\"timestamp\":\"1782753357300\","
+                                        + "\"event_type\":\"price_change\"}")
+                                .getBytes(StandardCharsets.UTF_8)));
+
+        assertThrows(NumberFormatException.class, () -> reader.doWork());
     }
 
     private void process(String message) throws Exception {

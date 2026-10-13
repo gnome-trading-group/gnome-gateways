@@ -1,6 +1,7 @@
 package group.gnometrading.gateways.exchanges.kalshi;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
@@ -426,6 +427,56 @@ class KalshiInboundReaderTest {
         assertEquals(Mbp10Encoder.bidPrice1NullValue(), schema.decoder.bidPrice1());
         assertEquals(Mbp10Encoder.askPrice0NullValue(), schema.decoder.askPrice0());
         assertEquals(Action.Modify, schema.decoder.action());
+    }
+
+    /** Thrown, a snapshot level that can't be read would reconnect to the same snapshot and never get a book. */
+    @Test
+    void unreadableSnapshotLevelIsLeftOutAndTheRestKept() throws Exception {
+        processNoEmit(
+                """
+                {"type":"orderbook_snapshot","sid":1,"seq":1,"msg":{"market_ticker":"TEST-TICKER",\
+                "yes_dollars_fp":[["0.5500","n/a"],["","100.00"],["0.5000","200.00"]],\
+                "no_dollars_fp":[["0.5400","50.00"]]}}
+                """);
+        process(
+                """
+                {"type":"orderbook_delta","sid":1,"seq":2,"msg":{"market_ticker":"TEST-TICKER",\
+                "price_dollars":"0.540","delta_fp":"0.00","side":"no","ts_ms":1700000000000}}
+                """);
+
+        Mbp10Schema schema = captured.get(0);
+        assertEquals(price("0.50"), schema.decoder.bidPrice0());
+        assertEquals(size("200"), schema.decoder.bidSize0());
+        assertEquals(Mbp10Encoder.bidPrice1NullValue(), schema.decoder.bidPrice1());
+    }
+
+    /** Skipped, a delta that can't be read would leave its level wrong; the reconnect brings a fresh snapshot. */
+    @Test
+    void unreadableDeltaFailsTheConnectionForAFreshSnapshot() throws Exception {
+        processSnapshot();
+
+        when(client.read()).thenReturn(response);
+        when(response.getBody())
+                .thenReturn(ByteBuffer.wrap(
+                        ("{\"type\":\"orderbook_delta\",\"sid\":1,\"seq\":2,\"msg\":{\"market_ticker\":\"TEST-TICKER\","
+                                        + "\"price_dollars\":\"0.550\",\"delta_fp\":\"lots\",\"side\":\"yes\","
+                                        + "\"ts_ms\":1700000000000}}")
+                                .getBytes(StandardCharsets.UTF_8)));
+
+        assertThrows(NumberFormatException.class, () -> reader.doWork());
+    }
+
+    @Test
+    void tradeWithAnUnreadablePriceIsNotPublished() throws Exception {
+        processSnapshot();
+        processNoEmit(
+                """
+                {"type":"trade","sid":2,"seq":3,"msg":{"trade_id":"uuid","market_ticker":"TEST-TICKER",\
+                "yes_price_dollars":"","no_price_dollars":"0.450","count_fp":"10.00",\
+                "taker_side":"yes","taker_book_side":"bid","ts_ms":1700000000000}}
+                """);
+
+        assertEquals(0, captured.size());
     }
 
     private void processSnapshot() throws Exception {

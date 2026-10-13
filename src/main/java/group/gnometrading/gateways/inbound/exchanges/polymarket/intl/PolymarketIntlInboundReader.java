@@ -156,11 +156,11 @@ public final class PolymarketIntlInboundReader extends InboundJsonWebSocketReade
         } else if (name.equals("asks")) {
             parseSnapshotEventSide(key, false, event);
         } else if (isEventPrice(name)) {
-            event.price = key.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR);
+            event.price = key.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR, Mbp10Encoder.priceNullValue());
         } else if (name.equals("price_changes")) {
             parsePriceChanges(key);
         } else if (name.equals("size")) {
-            event.size = key.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR);
+            event.size = key.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR, Mbp10Encoder.sizeNullValue());
         } else if (name.equals("side")) {
             event.side = key.asString().equals("BUY") ? Side.Bid : Side.Ask;
         }
@@ -189,7 +189,15 @@ public final class PolymarketIntlInboundReader extends InboundJsonWebSocketReade
         parseSnapshotSide(key, isBid);
     }
 
+    /**
+     * Venue numbers that don't parse are left null rather than thrown: a market that has never traded sends an empty
+     * last_trade_price, and a throw here reconnects, gets the same snapshot, and throws again.
+     */
     private void emitParsedEvent(final ParsedEvent event) {
+        // A book is never published without the venue's time.
+        if (event.timestamp == Mbp10Encoder.timestampEventNullValue()) {
+            return;
+        }
         switch (event.type) {
             case EVENT_TYPE_BOOK -> {
                 if (event.price != Mbp10Encoder.priceNullValue()) {
@@ -200,9 +208,10 @@ public final class PolymarketIntlInboundReader extends InboundJsonWebSocketReade
             case EVENT_TYPE_PRICE_CHANGE -> emit(
                     event.timestamp, Action.Modify, Side.None, this.lastTradePrice, this.lastTradeSize);
             case EVENT_TYPE_LAST_TRADE -> {
-                if (event.price != Mbp10Encoder.priceNullValue()) {
-                    this.lastTradePrice = event.price;
+                if (event.price == Mbp10Encoder.priceNullValue()) {
+                    return;
                 }
+                this.lastTradePrice = event.price;
                 if (event.size != Mbp10Encoder.sizeNullValue()) {
                     this.lastTradeSize = event.size;
                 }
@@ -215,7 +224,8 @@ public final class PolymarketIntlInboundReader extends InboundJsonWebSocketReade
     }
 
     private long parseTimestamp(final JsonDecoder.JsonNode node) {
-        return node.asString().toFixedPointLong(1L) * NANOS_PER_MILLI;
+        final long millis = node.asString().toFixedPointLong(1L, -1);
+        return millis < 0 ? Mbp10Encoder.timestampEventNullValue() : millis * NANOS_PER_MILLI;
     }
 
     private void emit(long timestampEvent, Action action, Side side, long price, long size) {
@@ -251,9 +261,11 @@ public final class PolymarketIntlInboundReader extends InboundJsonWebSocketReade
             while (levelObj.hasNextKey()) {
                 try (var key = levelObj.nextKey()) {
                     if (key.getName().equals("price")) {
-                        price = key.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR);
+                        price = key.asString()
+                                .toFixedPointLong(Statics.PRICE_SCALING_FACTOR, Mbp10Encoder.askPrice0NullValue());
                     } else if (key.getName().equals("size")) {
-                        size = key.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR);
+                        size = key.asString()
+                                .toFixedPointLong(Statics.SIZE_SCALING_FACTOR, Mbp10Encoder.askSize0NullValue());
                     }
                 }
             }
@@ -273,6 +285,10 @@ public final class PolymarketIntlInboundReader extends InboundJsonWebSocketReade
         }
     }
 
+    /**
+     * A change the book can't read throws: skipped, the level would stay wrong until the venue next touches it. The
+     * reconnect that follows brings a fresh snapshot, and a change is never sent again, so it can't loop.
+     */
     private void parsePriceChange(final JsonDecoder.JsonObject change) {
         boolean matchesToken = false;
         long price = Mbp10Encoder.askPrice0NullValue();

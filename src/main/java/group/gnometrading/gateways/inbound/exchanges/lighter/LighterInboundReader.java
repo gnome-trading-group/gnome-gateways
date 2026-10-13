@@ -18,6 +18,7 @@ import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Listing;
+import group.gnometrading.strings.GnomeString;
 import java.io.IOException;
 import org.agrona.concurrent.EpochNanoClock;
 
@@ -26,6 +27,8 @@ public final class LighterInboundReader extends InboundJsonWebSocketReader<Mbp10
 
     private static final long NANOS_PER_MILLIS = 1_000_000L;
     private static final int MAX_LEVELS = 10;
+    // What a venue number that can't be read parses to; every real price and size is non-negative.
+    private static final long UNREADABLE = -1L;
 
     private final MbpBufferBook book;
     private final String orderBookChannel;
@@ -33,6 +36,9 @@ public final class LighterInboundReader extends InboundJsonWebSocketReader<Mbp10
     private long lastTradePrice;
     private long lastTradeSize;
     private long lastSequenceNumber;
+    // Whether this connection's first order book, the snapshot, has been read; every one after it is an update.
+    // Reset when the supervisor subscribes, on its own thread, while the reader is paused.
+    private volatile boolean snapshotRead;
 
     public LighterInboundReader(
             Logger logger,
@@ -99,13 +105,15 @@ public final class LighterInboundReader extends InboundJsonWebSocketReader<Mbp10
         prepareEncoder();
         long timestamp = Mbp10Encoder.timestampEventNullValue();
         Side side = Side.None;
+        long price = UNREADABLE;
+        long size = UNREADABLE;
 
         while (obj.hasNextKey()) {
             try (var key = obj.nextKey()) {
                 if (key.getName().equals("price")) {
-                    this.lastTradePrice = key.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR);
+                    price = key.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR, UNREADABLE);
                 } else if (key.getName().equals("size")) {
-                    this.lastTradeSize = key.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR);
+                    size = key.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR, UNREADABLE);
                 } else if (key.getName().equals("timestamp")) {
                     timestamp = key.asLong() * NANOS_PER_MILLIS;
                 } else if (key.getName().equals("is_maker_ask")) {
@@ -116,6 +124,12 @@ public final class LighterInboundReader extends InboundJsonWebSocketReader<Mbp10
             }
         }
 
+        // A trade with a price or size that can't be read is neither published nor kept as the last trade.
+        if (price == UNREADABLE || size == UNREADABLE) {
+            return;
+        }
+        this.lastTradePrice = price;
+        this.lastTradeSize = size;
         this.schema.encoder.timestampEvent(timestamp);
         this.schema.encoder.sequence(this.lastSequenceNumber);
         this.schema.encoder.price(this.lastTradePrice);
@@ -133,19 +147,21 @@ public final class LighterInboundReader extends InboundJsonWebSocketReader<Mbp10
 
     private boolean parseOrderBook(final JsonDecoder.JsonNode node) {
         int depth = Mbp10Encoder.depthNullValue();
+        final boolean snapshot = !this.snapshotRead;
         try (var obj = node.asObject()) {
             while (obj.hasNextKey()) {
                 try (var key = obj.nextKey()) {
                     if (key.getName().equals("asks")) {
-                        depth = Math.min(depth, parseOrders(key, true));
+                        depth = Math.min(depth, parseOrders(key, true, snapshot));
                     } else if (key.getName().equals("bids")) {
-                        depth = Math.min(depth, parseOrders(key, false));
+                        depth = Math.min(depth, parseOrders(key, false, snapshot));
                     } else {
                         // NO-OP: consume it
                     }
                 }
             }
         }
+        this.snapshotRead = true;
         if (depth == Mbp10Encoder.depthNullValue() || depth >= MAX_LEVELS) {
             return false;
         }
@@ -167,32 +183,39 @@ public final class LighterInboundReader extends InboundJsonWebSocketReader<Mbp10
         return true;
     }
 
-    private int parseOrders(final JsonDecoder.JsonNode node, final boolean isAsk) {
+    private int parseOrders(final JsonDecoder.JsonNode node, final boolean isAsk, final boolean snapshot) {
         int depth = Mbp10Encoder.depthNullValue();
         try (var array = node.asArray()) {
             while (array.hasNextItem()) {
                 try (var item = array.nextItem();
                         var obj = item.asObject()) {
-                    depth = Math.min(depth, parseOrder(obj, isAsk));
+                    depth = Math.min(depth, parseOrder(obj, isAsk, snapshot));
                 }
             }
         }
         return depth;
     }
 
-    private int parseOrder(final JsonDecoder.JsonObject obj, final boolean isAsk) {
+    /**
+     * A snapshot level that can't be read is left out: thrown, the reconnect would bring the same snapshot back. An
+     * update that can't be read throws, for a fresh snapshot: skipped, the level would stay wrong.
+     */
+    private int parseOrder(final JsonDecoder.JsonObject obj, final boolean isAsk, final boolean snapshot) {
         long price = 0;
         long size = 0;
         while (obj.hasNextKey()) {
             try (var key = obj.nextKey()) {
                 if (key.getName().equals("price")) {
-                    price = key.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR);
+                    price = parseAmount(key.asString(), Statics.PRICE_SCALING_FACTOR, snapshot);
                 } else if (key.getName().equals("size")) {
-                    size = key.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR);
+                    size = parseAmount(key.asString(), Statics.SIZE_SCALING_FACTOR, snapshot);
                 } else {
                     // NO-OP: consume it
                 }
             }
+        }
+        if (price == UNREADABLE || size == UNREADABLE) {
+            return Mbp10Encoder.depthNullValue();
         }
         if (isAsk) {
             return this.book.updateAsk(price, size, 1);
@@ -222,8 +245,13 @@ public final class LighterInboundReader extends InboundJsonWebSocketReader<Mbp10
                 .writeText(jsonInboundWebSocketWriter.getAndFlipJsonBodyBuffer(), false);
     }
 
+    private static long parseAmount(final GnomeString text, final long scale, final boolean lenient) {
+        return lenient ? text.toFixedPointLong(scale, UNREADABLE) : text.toFixedPointLong(scale);
+    }
+
     @Override
     protected void subscribe() throws IOException {
+        this.snapshotRead = false;
         // { "type": "subscribe", "channel": "order_book/{MARKET_INDEX}"}
         // { "type": "subscribe", "channel": "trade/{MARKET_INDEX}" }
         this.writeSubscription(this.orderBookChannel);

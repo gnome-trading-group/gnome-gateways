@@ -65,6 +65,10 @@ public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10S
     private static final int TICKS_PER_DOLLAR = 1000;
     private static final int PRICE_ARRAY_SIZE = TICKS_PER_DOLLAR;
     private static final long TICK_TO_PRICE_SCALE = Statics.PRICE_SCALING_FACTOR / TICKS_PER_DOLLAR;
+    // Prices are read one digit finer than the finest tick, so a price off every tick can be told apart and dropped.
+    private static final long FINE_TICKS_PER_DOLLAR = TICKS_PER_DOLLAR * 10L;
+    // What a venue number that can't be read parses to; every real price and size is non-negative.
+    private static final long UNREADABLE = -1L;
     // Kalshi qty strings have 2 decimal places (cent-dollar precision). We store qty arrays
     // in cent-dollars (multiply by 100 on parse) so $0.01 orders are preserved. Divide by 100
     // when writing to the size field to keep the same schema scale as other exchanges.
@@ -246,20 +250,24 @@ public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10S
         }
     }
 
+    /**
+     * A snapshot level that can't be read is left out: thrown, the reconnect would bring the same snapshot back and
+     * throw again, and never get a book.
+     */
     private void parsePair(final JsonDecoder.JsonArray pair, final long[] qtyArray) {
         int priceTick = 0;
-        long qty = 0;
+        long qty = UNREADABLE;
         if (pair.hasNextItem()) {
             try (var priceNode = pair.nextItem()) {
-                priceTick = toPriceTick(priceNode.asString());
+                priceTick = toPriceTick(priceNode.asString().toFixedPointLong(FINE_TICKS_PER_DOLLAR, UNREADABLE));
             }
         }
         if (pair.hasNextItem()) {
             try (var qtyNode = pair.nextItem()) {
-                qty = qtyNode.asString().toFixedPointLong(100);
+                qty = qtyNode.asString().toFixedPointLong(100, UNREADABLE);
             }
         }
-        if (priceTick > 0 && priceTick < PRICE_ARRAY_SIZE) {
+        if (priceTick > 0 && priceTick < PRICE_ARRAY_SIZE && qty >= 0) {
             qtyArray[priceTick] = qty;
         }
     }
@@ -273,8 +281,9 @@ public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10S
         try (var msg = msgNode.asObject()) {
             while (msg.hasNextKey()) {
                 try (var key = msg.nextKey()) {
+                    // A delta that can't be read throws, for a fresh snapshot: skipped, the level would stay wrong.
                     if (key.getName().equals("price_dollars")) {
-                        priceTick = toPriceTick(key.asString());
+                        priceTick = toPriceTick(key.asString().toFixedPointLong(FINE_TICKS_PER_DOLLAR));
                     } else if (key.getName().equals("delta_fp")) {
                         delta = key.asString().toFixedPointLong(100);
                     } else if (key.getName().equals("side")) {
@@ -309,9 +318,9 @@ public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10S
             while (msg.hasNextKey()) {
                 try (var key = msg.nextKey()) {
                     if (key.getName().equals("yes_price_dollars")) {
-                        tradePrice = key.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR);
+                        tradePrice = key.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR, UNREADABLE);
                     } else if (key.getName().equals("count_fp")) {
-                        tradeSize = key.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR);
+                        tradeSize = key.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR, UNREADABLE);
                     } else if (key.getName().equals("taker_book_side")) {
                         takerIsBid = key.asString().equals("bid");
                     } else if (key.getName().equals("ts_ms")) {
@@ -322,6 +331,10 @@ public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10S
             }
         }
 
+        // A trade with a price or size that can't be read isn't published: it would read as a real trade.
+        if (tradePrice < 0 || tradeSize < 0) {
+            return;
+        }
         prepareEncoder();
         schema.encoder.timestampEvent(tsMs * NANOS_PER_MILLI);
         schema.encoder.sequence(Mbp10Encoder.sequenceNullValue());
@@ -337,12 +350,11 @@ public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10S
     }
 
     /**
-     * Parsed one digit finer than the finest tick, so a price off every tick is dropped (as 0) rather than truncated
-     * onto a neighbouring level.
+     * The tick for a price read at {@link #FINE_TICKS_PER_DOLLAR}: 0, so dropped, for one off every tick (rather than
+     * truncated onto a neighbouring level) or one that couldn't be read.
      */
-    private static int toPriceTick(final GnomeString dollars) {
-        final long fine = dollars.toFixedPointLong(TICKS_PER_DOLLAR * 10L);
-        return fine % 10 == 0 ? (int) (fine / 10) : 0;
+    private static int toPriceTick(final long fine) {
+        return fine >= 0 && fine % 10 == 0 ? (int) (fine / 10) : 0;
     }
 
     private void refreshMbp10Book() {

@@ -177,6 +177,38 @@ class PolymarketUsInboundReaderTest {
     }
 
     @Test
+    void unreadableLevelIsLeftOutOfThatBookOnly() throws Exception {
+        process(
+                """
+                {"marketData":{"bids":[{"px":{"value":"n/a","currency":"USD"},"qty":"10"},\
+                {"px":{"value":"0.49","currency":"USD"},"qty":""},\
+                {"px":{"value":"0.48","currency":"USD"},"qty":"7"}],\
+                "offers":[{"px":{"value":"0.52","currency":"USD"},"qty":"5"}],"transactTime":"2026-10-02T14:00:00Z"}}
+                """);
+
+        final Mbp10Schema schema = captured.get(0);
+        assertEquals(price("0.48"), schema.decoder.bidPrice0());
+        assertEquals(size("7"), schema.decoder.bidSize0());
+        assertEquals(Mbp10Encoder.bidPrice1NullValue(), schema.decoder.bidPrice1());
+        assertEquals(price("0.52"), schema.decoder.askPrice0());
+    }
+
+    @Test
+    void tradeWithAnUnreadablePriceIsNotPublished() throws Exception {
+        processNoEmit(
+                """
+                {"requestId":"tr","subscriptionType":"SUBSCRIPTION_TYPE_TRADE","trade":{\
+                "marketSlug":"tec-mlb-nlchamp-2026-09-27-atl",\
+                "price":{"value":"","currency":"USD"},\
+                "quantity":{"value":"0.50","currency":"USD"},\
+                "tradeTime":"2024-01-15T10:30:00Z",\
+                "taker":{"side":"ORDER_SIDE_SELL","intent":"ORDER_INTENT_SELL_LONG"}}}
+                """);
+
+        assertEquals(0, captured.size());
+    }
+
+    @Test
     void laterSnapshotReplacesEarlierLevels() throws Exception {
         process(
                 """
