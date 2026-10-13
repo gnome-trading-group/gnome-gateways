@@ -22,7 +22,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.agrona.concurrent.EpochNanoClock;
 import org.agrona.concurrent.UnsafeBuffer;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -40,15 +39,7 @@ class InboundSocketReaderTest {
     @BeforeEach
     void setUp() {
         sequencedRingBuffer = new SequencedRingBuffer<>(Mbp10Schema::new, new GlobalSequence());
-        sequencedRingBuffer.start();
         clock = System::nanoTime;
-    }
-
-    @AfterEach
-    void tearDown() {
-        if (sequencedRingBuffer != null) {
-            sequencedRingBuffer.shutdown();
-        }
     }
 
     // ========== doWork Tests ==========

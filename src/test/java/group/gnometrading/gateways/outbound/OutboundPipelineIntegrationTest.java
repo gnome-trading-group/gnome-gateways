@@ -19,6 +19,7 @@ import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
 import group.gnometrading.schemas.TimeInForce;
 import group.gnometrading.sequencer.GlobalSequence;
+import group.gnometrading.sequencer.SequencedPoller;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Exchange;
 import group.gnometrading.sm.Listing;
@@ -30,7 +31,6 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -54,6 +54,7 @@ class OutboundPipelineIntegrationTest {
     private ManyToOneRingBuffer<OrderContext> writerReportQueue;
     private ManyToOneRingBuffer<OrderContext> releasedOrderQueue;
     private SequencedRingBuffer<OrderExecutionReport> execReportBuffer;
+    private SequencedPoller poller;
     private List<OrderExecutionReport> captured;
     private TestPipelineWriter writer;
     private TestPipelineReader reader;
@@ -67,22 +68,16 @@ class OutboundPipelineIntegrationTest {
 
         captured = new CopyOnWriteArrayList<>();
         execReportBuffer = new SequencedRingBuffer<>(OrderExecutionReport::new, new GlobalSequence());
-        execReportBuffer.handleEventsWith((globalSeq, templateId, buffer, length) -> {
+        poller = execReportBuffer.createPoller((globalSeq, templateId, buffer, length) -> {
             final OrderExecutionReport copy = new OrderExecutionReport();
             copy.buffer.putBytes(0, buffer, 0, length);
             copy.wrap(copy.buffer);
             captured.add(copy);
         });
-        execReportBuffer.start();
 
         writer = new TestPipelineWriter(orderBuffer, newOrderQueue, writerReportQueue, releasedOrderQueue);
         reader = new TestPipelineReader(execReportBuffer, newOrderQueue, writerReportQueue, releasedOrderQueue);
         reader.pauseControl.release();
-    }
-
-    @AfterEach
-    void tearDown() {
-        execReportBuffer.shutdown();
     }
 
     @Test
@@ -436,10 +431,10 @@ class OutboundPipelineIntegrationTest {
         return ByteBuffer.wrap(("FILL:" + hash).getBytes(StandardCharsets.UTF_8));
     }
 
-    private void waitForReports(final int count) {
+    private void waitForReports(final int count) throws Exception {
         final long deadline = System.currentTimeMillis() + 2000;
         while (captured.size() < count && System.currentTimeMillis() < deadline) {
-            Thread.yield();
+            poller.poll();
         }
     }
 
@@ -464,7 +459,7 @@ class OutboundPipelineIntegrationTest {
     static class TestPipelineWriter extends OutboundSocketWriter {
 
         boolean submitResult = true;
-        boolean cancelResult = true;
+        CancelResult cancelResult = CancelResult.ACCEPTED;
         int submitCallCount = 0;
 
         TestPipelineWriter(
@@ -501,7 +496,7 @@ class OutboundPipelineIntegrationTest {
         }
 
         @Override
-        protected boolean cancelOrder(final OrderContext ctx) {
+        protected CancelResult cancelOrder(final OrderContext ctx) {
             return cancelResult;
         }
 

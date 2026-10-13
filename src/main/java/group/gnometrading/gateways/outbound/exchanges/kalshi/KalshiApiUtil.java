@@ -1,11 +1,13 @@
 package group.gnometrading.gateways.outbound.exchanges.kalshi;
 
+import group.gnometrading.gateways.ratelimit.RateLimitedRetry;
 import group.gnometrading.networking.http.HTTPClient;
 import group.gnometrading.networking.http.HTTPProtocol;
 import group.gnometrading.networking.http.HTTPResponse;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.function.LongSupplier;
 
 /**
  * A market's exchange shard, and the routing a cancel needs to reach it. Each Kalshi market trades on one shard; a
@@ -24,12 +26,31 @@ final class KalshiApiUtil {
             final HTTPClient httpClient,
             final String apiHost,
             final KalshiAuthSigner authSigner,
-            final long epochMillis,
+            final LongSupplier epochMillis,
             final String ticker)
             throws IOException {
         final String path = MARKET_PATH + ticker;
+        HTTPResponse response;
+        int attempt = 0;
+        do {
+            attempt++;
+            response = getMarket(httpClient, apiHost, authSigner, epochMillis.getAsLong(), path);
+        } while (RateLimitedRetry.shouldRetry(response, attempt));
+        if (!response.isSuccess() || response.getBody() == null) {
+            return SHARD_UNKNOWN;
+        }
+        return readExchangeIndex(response.getBody());
+    }
+
+    private static HTTPResponse getMarket(
+            final HTTPClient httpClient,
+            final String apiHost,
+            final KalshiAuthSigner authSigner,
+            final long epochMillis,
+            final String path)
+            throws IOException {
         authSigner.sign(epochMillis, "GET", path);
-        final HTTPResponse response = httpClient.get(
+        return httpClient.get(
                 HTTPProtocol.HTTPS,
                 apiHost,
                 path,
@@ -39,10 +60,6 @@ final class KalshiApiUtil {
                 authSigner.timestamp(),
                 "KALSHI-ACCESS-SIGNATURE",
                 authSigner.signature());
-        if (!response.isSuccess() || response.getBody() == null) {
-            return SHARD_UNKNOWN;
-        }
-        return readExchangeIndex(response.getBody());
     }
 
     /** Cancels take their routing as a query: an order id alone can't name the shard. */

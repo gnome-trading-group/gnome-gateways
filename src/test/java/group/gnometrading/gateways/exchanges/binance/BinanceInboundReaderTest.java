@@ -20,6 +20,7 @@ import group.gnometrading.schemas.SchemaType;
 import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
 import group.gnometrading.sequencer.GlobalSequence;
+import group.gnometrading.sequencer.SequencedPoller;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Exchange;
 import group.gnometrading.sm.Listing;
@@ -29,7 +30,6 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 import org.agrona.concurrent.EpochNanoClock;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -41,6 +41,7 @@ public class BinanceInboundReaderTest {
     private static final long SIZE_SCALE = Statics.SIZE_SCALING_FACTOR;
 
     private SequencedRingBuffer<Mbp10Schema> sequencedRingBuffer;
+    private SequencedPoller poller;
     private BinanceInboundReader reader;
     private FixSocketMessageClient mockFixClient;
     private List<Mbp10Schema> capturedSchemas;
@@ -52,13 +53,12 @@ public class BinanceInboundReaderTest {
     void setUp() throws Exception {
         capturedSchemas = new CopyOnWriteArrayList<>();
         sequencedRingBuffer = new SequencedRingBuffer<>(Mbp10Schema::new, new GlobalSequence());
-        sequencedRingBuffer.handleEventsWith((gSeq, templateId, buffer, length) -> {
+        poller = sequencedRingBuffer.createPoller((gSeq, templateId, buffer, length) -> {
             Mbp10Schema captured = new Mbp10Schema();
             captured.buffer.putBytes(0, buffer, 0, length);
             captured.wrap(captured.buffer);
             capturedSchemas.add(captured);
         });
-        sequencedRingBuffer.start();
 
         EpochNanoClock clock = System::nanoTime;
 
@@ -104,13 +104,6 @@ public class BinanceInboundReaderTest {
         reader.buffer = false;
         reader.pauseControl.release();
         seqNum = 1;
-    }
-
-    @AfterEach
-    void tearDown() {
-        if (sequencedRingBuffer != null) {
-            sequencedRingBuffer.shutdown();
-        }
     }
 
     @Test
@@ -224,6 +217,7 @@ public class BinanceInboundReaderTest {
         FixMessage outsideMsg = buildXMessage(seqNum++, 1010L, m -> addBookEntry(m, '0', '0', "49990.00", "5.00000"));
         processMessageNoWait(outsideMsg);
         Thread.sleep(50);
+        poller.poll();
 
         assertEquals(afterFill, capturedSchemas.size());
     }
@@ -287,7 +281,7 @@ public class BinanceInboundReaderTest {
         reader.doWork();
         long deadline = System.currentTimeMillis() + 1000;
         while (capturedSchemas.size() == before && System.currentTimeMillis() < deadline) {
-            Thread.yield();
+            poller.poll();
         }
     }
 

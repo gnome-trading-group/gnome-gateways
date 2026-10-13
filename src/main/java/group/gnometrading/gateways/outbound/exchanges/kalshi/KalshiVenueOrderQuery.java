@@ -17,6 +17,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.LongSupplier;
 import org.agrona.concurrent.EpochClock;
 
 /**
@@ -40,6 +41,7 @@ public final class KalshiVenueOrderQuery implements VenueOrderQuery {
     private final String apiHost;
     private final KalshiAuthSigner authSigner;
     private final EpochClock clock;
+    private final LongSupplier epochMillis;
     private final JsonDecoder jsonDecoder = new JsonDecoder();
     private final KalshiOrderPages orderPages;
     // Only shards Kalshi named; a failed lookup is tried again on the next cancel.
@@ -54,6 +56,7 @@ public final class KalshiVenueOrderQuery implements VenueOrderQuery {
         this.apiHost = apiHost;
         this.authSigner = authSigner;
         this.clock = clock;
+        this.epochMillis = clock::time;
         this.orderPages = new KalshiOrderPages(httpClient, apiHost, authSigner, clock::time);
     }
 
@@ -102,7 +105,7 @@ public final class KalshiVenueOrderQuery implements VenueOrderQuery {
         int shard;
         try {
             shard = KalshiApiUtil.fetchExchangeIndex(
-                    this.httpClient, this.apiHost, this.authSigner, this.clock.time(), ticker);
+                    this.httpClient, this.apiHost, this.authSigner, this.epochMillis, ticker);
         } catch (final IOException | RuntimeException e) {
             shard = KalshiApiUtil.SHARD_UNKNOWN;
         }

@@ -5,6 +5,8 @@ import group.gnometrading.codecs.json.JsonEncoder;
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
 import group.gnometrading.gateways.outbound.OrderContext;
 import group.gnometrading.gateways.outbound.OutboundSocketWriter;
+import group.gnometrading.logging.LogMessage;
+import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.http.HTTPClient;
 import group.gnometrading.networking.http.HTTPProtocol;
 import group.gnometrading.networking.http.HTTPResponse;
@@ -15,8 +17,8 @@ import group.gnometrading.schemas.TimeInForce;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Listing;
 import group.gnometrading.strings.GnomeString;
-import group.gnometrading.strings.ViewString;
 import group.gnometrading.utils.ByteBufferUtils;
+import group.gnometrading.utils.ScaledMath;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -30,10 +32,9 @@ import org.agrona.concurrent.EpochNanoClock;
  */
 public final class PolymarketIntlOutboundWriter extends OutboundSocketWriter {
 
-    private static final String ORDER_PATH = "/order";
-    private static final String ORDER_LOOKUP_PATH = "/data/order/";
     private static final int HTTP_NOT_FOUND = 404;
-    private static final GnomeString ORDER_PATH_GS = new ViewString(ORDER_PATH);
+    private static final int MAX_LOGGED_REASON_CHARS = 500;
+    private static final int HTTP_SERVICE_UNAVAILABLE = 503;
     private static final String ZERO_BYTES32 = "0x0000000000000000000000000000000000000000000000000000000000000000";
 
     private static final int BUY_SIDE = 0;
@@ -42,12 +43,16 @@ public final class PolymarketIntlOutboundWriter extends OutboundSocketWriter {
     // Polymarket sizes are in 6-decimal units, matching SIZE_SCALING_FACTOR, and in whole hundredths of a share.
     private static final long SHARE_INCREMENT = Statics.SIZE_SCALING_FACTOR / 100;
     private static final long NANOS_PER_MILLI = 1_000_000L;
+    // Dollars are in 6-decimal units too.
+    private static final long CENT = Statics.SIZE_SCALING_FACTOR / 100;
 
+    private final Logger logger;
     private final HTTPClient httpClient;
     private final String clobHost;
     private final PolymarketIntlOrderSigner orderSigner;
     private final PolymarketIntlAuthHeaders authHeaders;
     private final PolymarketIntlMarketInfo marketInfo;
+    private final long marketAmountIncrement;
     private final EpochNanoClock clock;
     private final String tokenId;
     private final BigInteger tokenIdBigInt;
@@ -57,8 +62,10 @@ public final class PolymarketIntlOutboundWriter extends OutboundSocketWriter {
     private final JsonEncoder jsonEncoder = new JsonEncoder();
     private final JsonDecoder jsonDecoder = new JsonDecoder();
     private int jsonBodyLength;
+    private final SubmitAnswer submitAnswer = new SubmitAnswer();
 
     public PolymarketIntlOutboundWriter(
+            Logger logger,
             SequencedRingBuffer<?> orderOutboundBuffer,
             ManyToOneRingBuffer<OrderContext> newOrderQueue,
             ManyToOneRingBuffer<OrderContext> writerReportQueue,
@@ -71,11 +78,13 @@ public final class PolymarketIntlOutboundWriter extends OutboundSocketWriter {
             EpochNanoClock clock,
             Listing listing) {
         super(orderOutboundBuffer, newOrderQueue, writerReportQueue, releasedOrderQueue);
+        this.logger = logger;
         this.httpClient = httpClient;
         this.clobHost = clobHost;
         this.orderSigner = orderSigner;
         this.authHeaders = authHeaders;
         this.marketInfo = marketInfo;
+        this.marketAmountIncrement = amountIncrement(marketInfo.tickSize());
         this.clock = clock;
         // exchangeSecurityId format: "{condition_id}:{token_id}"
         final String exchangeSecurityId = listing.exchangeSecurityId();
@@ -104,8 +113,20 @@ public final class PolymarketIntlOutboundWriter extends OutboundSocketWriter {
         final int pmSide = this.order.decoder.side() == Side.Bid ? BUY_SIDE : SELL_SIDE;
         // Exact: the OMS keeps size to whole lots (hundredths of a share), and every tick is a multiple of 1e-4.
         final long notional = size / SHARE_INCREMENT * price / (Statics.PRICE_SCALING_FACTOR / SHARE_INCREMENT);
-        final long makerAmount = pmSide == BUY_SIDE ? notional : size;
-        final long takerAmount = pmSide == BUY_SIDE ? size : notional;
+        final boolean immediate = isImmediate(this.order.decoder.timeInForce());
+        final long makerAmount;
+        final long takerAmount;
+        if (pmSide == BUY_SIDE && immediate) {
+            // The venue reads an IOC or FOK BUY as dollars to spend: whole cents of them, and the shares those buy
+            // at the limit to the tick's precision. At a better price it spends them all, buying more shares.
+            makerAmount = notional - notional % CENT;
+            final long shares = ScaledMath.multiplyDivide(makerAmount, Statics.PRICE_SCALING_FACTOR, price);
+            takerAmount = shares - shares % this.marketAmountIncrement;
+        } else {
+            makerAmount = pmSide == BUY_SIDE ? notional : size;
+            takerAmount = pmSide == BUY_SIDE ? size : notional;
+        }
+        ctx.awaitsFinalFill = immediate;
 
         final PolymarketIntlOrderSigner.SignedOrder signed = this.orderSigner.signOrder(
                 this.tokenIdBigInt,
@@ -115,6 +136,7 @@ public final class PolymarketIntlOutboundWriter extends OutboundSocketWriter {
                 this.clock.nanoTime() / NANOS_PER_MILLI,
                 this.marketInfo.negRisk());
 
+        ctx.submittedAtMillis = this.clock.nanoTime() / NANOS_PER_MILLI;
         // The order hash is the venue's orderID, so it is both the correlation id and the cancel handle.
         ctx.correlationIdLength = signed.writeOrderHashHex(ctx.correlationIdBytes, 0);
         ctx.exchangeOrderIdLength = signed.writeOrderHashHex(ctx.exchangeOrderIdBytes, 0);
@@ -130,12 +152,12 @@ public final class PolymarketIntlOutboundWriter extends OutboundSocketWriter {
     protected SubmitResult submitOrder(final OrderContext ctx) throws Exception {
         // Re-signed per send for a fresh timestamp; the signed order in the body is unchanged, so a
         // resend carries the same hash and the venue refuses it as a duplicate.
-        this.authHeaders.sign("POST", ORDER_PATH, this.jsonBodyBuf, 0, this.jsonBodyLength);
+        this.authHeaders.sign("POST", PolymarketIntlRequests.ORDER_PATH, this.jsonBodyBuf, 0, this.jsonBodyLength);
 
         final HTTPResponse response = this.httpClient.post(
                 HTTPProtocol.HTTPS,
                 this.clobHost,
-                ORDER_PATH_GS,
+                PolymarketIntlRequests.ORDER_PATH_GS,
                 this.jsonBodyBuf,
                 this.jsonBodyLength,
                 PolymarketIntlAuthHeaders.API_KEY_HEADER,
@@ -150,32 +172,23 @@ public final class PolymarketIntlOutboundWriter extends OutboundSocketWriter {
                 this.authHeaders.address());
 
         if (!response.isSuccess()) {
-            return classifyFailure(response.getStatusCode());
+            // Polymarket's 503 is trading disabled, cancel-only or post-only mode: a refusal, not a lost answer.
+            final int status = response.getStatusCode();
+            logRejection("submit", ctx, status, response);
+            if (status == HTTP_SERVICE_UNAVAILABLE) {
+                return SubmitResult.REJECTED;
+            }
+            return classifyFailure(status);
         }
         return readSubmitResponse(response, ctx);
     }
 
     @Override
     protected SubmitResult findOrder(final OrderContext ctx) throws Exception {
-        final String path = ORDER_LOOKUP_PATH
+        final String path = PolymarketIntlRequests.ORDER_LOOKUP_PATH
                 + new String(ctx.correlationIdBytes, 0, ctx.correlationIdLength, StandardCharsets.US_ASCII);
-        this.authHeaders.sign("GET", path, null, 0, 0);
-
-        final HTTPResponse response = this.httpClient.get(
-                HTTPProtocol.HTTPS,
-                this.clobHost,
-                path,
-                PolymarketIntlAuthHeaders.API_KEY_HEADER,
-                this.authHeaders.apiKey(),
-                PolymarketIntlAuthHeaders.SIGNATURE_HEADER,
-                this.authHeaders.signature(),
-                PolymarketIntlAuthHeaders.TIMESTAMP_HEADER,
-                this.authHeaders.timestamp(),
-                PolymarketIntlAuthHeaders.PASSPHRASE_HEADER,
-                this.authHeaders.passphrase(),
-                PolymarketIntlAuthHeaders.ADDRESS_HEADER,
-                this.authHeaders.address());
-
+        final HTTPResponse response =
+                PolymarketIntlRequests.get(this.httpClient, this.clobHost, this.authHeaders, path, path);
         if (response.isSuccess()) {
             return SubmitResult.ACCEPTED;
         }
@@ -183,7 +196,7 @@ public final class PolymarketIntlOutboundWriter extends OutboundSocketWriter {
     }
 
     @Override
-    protected boolean cancelOrder(final OrderContext ctx) throws Exception {
+    protected CancelResult cancelOrder(final OrderContext ctx) throws Exception {
         this.jsonBodyBuffer.clear();
         this.jsonEncoder.writeObjectStart();
         this.jsonEncoder.writeString("orderID").writeColon();
@@ -191,27 +204,41 @@ public final class PolymarketIntlOutboundWriter extends OutboundSocketWriter {
         this.jsonEncoder.writeObjectEnd();
         this.jsonBodyLength = this.jsonBodyBuffer.position();
 
-        this.authHeaders.sign("DELETE", ORDER_PATH, this.jsonBodyBuf, 0, this.jsonBodyLength);
+        final HTTPResponse response = PolymarketIntlRequests.cancel(
+                this.httpClient, this.clobHost, this.authHeaders, this.jsonBodyBuf, this.jsonBodyLength);
+        final boolean canceled = PolymarketIntlRequests.listsAsCanceled(
+                this.jsonDecoder, response, ctx.exchangeOrderIdBytes, ctx.exchangeOrderIdLength);
+        if (!canceled) {
+            logRejection("cancel", ctx, response.getStatusCode(), response);
+            return classifyCancelFailure(response);
+        }
+        return CancelResult.ACCEPTED;
+    }
 
-        final HTTPResponse response = this.httpClient.delete(
-                HTTPProtocol.HTTPS,
-                this.clobHost,
-                ORDER_PATH_GS,
-                this.jsonBodyBuf,
-                this.jsonBodyLength,
-                PolymarketIntlAuthHeaders.API_KEY_HEADER,
-                this.authHeaders.apiKey(),
-                PolymarketIntlAuthHeaders.SIGNATURE_HEADER,
-                this.authHeaders.signature(),
-                PolymarketIntlAuthHeaders.TIMESTAMP_HEADER,
-                this.authHeaders.timestamp(),
-                PolymarketIntlAuthHeaders.PASSPHRASE_HEADER,
-                this.authHeaders.passphrase(),
-                PolymarketIntlAuthHeaders.ADDRESS_HEADER,
-                this.authHeaders.address());
-
-        // The venue answers 200 even when it refuses, listing the order under not_canceled instead.
-        return response.isSuccess() && wasCanceled(response, ctx);
+    /**
+     * Logs what the venue said when it refused, which the OMS only learns as EXCHANGE_REJECTED. Off the hot path:
+     * a refusal allocates. No status and no body is no answer at all, so there is nothing to log.
+     */
+    private void logRejection(
+            final String action, final OrderContext ctx, final int status, final HTTPResponse response) {
+        final ByteBuffer body = response.getBody();
+        // The rate limiter logs its own refusals, once, rather than one line for each.
+        if ((status <= 0 && (body == null || !body.hasRemaining())) || response.isRefusedLocally()) {
+            return;
+        }
+        String reason = body == null
+                ? ""
+                : StandardCharsets.UTF_8.decode(body.duplicate()).toString();
+        if (reason.length() > MAX_LOGGED_REASON_CHARS) {
+            reason = reason.substring(0, MAX_LOGGED_REASON_CHARS);
+        }
+        this.logger.logf(
+                LogMessage.ORDER_REJECTED_BY_VENUE,
+                "Polymarket refused %s of %s: %d %s",
+                action,
+                new String(ctx.correlationIdBytes, 0, ctx.correlationIdLength, StandardCharsets.US_ASCII),
+                status,
+                reason);
     }
 
     private void buildOrderJson(
@@ -271,81 +298,109 @@ public final class PolymarketIntlOutboundWriter extends OutboundSocketWriter {
         if (body == null || !body.hasRemaining()) {
             return SubmitResult.UNKNOWN;
         }
-        boolean sawSuccess = false;
-        boolean success = false;
-        boolean idMatches = false;
-        boolean sawId = false;
+        final SubmitAnswer answer = this.submitAnswer;
+        answer.reset();
+        // Read in place and rewound after, so a refusal can still be logged; a duplicate would allocate.
+        final int start = body.position();
         try (var root = this.jsonDecoder.wrap(body);
                 var obj = root.asObject()) {
             while (obj.hasNextKey()) {
                 try (var entry = obj.nextKey()) {
-                    final GnomeString name = entry.getName();
-                    if (name.equals("success")) {
-                        sawSuccess = true;
-                        success = entry.asBoolean();
-                    } else if (name.equals("orderID")) {
-                        final GnomeString id = entry.asString();
-                        sawId = id.length() > 0;
-                        idMatches = matches(id, ctx);
-                    }
+                    answer.read(entry, ctx);
                 }
             }
         }
-        if (!sawSuccess) {
+        body.position(start);
+        if (!answer.sawSuccess) {
             return SubmitResult.UNKNOWN;
         }
-        if (!success) {
+        if (!answer.success) {
+            logRejection("submit", ctx, response.getStatusCode(), response);
             return SubmitResult.REJECTED;
         }
-        if (sawId && !idMatches) {
+        if (answer.sawId && !answer.idMatches) {
             throw new IllegalStateException("Polymarket assigned an orderID that differs from the signed order's hash; "
                     + "the order signer no longer matches the venue");
+        }
+        if (ctx.awaitsFinalFill) {
+            handOverFinalFill(answer, ctx);
         }
         return SubmitResult.ACCEPTED;
     }
 
-    /** Whether the order's id is in the response's {@code canceled} list. */
-    private boolean wasCanceled(final HTTPResponse response, final OrderContext ctx) {
-        final ByteBuffer body = response.getBody();
-        if (body == null || !body.hasRemaining()) {
-            return false;
-        }
-        boolean canceled = false;
-        try (var root = this.jsonDecoder.wrap(body);
-                var obj = root.asObject()) {
-            while (obj.hasNextKey()) {
-                try (var entry = obj.nextKey()) {
-                    if (entry.getName().equals("canceled")) {
-                        canceled = listContains(entry, ctx);
-                    }
-                }
-            }
-        }
-        return canceled;
+    /**
+     * Tells the reader what an IOC or FOK matched, in shares: a BUY takes them, a SELL gives them. Absent (a delayed
+     * order), the reader is told so, and ends the order at its size or on the venue's cancellation instead.
+     */
+    private void handOverFinalFill(final SubmitAnswer answer, final OrderContext ctx) {
+        enqueueFinalFill(ctx, ctx.side == Side.Bid ? answer.takingAmount : answer.makingAmount);
     }
 
-    private static boolean listContains(final JsonDecoder.JsonNode list, final OrderContext ctx) {
-        boolean found = false;
-        try (var ids = list.asArray()) {
-            while (ids.hasNextItem()) {
-                try (var id = ids.nextItem()) {
-                    found |= matches(id.asString(), ctx);
-                }
+    /** The fields of a submit's answer that settle it; reused for every submit. */
+    private static final class SubmitAnswer {
+        boolean sawSuccess;
+        boolean success;
+        boolean sawId;
+        boolean idMatches;
+        long makingAmount;
+        long takingAmount;
+
+        void reset() {
+            this.sawSuccess = false;
+            this.success = false;
+            this.sawId = false;
+            this.idMatches = false;
+            this.makingAmount = OrderContext.QTY_ABSENT;
+            this.takingAmount = OrderContext.QTY_ABSENT;
+        }
+
+        void read(final JsonDecoder.JsonNode entry, final OrderContext ctx) {
+            // The decoder reads a null as whatever string comes after it.
+            if (entry.isNull()) {
+                return;
+            }
+            final GnomeString name = entry.getName();
+            if (name.equals("success")) {
+                this.sawSuccess = true;
+                this.success = entry.asBoolean();
+            } else if (name.equals("orderID")) {
+                final GnomeString id = entry.asString();
+                this.sawId = id.length() > 0;
+                this.idMatches =
+                        PolymarketIntlRequests.matches(id, ctx.exchangeOrderIdBytes, ctx.exchangeOrderIdLength);
+            } else if (name.equals("makingAmount")) {
+                this.makingAmount = amount(entry.asString());
+            } else if (name.equals("takingAmount")) {
+                this.takingAmount = amount(entry.asString());
             }
         }
-        return found;
+
+        /** An amount in shares or dollars, both 6-decimal; QTY_ABSENT if the venue left it empty. */
+        private static long amount(final GnomeString value) {
+            return value.length() == 0 ? OrderContext.QTY_ABSENT : value.toFixedPointLong(Statics.SIZE_SCALING_FACTOR);
+        }
     }
 
-    private static boolean matches(final GnomeString id, final OrderContext ctx) {
-        if (id.length() != ctx.exchangeOrderIdLength) {
-            return false;
+    private static boolean isImmediate(final TimeInForce tif) {
+        return tif == TimeInForce.IMMEDIATE_OR_CANCELED || tif == TimeInForce.FILL_OR_KILL;
+    }
+
+    /**
+     * The smallest step of an order's second amount (dollars for a limit BUY, shares for a market BUY): two decimals
+     * more than the tick's, as Polymarket's client rounds them.
+     */
+    private static long amountIncrement(final long tickSize) {
+        int tickDecimals = 0;
+        long scaled = tickSize;
+        while (scaled % Statics.PRICE_SCALING_FACTOR != 0) {
+            scaled *= 10;
+            tickDecimals++;
         }
-        for (int i = 0; i < ctx.exchangeOrderIdLength; i++) {
-            if (id.byteAt(i) != ctx.exchangeOrderIdBytes[i]) {
-                return false;
-            }
+        long increment = Statics.SIZE_SCALING_FACTOR;
+        for (int i = 0; i < tickDecimals + 2; i++) {
+            increment /= 10;
         }
-        return true;
+        return Math.max(1, increment);
     }
 
     private static String resolveOrderType(final TimeInForce tif) {

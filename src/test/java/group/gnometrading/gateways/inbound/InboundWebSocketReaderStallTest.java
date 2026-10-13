@@ -55,7 +55,6 @@ class InboundWebSocketReaderStallTest {
                     .build();
             final SequencedRingBuffer<Mbp10Schema> outputBuffer =
                     new SequencedRingBuffer<>(Mbp10Schema::new, new GlobalSequence());
-            outputBuffer.start();
             final TestWebSocketReader reader =
                     new TestWebSocketReader(outputBuffer, new InboundWebSocketWriter(client), client);
             reader.pauseControl.release();
@@ -82,7 +81,6 @@ class InboundWebSocketReaderStallTest {
             } finally {
                 running.set(false);
                 reader.pauseControl.release();
-                outputBuffer.shutdown();
                 silentPeer.interrupt();
             }
         }

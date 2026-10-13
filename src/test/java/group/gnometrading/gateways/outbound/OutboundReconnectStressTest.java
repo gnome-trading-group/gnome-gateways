@@ -20,6 +20,7 @@ import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
 import group.gnometrading.schemas.TimeInForce;
 import group.gnometrading.sequencer.GlobalSequence;
+import group.gnometrading.sequencer.SequencedPoller;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Exchange;
 import group.gnometrading.sm.Listing;
@@ -71,7 +72,7 @@ class OutboundReconnectStressTest {
         final SequencedRingBuffer<OrderExecutionReport> reports =
                 new SequencedRingBuffer<>(OrderExecutionReport::new, new GlobalSequence(), 1 << 16);
         final Map<Long, List<Report>> reportsByOrder = new ConcurrentHashMap<>();
-        reports.handleEventsWith((seq, templateId, buffer, length) -> {
+        final SequencedPoller reportPoller = reports.createPoller((seq, templateId, buffer, length) -> {
             final OrderExecutionReport report = new OrderExecutionReport();
             report.buffer.putBytes(0, buffer, 0, length);
             report.wrap(report.buffer);
@@ -80,9 +81,25 @@ class OutboundReconnectStressTest {
                     .add(new Report(
                             report.decoder.execType(), report.decoder.filledQty(), report.decoder.cumulativeQty()));
         });
-        reports.start();
 
         final List<Throwable> errors = new CopyOnWriteArrayList<>();
+        final AtomicBoolean draining = new AtomicBoolean(true);
+        // Consumed on its own thread, as the OMS does, so the reader never waits on a full ring.
+        final Thread reportConsumer = new Thread(
+                () -> {
+                    while (draining.get()) {
+                        try {
+                            if (reportPoller.poll() == 0) {
+                                Thread.onSpinWait();
+                            }
+                        } catch (final Exception e) {
+                            errors.add(e);
+                            return;
+                        }
+                    }
+                },
+                "report-consumer");
+        reportConsumer.start();
         final StressWriter writer =
                 new StressWriter(venue, orders, newOrderQueue, writerReportQueue, releasedOrderQueue);
         final StressReader reader =
@@ -152,7 +169,8 @@ class OutboundReconnectStressTest {
         reader.pauseControl.stop();
         readerRunner.close();
         supervisorRunner.close();
-        reports.shutdown();
+        draining.set(false);
+        reportConsumer.join();
 
         System.out.println("stress: " + venue.snapshotByOid().size() + " orders, " + reader.catchUps.get()
                 + " reconnects caught up, " + venue.lostEvents.get() + " venue updates lost to a dropped socket");
@@ -318,8 +336,8 @@ class OutboundReconnectStressTest {
         }
 
         @Override
-        protected boolean cancelOrder(final OrderContext ctx) {
-            return venue.cancel(idFor(ctx.clientOidCounter));
+        protected CancelResult cancelOrder(final OrderContext ctx) {
+            return venue.cancel(idFor(ctx.clientOidCounter)) ? CancelResult.ACCEPTED : CancelResult.REJECTED;
         }
     }
 

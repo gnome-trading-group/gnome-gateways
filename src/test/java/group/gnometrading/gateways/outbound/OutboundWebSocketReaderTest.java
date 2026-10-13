@@ -23,7 +23,6 @@ import group.gnometrading.utils.ByteBufferUtils;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -50,7 +49,6 @@ class OutboundWebSocketReaderTest {
         when(response.isClosed()).thenReturn(false);
 
         execReportBuffer = new SequencedRingBuffer<>(OrderExecutionReport::new, new GlobalSequence());
-        execReportBuffer.start();
 
         final ManyToOneRingBuffer<OrderContext> newOrderQueue =
                 new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
@@ -61,11 +59,6 @@ class OutboundWebSocketReaderTest {
         reader = new TestOutboundWebSocketReader(
                 execReportBuffer, newOrderQueue, writerReportQueue, releasedOrderQueue, client);
         reader.pauseControl.release();
-    }
-
-    @AfterEach
-    void tearDown() {
-        execReportBuffer.shutdown();
     }
 
     // ========== readSocket dispatch ==========

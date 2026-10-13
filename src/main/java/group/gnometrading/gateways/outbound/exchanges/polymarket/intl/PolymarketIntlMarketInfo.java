@@ -1,6 +1,7 @@
 package group.gnometrading.gateways.outbound.exchanges.polymarket.intl;
 
 import group.gnometrading.codecs.json.JsonDecoder;
+import group.gnometrading.gateways.ratelimit.RateLimitedRetry;
 import group.gnometrading.networking.http.HTTPClient;
 import group.gnometrading.networking.http.HTTPProtocol;
 import group.gnometrading.networking.http.HTTPResponse;
@@ -83,7 +84,12 @@ public record PolymarketIntlMarketInfo(
 
     private static ByteBuffer get(final HTTPClient httpClient, final String host, final String path)
             throws IOException {
-        final HTTPResponse response = httpClient.get(HTTPProtocol.HTTPS, host, path);
+        HTTPResponse response;
+        int attempt = 0;
+        do {
+            attempt++;
+            response = httpClient.get(HTTPProtocol.HTTPS, host, path);
+        } while (RateLimitedRetry.shouldRetry(response, attempt));
         if (!response.isSuccess()) {
             throw new IOException("Polymarket GET " + path + " failed with HTTP " + response.getStatusCode());
         }

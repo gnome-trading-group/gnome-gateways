@@ -24,6 +24,7 @@ import group.gnometrading.schemas.SchemaType;
 import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
 import group.gnometrading.sequencer.GlobalSequence;
+import group.gnometrading.sequencer.SequencedPoller;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Exchange;
 import group.gnometrading.sm.Listing;
@@ -39,7 +40,6 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -49,6 +49,7 @@ class PolymarketUsInboundReaderTest {
     private static final long NOW_NANOS = 1_700_000_000_123_000_000L;
 
     private SequencedRingBuffer<Mbp10Schema> ringBuffer;
+    private SequencedPoller poller;
     private PolymarketUsInboundReader reader;
     private WebSocketClient client;
     private WebSocketResponse response;
@@ -58,13 +59,12 @@ class PolymarketUsInboundReaderTest {
     void setUp() throws Exception {
         captured = new CopyOnWriteArrayList<>();
         ringBuffer = new SequencedRingBuffer<>(Mbp10Schema::new, new GlobalSequence());
-        ringBuffer.handleEventsWith((globalSequence, templateId, buffer, length) -> {
+        poller = ringBuffer.createPoller((globalSequence, templateId, buffer, length) -> {
             Mbp10Schema copy = new Mbp10Schema();
             copy.buffer.putBytes(0, buffer, 0, length);
             copy.wrap(copy.buffer);
             captured.add(copy);
         });
-        ringBuffer.start();
 
         client = mock(WebSocketClient.class);
         response = mock(WebSocketResponse.class);
@@ -98,11 +98,6 @@ class PolymarketUsInboundReaderTest {
                 signer);
         reader.buffer = false;
         reader.pauseControl.release();
-    }
-
-    @AfterEach
-    void tearDown() {
-        ringBuffer.shutdown();
     }
 
     @Test
@@ -341,6 +336,7 @@ class PolymarketUsInboundReaderTest {
         when(response.getBody()).thenReturn(ByteBuffer.wrap(message.getBytes(StandardCharsets.UTF_8)));
         reader.doWork();
         Thread.sleep(50);
+        poller.poll();
     }
 
     private void process(final String message) throws Exception {
@@ -351,7 +347,7 @@ class PolymarketUsInboundReaderTest {
 
         final long deadline = System.currentTimeMillis() + 1_000;
         while (captured.size() == before && System.currentTimeMillis() < deadline) {
-            Thread.yield();
+            poller.poll();
         }
     }
 

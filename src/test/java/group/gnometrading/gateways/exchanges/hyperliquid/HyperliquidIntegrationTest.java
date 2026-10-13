@@ -17,6 +17,7 @@ import group.gnometrading.schemas.SchemaType;
 import group.gnometrading.schemas.Statics;
 import group.gnometrading.sequencer.GlobalSequence;
 import group.gnometrading.sequencer.SchemaEventAdapter;
+import group.gnometrading.sequencer.SequencedPoller;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Exchange;
 import group.gnometrading.sm.Listing;
@@ -36,8 +37,8 @@ public class HyperliquidIntegrationTest {
 
         SequencedRingBuffer<Mbp10Schema> outputBuffer =
                 new SequencedRingBuffer<>(Mbp10Schema::new, new GlobalSequence());
-        outputBuffer.handleEventsWith(new SchemaEventAdapter(HyperliquidIntegrationTest::printEvent));
-        outputBuffer.start();
+        SequencedPoller poller =
+                outputBuffer.createPoller(new SchemaEventAdapter(HyperliquidIntegrationTest::printEvent));
 
         WebSocketClient wsClient = new WebSocketClientBuilder()
                 .withURI(new URI("wss://api.hyperliquid.xyz/ws"))
@@ -72,18 +73,21 @@ public class HyperliquidIntegrationTest {
                 writerRunner.close();
             } catch (Exception ignored) {
             }
-            outputBuffer.shutdown();
         }));
 
         System.out.println("Connecting to Hyperliquid...");
         reader.connect();
         System.out.println("Connected. Listening for ETH market data (30s)...");
 
-        Thread.sleep(30_000);
+        long deadline = System.currentTimeMillis() + 30_000;
+        while (System.currentTimeMillis() < deadline) {
+            if (poller.poll() == 0) {
+                Thread.sleep(1);
+            }
+        }
 
         readerRunner.close();
         writerRunner.close();
-        outputBuffer.shutdown();
     }
 
     private static void printEvent(Schema event, long sequence, boolean endOfBatch) {

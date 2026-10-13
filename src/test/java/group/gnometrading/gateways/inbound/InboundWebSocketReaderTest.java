@@ -22,7 +22,6 @@ import group.gnometrading.sm.Security;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -50,16 +49,10 @@ class InboundWebSocketReaderTest {
         when(response.isClosed()).thenReturn(false);
 
         outputBuffer = new SequencedRingBuffer<>(Mbp10Schema::new, new GlobalSequence());
-        outputBuffer.start();
 
         socketWriter = new InboundWebSocketWriter(client);
         reader = new TestWebSocketReader(outputBuffer, socketWriter, client);
         reader.pauseControl.release();
-    }
-
-    @AfterEach
-    void tearDown() {
-        outputBuffer.shutdown();
     }
 
     // ========== readSocket dispatch ==========

@@ -51,6 +51,17 @@ public final class OrderContext {
     public long amendFillCount = QTY_ABSENT;
     // Writer-to-reader marker: this context reports an accepted amend rather than a report to replay.
     public boolean amendAccepted;
+    // An order that ends on the venue's word, not at its own size: an IOC or FOK where the venue may fill less, or
+    // (a dollar-sized BUY) more. The reader keeps it open until its fills reach finalFillQty.
+    public boolean awaitsFinalFill;
+    // Writer-to-reader marker: this context carries the venue's total for an awaitsFinalFill order.
+    public boolean finalFillNotice;
+    // All the order will ever fill, once the venue has said; QTY_ABSENT until then.
+    public long finalFillQty = QTY_ABSENT;
+    // Writer-to-reader marker: this context carries the venue's id for an order, learned from the submit's answer.
+    public boolean venueOrderIdNotice;
+    // The limit price as the venue was sent it, for venues whose events can only be matched by the order's terms.
+    public long limitPrice;
     public Side side;
     public short flags;
     public ExecType execType;
@@ -79,6 +90,11 @@ public final class OrderContext {
         this.acked = false;
         this.amendFillCount = QTY_ABSENT;
         this.amendAccepted = false;
+        this.awaitsFinalFill = false;
+        this.finalFillNotice = false;
+        this.finalFillQty = QTY_ABSENT;
+        this.venueOrderIdNotice = false;
+        this.limitPrice = 0;
         this.side = null;
         this.flags = 0;
         this.execType = null;
@@ -103,6 +119,11 @@ public final class OrderContext {
         this.acked = src.acked;
         this.amendFillCount = src.amendFillCount;
         this.amendAccepted = src.amendAccepted;
+        this.awaitsFinalFill = src.awaitsFinalFill;
+        this.finalFillNotice = src.finalFillNotice;
+        this.finalFillQty = src.finalFillQty;
+        this.venueOrderIdNotice = src.venueOrderIdNotice;
+        this.limitPrice = src.limitPrice;
         this.side = src.side;
         this.flags = src.flags;
         this.execType = src.execType;

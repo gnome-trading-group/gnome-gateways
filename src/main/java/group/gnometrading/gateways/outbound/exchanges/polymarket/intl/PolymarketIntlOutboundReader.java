@@ -5,6 +5,7 @@ import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
 import group.gnometrading.gateways.outbound.OrderContext;
 import group.gnometrading.gateways.outbound.OutboundJsonWebSocketReader;
 import group.gnometrading.gateways.outbound.fee.PredictionMarketFees;
+import group.gnometrading.gateways.outbound.recovery.VenueOrder;
 import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.websockets.WebSocketClient;
@@ -18,9 +19,14 @@ import group.gnometrading.schemas.Statics;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Listing;
 import group.gnometrading.strings.GnomeString;
+import group.gnometrading.utils.ScaledMath;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import org.agrona.collections.LongHashSet;
 import org.agrona.concurrent.EpochNanoClock;
 
@@ -29,12 +35,20 @@ import org.agrona.concurrent.EpochNanoClock;
  *
  * <p>Order events carry the order's hash as {@code id}. A trade event names the taker's order in
  * {@code taker_order_id} and each resting order it matched in {@code maker_orders}, with that order's own
- * size and price; one trade can fill several of our orders, on either side. Fills are reported when the
- * trade is {@code MATCHED}; {@code MINED} and {@code CONFIRMED} are on-chain settlement afterwards.
+ * size and price; one trade can fill several of our orders, on either side. A trade is reported the first
+ * time it is seen, usually as {@code MATCHED}; its {@code MINED} and {@code CONFIRMED} updates are on-chain
+ * settlement afterwards, but after a reconnect they can be the first word of it.
  */
 public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketReader {
 
     private static final long NANOS_PER_MILLI = 1_000_000L;
+    private static final int TOKEN_ID_MAX_LENGTH = 96;
+    private static final long NANOS_PER_SECOND = 1_000_000_000L;
+    private static final long MILLIS_PER_SECOND = 1_000L;
+    // Placed shortly before the time the writer records, by a clock that may run behind the venue's.
+    private static final long LOOKUP_SLACK_SECONDS = 60;
+    // The order list can lag an order placed a moment ago, so one this young is never taken for ended.
+    private static final long ENDED_GRACE_MILLIS = 5_000;
     private static final long FEE_INCREMENT = Statics.PRICE_SCALING_FACTOR / 100_000;
     private static final byte[] PING = "PING".getBytes(StandardCharsets.US_ASCII);
 
@@ -62,6 +76,17 @@ public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketRea
     private final String passphrase;
     private final PolymarketIntlMarketInfo marketInfo;
     private final ByteBuffer pingBuffer;
+    private final Listing listing;
+    private final String conditionId;
+    private final byte[] tokenIdBytes;
+    // A taker fill's price and fee, as priceTakerFill worked them out; reused for every trade.
+    private long takerFillPrice;
+    private long takerFillFee;
+    // Its own HTTP client and auth headers: the supervisor uses it while the writer uses theirs. Null to skip.
+    private final PolymarketIntlVenueOrderQuery catchUpQuery;
+    // Fetched by the supervisor while the reader is paused, applied by the reader on its next pass.
+    private List<ByteBuffer> venueTradePages = List.of();
+    private List<VenueOrder> venueEndedOrders = List.of();
 
     private final ParsedEvent parsedEvent = new ParsedEvent();
 
@@ -84,7 +109,8 @@ public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketRea
             String apiKey,
             String secret,
             String passphrase,
-            PolymarketIntlMarketInfo marketInfo) {
+            PolymarketIntlMarketInfo marketInfo,
+            PolymarketIntlVenueOrderQuery catchUpQuery) {
         super(
                 logger,
                 execReportBuffer,
@@ -100,6 +126,119 @@ public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketRea
         this.passphrase = passphrase;
         this.marketInfo = marketInfo;
         this.pingBuffer = ByteBuffer.wrap(PING);
+        this.listing = listing;
+        // exchangeSecurityId format: "{condition_id}:{token_id}"
+        final String exchangeSecurityId = listing.exchangeSecurityId();
+        final int colon = exchangeSecurityId.indexOf(':');
+        this.conditionId = colon >= 0 ? exchangeSecurityId.substring(0, colon) : exchangeSecurityId;
+        this.tokenIdBytes = exchangeSecurityId.substring(colon + 1).getBytes(StandardCharsets.US_ASCII);
+        this.catchUpQuery = catchUpQuery;
+    }
+
+    /**
+     * Fetches the market's trades since just before the oldest order held or the socket went quiet, and the status of
+     * every held order the venue no longer lists as open: what happened while the socket was down.
+     */
+    @Override
+    protected void fetchVenueState() throws IOException {
+        this.venueTradePages = List.of();
+        this.venueEndedOrders = List.of();
+        if (this.catchUpQuery == null) {
+            return;
+        }
+        final long nowMillis = this.clock.nanoTime() / NANOS_PER_MILLI;
+        // Orders the writer sent meanwhile are still queued for this reader, not among those it holds.
+        final long oldestHeld = oldestOpenOrderMillis();
+        final long sinceMillis = oldestHeld < 0 ? lastHeardMillis() : Math.min(oldestHeld, lastHeardMillis());
+        final List<ByteBuffer> trades =
+                this.catchUpQuery.tradePages(this.conditionId, sinceMillis / MILLIS_PER_SECOND - LOOKUP_SLACK_SECONDS);
+
+        final Set<String> open = new HashSet<>();
+        for (final VenueOrder order : this.catchUpQuery.listOpenOrders(this.listing)) {
+            open.add(order.venueId());
+        }
+        final List<VenueOrder> ended = new ArrayList<>();
+        for (final OrderContext ctx : heldOrders()) {
+            final String id =
+                    new String(ctx.exchangeOrderIdBytes, 0, ctx.exchangeOrderIdLength, StandardCharsets.US_ASCII);
+            if (!open.contains(id) && ctx.submittedAtMillis < nowMillis - ENDED_GRACE_MILLIS) {
+                this.catchUpQuery
+                        .getOrder(this.listing, id, 0)
+                        .filter(VenueOrder::terminal)
+                        .ifPresent(ended::add);
+            }
+        }
+        this.venueTradePages = trades;
+        this.venueEndedOrders = ended;
+    }
+
+    /** Trades first, through the same handling as the socket's; then the orders that ended without them. */
+    @Override
+    protected void applyVenueState() {
+        for (final ByteBuffer page : this.venueTradePages) {
+            applyTradePage(page);
+        }
+        for (final VenueOrder order : this.venueEndedOrders) {
+            applyEnded(order);
+        }
+        this.venueTradePages = List.of();
+        this.venueEndedOrders = List.of();
+    }
+
+    private void applyTradePage(final ByteBuffer page) {
+        try (var root = this.jsonDecoder.wrap(page);
+                var obj = root.asObject()) {
+            while (obj.hasNextKey()) {
+                try (var entry = obj.nextKey()) {
+                    if (entry.getName().equals("data") && !entry.isNull()) {
+                        applyTrades(entry);
+                    }
+                }
+            }
+        }
+    }
+
+    private void applyTrades(final JsonDecoder.JsonNode trades) {
+        try (var list = trades.asArray()) {
+            while (list.hasNextItem()) {
+                try (var item = list.nextItem();
+                        var trade = item.asObject()) {
+                    applyTrade(trade);
+                }
+            }
+        }
+    }
+
+    private void applyTrade(final JsonDecoder.JsonObject trade) {
+        this.parsedEvent.reset();
+        while (trade.hasNextKey()) {
+            try (var field = trade.nextKey()) {
+                parseEventField(field, this.parsedEvent);
+            }
+        }
+        // A REST trade carries no event type, and its time only as match_time.
+        if (this.parsedEvent.timestampEvent == OrderExecutionReportEncoder.timestampEventNullValue()) {
+            this.parsedEvent.timestampEvent = this.parsedEvent.matchTimeNanos;
+        }
+        emitTradeEvent(this.parsedEvent);
+    }
+
+    private void applyEnded(final VenueOrder order) {
+        final byte[] id = order.venueId().getBytes(StandardCharsets.US_ASCII);
+        final long key = computeKey(id, id.length);
+        final OrderContext ctx = findOrderContext(key);
+        if (ctx == null) {
+            return;
+        }
+        if (order.filledQty() > ctx.cumulativeFilledQty) {
+            // More matched than any trade we've seen: ending it now would cut off fills still to come.
+            logger.logf(
+                    LogMessage.UNKNOWN_ERROR,
+                    "Polymarket order %s ended with fills not yet reported; left open",
+                    order.venueId());
+            return;
+        }
+        publishCanceled(ctx, key, OrderExecutionReportEncoder.timestampEventNullValue());
     }
 
     @Override
@@ -154,15 +293,10 @@ public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketRea
             return;
         }
         if (event.orderType == ORDER_TYPE_CANCELLATION || event.status == STATUS_CANCELED) {
-            prepareExecReportHeader(ctx);
-            this.execReport.encoder.execType(ExecType.CANCEL);
-            this.execReport.encoder.orderStatus(OrderStatus.CANCELED);
-            setNullFillFields();
-            this.execReport.encoder.cumulativeQty(ctx.cumulativeFilledQty);
-            this.execReport.encoder.leavesQty(0);
-            setTimestamps(event.timestampEvent);
-            publishExecReport();
-            releaseOrderContext(key);
+            // An IOC's killed remainder can be reported before its trades: those still to come would be dropped.
+            if (!fillsPending(ctx)) {
+                publishCanceled(ctx, key, event.timestampEvent);
+            }
         } else if (event.orderType == ORDER_TYPE_PLACEMENT && event.status == STATUS_LIVE && !ctx.acked) {
             publishNew(
                     ctx,
@@ -171,6 +305,13 @@ public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketRea
                     event.timestampEvent,
                     this.recvTimestamp);
         }
+    }
+
+    /** Whether the venue has said the order fills more than this reader has seen. */
+    private static boolean fillsPending(final OrderContext ctx) {
+        return ctx.awaitsFinalFill
+                && ctx.finalFillQty != OrderContext.QTY_ABSENT
+                && ctx.cumulativeFilledQty < ctx.finalFillQty;
     }
 
     private void emitTradeEvent(final ParsedEvent event) {
@@ -183,20 +324,28 @@ public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketRea
                     new String(event.idBytes, 0, event.idLength, StandardCharsets.US_ASCII));
             return;
         }
-        if (event.status != STATUS_MATCHED || !markTradeSeen(computeKey(event.idBytes, event.idLength))) {
+        if (event.status == 0 || !markTradeSeen(computeKey(event.idBytes, event.idLength))) {
             return;
         }
         final long takerKey = computeKey(event.takerOrderIdBytes, event.takerOrderIdLength);
         final OrderContext taker = findOrderContext(takerKey);
         if (taker != null) {
-            emitFill(taker, takerKey, event.size, event.price, Liquidity.TAKER, event.timestampEvent);
+            priceTakerFill(event);
+            emitFill(taker, takerKey, event.size, this.takerFillPrice, this.takerFillFee, Liquidity.TAKER, event);
         }
         for (int i = 0; i < event.makerLegCount; i++) {
             final MakerLeg leg = event.makerLegs[i];
             final long makerKey = computeKey(leg.orderIdBytes, leg.orderIdLength);
             final OrderContext maker = findOrderContext(makerKey);
             if (maker != null) {
-                emitFill(maker, makerKey, leg.matchedAmount, leg.price, Liquidity.MAKER, event.timestampEvent);
+                emitFill(
+                        maker,
+                        makerKey,
+                        leg.matchedAmount,
+                        leg.price,
+                        fee(leg.price, leg.matchedAmount, Liquidity.MAKER),
+                        Liquidity.MAKER,
+                        event);
             }
         }
     }
@@ -221,8 +370,10 @@ public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketRea
             final long key,
             final long fillQty,
             final long fillPrice,
+            final long fillFee,
             final Liquidity liquidity,
-            final long timestampEvent) {
+            final ParsedEvent event) {
+        final long timestampEvent = event.timestampEvent;
         if (!ctx.acked) {
             // An order that matched on arrival may never be reported as resting; acknowledge it first.
             publishNew(
@@ -234,7 +385,9 @@ public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketRea
         }
         ctx.cumulativeFilledQty += fillQty;
         ctx.leavesQty = Math.max(0, ctx.originalQty - ctx.cumulativeFilledQty);
-        final boolean fullyFilled = ctx.leavesQty == 0;
+        final boolean done = fillsComplete(ctx);
+        // An IOC the venue filled only partly ends below its size; a dollar-sized BUY can end above it.
+        final boolean fullyFilled = done && ctx.cumulativeFilledQty >= ctx.originalQty;
 
         prepareExecReportHeader(ctx);
         this.execReport.encoder.execType(fullyFilled ? ExecType.FILL : ExecType.PARTIAL_FILL);
@@ -244,23 +397,72 @@ public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketRea
         this.execReport.encoder.fillPrice(fillPrice);
         this.execReport.encoder.cumulativeQty(ctx.cumulativeFilledQty);
         this.execReport.encoder.leavesQty(ctx.leavesQty);
-        this.execReport.encoder.fee(fee(fillPrice, fillQty, liquidity));
+        this.execReport.encoder.fee(fillFee);
         this.execReport.encoder.liquidity(liquidity);
         setTimestamps(timestampEvent);
         publishExecReport();
 
         if (fullyFilled) {
             releaseOrderContext(key);
+        } else if (done) {
+            publishCanceled(ctx, key, timestampEvent);
         }
+    }
+
+    /**
+     * A taker's fill is priced from the resting orders it matched, not the trade's own price, which is only the best
+     * of them: the average of their prices, and the fee each charges at its own. A resting order on the other outcome
+     * (matched by minting or merging) trades this token at the complement of its price.
+     */
+    private void priceTakerFill(final ParsedEvent event) {
+        long qty = 0;
+        long notional = 0;
+        long rawFee = 0;
+        for (int i = 0; i < event.makerLegCount; i++) {
+            final MakerLeg leg = event.makerLegs[i];
+            final long price = isThisToken(leg) ? leg.price : Statics.PRICE_SCALING_FACTOR - leg.price;
+            qty += leg.matchedAmount;
+            notional += ScaledMath.multiplyDivide(price, leg.matchedAmount, Statics.SIZE_SCALING_FACTOR);
+            rawFee += rawFee(price, leg.matchedAmount);
+        }
+        if (qty <= 0) {
+            this.takerFillPrice = event.price;
+            this.takerFillFee = fee(event.price, event.size, Liquidity.TAKER);
+            return;
+        }
+        this.takerFillPrice = (ScaledMath.multiplyDivide(2 * notional, Statics.SIZE_SCALING_FACTOR, qty) + 1) / 2;
+        this.takerFillFee = roundFee(rawFee);
+    }
+
+    private boolean isThisToken(final MakerLeg leg) {
+        if (leg.assetIdLength == 0) {
+            return true;
+        }
+        if (leg.assetIdLength != this.tokenIdBytes.length) {
+            return false;
+        }
+        for (int i = 0; i < leg.assetIdLength; i++) {
+            if (leg.assetIdBytes[i] != this.tokenIdBytes[i]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private long fee(final long fillPrice, final long fillQty, final Liquidity liquidity) {
         if (liquidity == Liquidity.MAKER && this.marketInfo.feeTakerOnly()) {
             return 0;
         }
-        final long fee = PredictionMarketFees.calculateScaledFee(
+        return roundFee(rawFee(fillPrice, fillQty));
+    }
+
+    private long rawFee(final long fillPrice, final long fillQty) {
+        return PredictionMarketFees.calculateScaledFee(
                 fillPrice, fillQty, this.marketInfo.feeRate(), this.marketInfo.feeExponent());
-        // Polymarket charges fees to 5 decimal places; anything under half of 0.00001 USDC is free.
+    }
+
+    /** Polymarket charges fees to 5 decimal places; anything under half of 0.00001 USDC is free. */
+    private static long roundFee(final long fee) {
         return (fee + FEE_INCREMENT / 2) / FEE_INCREMENT * FEE_INCREMENT;
     }
 
@@ -277,6 +479,10 @@ public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketRea
     }
 
     private static void parseEventField(final JsonDecoder.JsonNode entry, final ParsedEvent event) {
+        // The decoder reads a null as whatever string or array comes after it.
+        if (entry.isNull()) {
+            return;
+        }
         final GnomeString name = entry.getName();
         if (name.equals("event_type")) {
             final GnomeString val = entry.asString();
@@ -306,6 +512,8 @@ public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketRea
             event.size = entry.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR);
         } else if (name.equals("timestamp")) {
             event.timestampEvent = entry.asString().toFixedPointLong(1L) * NANOS_PER_MILLI;
+        } else if (name.equals("match_time")) {
+            event.matchTimeNanos = entry.asString().toFixedPointLong(1L) * NANOS_PER_SECOND;
         } else if (name.equals("maker_orders")) {
             parseMakerOrders(entry, event);
         }
@@ -335,9 +543,14 @@ public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketRea
     }
 
     private static void parseMakerLegField(final JsonDecoder.JsonNode field, final MakerLeg leg) {
+        if (field.isNull()) {
+            return;
+        }
         final GnomeString name = field.getName();
         if (name.equals("order_id")) {
             leg.orderIdLength = copyId(field.asString(), leg.orderIdBytes);
+        } else if (name.equals("asset_id")) {
+            leg.assetIdLength = copyId(field.asString(), leg.assetIdBytes);
         } else if (name.equals("matched_amount")) {
             leg.matchedAmount = field.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR);
         } else if (name.equals("price")) {
@@ -370,7 +583,7 @@ public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketRea
     }
 
     private static int copyId(final GnomeString val, final byte[] dest) {
-        final int length = Math.min(val.length(), OrderContext.EXCHANGE_ORDER_ID_MAX_LENGTH);
+        final int length = Math.min(val.length(), dest.length);
         for (int i = 0; i < length; i++) {
             dest[i] = val.byteAt(i);
         }
@@ -388,11 +601,15 @@ public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketRea
     private static final class MakerLeg {
         final byte[] orderIdBytes = new byte[OrderContext.EXCHANGE_ORDER_ID_MAX_LENGTH];
         int orderIdLength;
+        // Token ids are up to 78 digits, longer than an order hash.
+        final byte[] assetIdBytes = new byte[TOKEN_ID_MAX_LENGTH];
+        int assetIdLength;
         long matchedAmount;
         long price;
 
         void reset() {
             this.orderIdLength = 0;
+            this.assetIdLength = 0;
             this.matchedAmount = 0;
             this.price = 0;
         }
@@ -409,6 +626,7 @@ public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketRea
         long price;
         long size;
         long timestampEvent;
+        long matchTimeNanos;
         final MakerLeg[] makerLegs = new MakerLeg[MAX_MAKER_LEGS];
         int makerLegCount;
 
@@ -427,6 +645,7 @@ public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketRea
             this.price = OrderExecutionReportEncoder.fillPriceNullValue();
             this.size = 0;
             this.timestampEvent = OrderExecutionReportEncoder.timestampEventNullValue();
+            this.matchTimeNanos = OrderExecutionReportEncoder.timestampEventNullValue();
             this.makerLegCount = 0;
         }
     }

@@ -12,6 +12,7 @@ import group.gnometrading.networking.websockets.WebSocketResponse;
 import group.gnometrading.networking.websockets.enums.Opcode;
 import group.gnometrading.schemas.*;
 import group.gnometrading.sequencer.GlobalSequence;
+import group.gnometrading.sequencer.SequencedPoller;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Exchange;
 import group.gnometrading.sm.Listing;
@@ -27,7 +28,6 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ThreadFactory;
 import org.agrona.concurrent.EpochNanoClock;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
@@ -40,6 +40,7 @@ import org.junit.jupiter.api.Test;
 public class LighterInboundReaderTest {
 
     private SequencedRingBuffer<Mbp10Schema> sequencedRingBuffer;
+    private SequencedPoller poller;
     private LighterInboundReader socketReader;
     private WebSocketClient mockClient;
     private WebSocketResponse mockResponse;
@@ -51,13 +52,12 @@ public class LighterInboundReaderTest {
     void setUp() {
         capturedSchemas = new CopyOnWriteArrayList<>();
         sequencedRingBuffer = new SequencedRingBuffer<>(Mbp10Schema::new, new GlobalSequence());
-        sequencedRingBuffer.handleEventsWith((gSeq, templateId, buffer, length) -> {
+        poller = sequencedRingBuffer.createPoller((gSeq, templateId, buffer, length) -> {
             Mbp10Schema captured = new Mbp10Schema();
             captured.buffer.putBytes(0, buffer, 0, length);
             captured.wrap(captured.buffer);
             capturedSchemas.add(captured);
         });
-        sequencedRingBuffer.start();
         clock = System::nanoTime;
         jsonDecoder = new JsonDecoder();
 
@@ -94,13 +94,6 @@ public class LighterInboundReaderTest {
                 new NullLogger(), sequencedRingBuffer, clock, null, listing, mockClient, jsonDecoder);
         socketReader.buffer = false;
         socketReader.pauseControl.release();
-    }
-
-    @AfterEach
-    void tearDown() {
-        if (sequencedRingBuffer != null) {
-            sequencedRingBuffer.shutdown();
-        }
     }
 
     @Test
@@ -223,7 +216,7 @@ public class LighterInboundReaderTest {
         socketReader.doWork();
         long deadline = System.currentTimeMillis() + 1000;
         while (capturedSchemas.size() == before && System.currentTimeMillis() < deadline) {
-            Thread.yield();
+            poller.poll();
         }
     }
 

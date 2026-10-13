@@ -3,6 +3,7 @@ package group.gnometrading.gateways.outbound;
 import static org.junit.jupiter.api.Assertions.*;
 
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
+import group.gnometrading.gateways.outbound.OutboundSocketWriter.CancelResult;
 import group.gnometrading.gateways.outbound.OutboundSocketWriter.SubmitResult;
 import group.gnometrading.schemas.CancelOrder;
 import group.gnometrading.schemas.CancelOrderDecoder;
@@ -164,6 +165,40 @@ class OutboundSocketWriterTest {
     }
 
     @Test
+    void unknownSubmit_OnAVenueThatWouldPlaceItTwice_IsOnlyLookedUp() throws Exception {
+        writer.resendsSafe = false;
+        writer.submitScript.add(SubmitResult.UNKNOWN);
+        writer.findScript.add(SubmitResult.ACCEPTED);
+        publishOrder(
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 7L, 1);
+
+        writer.doWork();
+        publishCancel(7L, 2, 3L);
+        writer.doWork();
+
+        assertEquals(1, writer.submitCallCount);
+        assertEquals(1, writer.findCallCount);
+        assertEquals(0, drainQueue(writerReportQueue).size());
+        assertEquals("hash-7", exchangeOrderId(writer.cancelledContexts.get(0)), "cancels route by the found id");
+    }
+
+    @Test
+    void unknownSubmit_OnAVenueThatWouldPlaceItTwice_LookupMiss_StaysRegistered() throws Exception {
+        // The venue may still be processing it, or it may have filled at once: a miss is no refusal.
+        writer.resendsSafe = false;
+        writer.submitScript.add(SubmitResult.UNKNOWN);
+        writer.findScript.add(SubmitResult.REJECTED);
+        publishOrder(
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
+
+        writer.doWork();
+
+        assertEquals(1, writer.submitCallCount);
+        assertEquals(0, drainQueue(writerReportQueue).size());
+        assertEquals(1, writer.activeOrderCount());
+    }
+
+    @Test
     void unknownSubmit_ResendRefusedButVenueHasIt_IsAcceptedWithItsVenueId() throws Exception {
         writer.submitScript.add(SubmitResult.UNKNOWN);
         writer.submitScript.add(SubmitResult.REJECTED); // e.g. "already exists"
@@ -191,6 +226,48 @@ class OutboundSocketWriterTest {
 
         assertEquals(ExecType.REJECT, drainQueue(writerReportQueue).get(0).execType);
         assertEquals(0, writer.activeOrderCount());
+    }
+
+    @Test
+    void firstSubmitRateLimited_IsRejectedForTheRateLimit() throws Exception {
+        writer.submitScript.add(SubmitResult.RATE_LIMITED);
+        publishOrder(
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
+
+        writer.doWork();
+
+        final List<OrderContext> reports = drainQueue(writerReportQueue);
+        assertEquals(ExecType.REJECT, reports.get(0).execType);
+        assertEquals(RejectReason.RATE_LIMITED, reports.get(0).rejectReason);
+        assertEquals(0, writer.activeOrderCount());
+        assertEquals(1, writer.submitCallCount, "a refusal is not resent");
+    }
+
+    @Test
+    void unknownSubmit_ResendRateLimited_IsLookedUpSinceTheFirstMayHaveLanded() throws Exception {
+        writer.submitScript.add(SubmitResult.UNKNOWN);
+        writer.submitScript.add(SubmitResult.RATE_LIMITED);
+        writer.findScript.add(SubmitResult.ACCEPTED);
+        publishOrder(
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 7L, 1);
+
+        writer.doWork();
+
+        assertEquals(0, drainQueue(writerReportQueue).size(), "not reported rejected");
+        assertEquals(1, writer.activeOrderCount());
+    }
+
+    @Test
+    void unknownSubmit_ResendRateLimitedAndLookupCantTell_StaysUnknown() throws Exception {
+        writer.submitScript.add(SubmitResult.UNKNOWN);
+        writer.submitScript.add(SubmitResult.RATE_LIMITED);
+        writer.findScript.add(SubmitResult.UNKNOWN);
+        publishOrder(
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
+
+        writer.doWork();
+
+        assertEquals(1, writer.activeOrderCount(), "it may be live, so it stays registered");
     }
 
     @Test
@@ -299,7 +376,7 @@ class OutboundSocketWriterTest {
         writer.doWork();
         final OrderContext submitted = drainQueue(newOrderQueue).get(0);
 
-        writer.cancelResult = false;
+        writer.cancelResult = CancelResult.REJECTED;
         publishCancel(submitted.clientOidCounter, 2, 3L);
         writer.doWork();
 
@@ -312,6 +389,24 @@ class OutboundSocketWriterTest {
         assertEquals(submitted.clientOidCounter, reject.clientOidCounter);
         assertEquals(submitted.exchangeId, reject.exchangeId);
         assertEquals(submitted.securityId, reject.securityId);
+    }
+
+    @Test
+    void cancelRateLimited_IsACancelRejectForTheRateLimit_AndTheOrderStaysActive() throws Exception {
+        publishOrder(
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 7L, 1);
+        writer.doWork();
+        final OrderContext submitted = drainQueue(newOrderQueue).get(0);
+
+        writer.cancelResult = CancelResult.RATE_LIMITED;
+        publishCancel(submitted.clientOidCounter, 2, 3L);
+        writer.doWork();
+
+        final List<OrderContext> rejects = drainQueue(writerReportQueue);
+        assertEquals(1, rejects.size());
+        assertEquals(ExecType.CANCEL_REJECT, rejects.get(0).execType);
+        assertEquals(RejectReason.RATE_LIMITED, rejects.get(0).rejectReason);
+        assertEquals(1, writer.activeOrderCount());
     }
 
     @Test
@@ -368,7 +463,7 @@ class OutboundSocketWriterTest {
 
         publishModify(1L, price("0.60"), qty("5.0"), 2, 3L);
         assertDoesNotThrow(() -> writer.doWork());
-        writer.cancelResult = false;
+        writer.cancelResult = CancelResult.REJECTED;
         publishCancel(1L, 2, 3L);
         assertDoesNotThrow(() -> writer.doWork());
 
@@ -915,7 +1010,8 @@ class OutboundSocketWriterTest {
 
         boolean prepareResult = true;
         boolean submitResult = true;
-        boolean cancelResult = true;
+        boolean resendsSafe = true;
+        CancelResult cancelResult = CancelResult.ACCEPTED;
         Exception modifyException;
         // Scripted answers, consumed in order before falling back to the defaults. An exception is thrown.
         final Deque<Exception> prepareScript = new ArrayDeque<>();
@@ -971,6 +1067,11 @@ class OutboundSocketWriterTest {
         }
 
         @Override
+        protected boolean resendsAreSafe() {
+            return resendsSafe;
+        }
+
+        @Override
         protected SubmitResult findOrder(final OrderContext ctx) throws Exception {
             findCallCount++;
             final Object scripted = findScript.poll();
@@ -985,7 +1086,7 @@ class OutboundSocketWriterTest {
         }
 
         @Override
-        protected boolean cancelOrder(final OrderContext ctx) throws Exception {
+        protected CancelResult cancelOrder(final OrderContext ctx) throws Exception {
             cancelCallCount++;
             final OrderContext copy = new OrderContext();
             copy.copyFrom(ctx);

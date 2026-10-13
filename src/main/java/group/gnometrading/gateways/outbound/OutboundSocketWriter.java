@@ -5,6 +5,7 @@ import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
 import group.gnometrading.collections.buffer.MessageConsumer;
 import group.gnometrading.concurrent.GnomeAgent;
 import group.gnometrading.concurrent.ThreadProfile;
+import group.gnometrading.networking.http.HTTPResponse;
 import group.gnometrading.schemas.CancelOrder;
 import group.gnometrading.schemas.CancelOrderDecoder;
 import group.gnometrading.schemas.ExecType;
@@ -168,12 +169,15 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
 
         SubmitResult result = send(ctx);
         if (result == SubmitResult.UNKNOWN) {
-            result = resolveUnknownSubmit(ctx);
+            result = resendsAreSafe() ? resolveUnknownSubmit(ctx) : lookUpUnknownSubmit(ctx);
         }
         // A first send can't be a duplicate of our own: the id is new, so the venue is refusing it for its own reasons.
         if (result == SubmitResult.REJECTED || result == SubmitResult.DUPLICATE) {
             this.activeOrders.remove(ctx.clientOidCounter);
             rejectSubmit(ctx, RejectReason.EXCHANGE_REJECTED);
+        } else if (result == SubmitResult.RATE_LIMITED) {
+            this.activeOrders.remove(ctx.clientOidCounter);
+            rejectSubmit(ctx, RejectReason.RATE_LIMITED);
         }
         // Still UNKNOWN: the order may be live, so it stays registered and the venue's events settle it.
         // Any other failure from here on leaves it the same way, as the request may have reached the venue.
@@ -196,7 +200,8 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
                 // records lag, not that it's gone: it stays registered and the venue's events settle it.
                 return find(ctx) == SubmitResult.ACCEPTED ? SubmitResult.ACCEPTED : SubmitResult.UNKNOWN;
             }
-            if (resent == SubmitResult.REJECTED) {
+            // A resend refused for the rate limit says nothing of the first send, which may have landed.
+            if (resent == SubmitResult.REJECTED || resent == SubmitResult.RATE_LIMITED) {
                 final SubmitResult found = find(ctx);
                 if (found != SubmitResult.UNKNOWN) {
                     return found;
@@ -204,6 +209,15 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
             }
         }
         return SubmitResult.UNKNOWN;
+    }
+
+    /**
+     * Settles a submit that got no clear answer on a venue that would place a resent request a second time: the
+     * order is only looked for. A miss can't be taken as a refusal, since the venue may still be processing it, so
+     * it stays registered and the venue's events settle it.
+     */
+    private SubmitResult lookUpUnknownSubmit(final OrderContext ctx) throws Exception {
+        return find(ctx) == SubmitResult.ACCEPTED ? SubmitResult.ACCEPTED : SubmitResult.UNKNOWN;
     }
 
     private SubmitResult send(final OrderContext ctx) throws Exception {
@@ -236,9 +250,9 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         if (ctx == null) {
             return;
         }
-        final boolean accepted;
+        final CancelResult result;
         try {
-            accepted = cancelOrder(ctx);
+            result = cancelOrder(ctx);
         } catch (final IOException e) {
             enqueueCancelReject(ctx, RejectReason.UNKNOWN);
             return;
@@ -249,8 +263,10 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         // An accepted cancel keeps the order's slot until the reader releases it on the venue's cancel event.
         // Freed here, the writer would count slots the reader still holds, and could send an order the reader
         // has no room to track.
-        if (!accepted) {
+        if (result == CancelResult.REJECTED) {
             enqueueCancelReject(ctx, RejectReason.EXCHANGE_REJECTED);
+        } else if (result == CancelResult.RATE_LIMITED) {
+            enqueueCancelReject(ctx, RejectReason.RATE_LIMITED);
         }
     }
 
@@ -291,7 +307,9 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         /** No clear answer (timeout, dropped connection, 5xx, unreadable reply): it may be live. */
         UNKNOWN,
         /** Refused because the venue already has an order with this id. */
-        DUPLICATE
+        DUPLICATE,
+        /** Refused for the rate limit, by the venue or before it was sent: nothing was placed. */
+        RATE_LIMITED
     }
 
     /**
@@ -302,26 +320,58 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
     protected abstract boolean prepareOrder(OrderContext ctx) throws Exception;
 
     /**
-     * Sends the request {@link #prepareOrder} built. May be called again with the same request when
-     * an earlier send got no clear answer, so the request must be one the venue deduplicates. On
-     * acceptance, sets {@code ctx.exchangeOrderIdBytes} for later cancels.
+     * Sends the request {@link #prepareOrder} built. Unless {@link #resendsAreSafe} says otherwise, it may be called
+     * again with the same request when an earlier send got no clear answer, so the request must be one the venue
+     * deduplicates. On acceptance, sets {@code ctx.exchangeOrderIdBytes} for later cancels.
      */
     protected abstract SubmitResult submitOrder(OrderContext ctx) throws Exception;
+
+    /**
+     * Whether the venue deduplicates a resent submit. A venue without a client order id would place it twice, so a
+     * submit with no clear answer is then only looked up, never sent again.
+     */
+    protected boolean resendsAreSafe() {
+        return true;
+    }
 
     /** Whether the venue has the order: ACCEPTED if so, REJECTED if not, UNKNOWN if it could not tell. */
     protected abstract SubmitResult findOrder(OrderContext ctx) throws Exception;
 
-    /** The usual reading of an HTTP status: a 4xx refused the request; anything else unclear is unknown. */
+    /**
+     * The usual reading of an HTTP status: a 429 refused it for the rate limit, any other 4xx refused it, and
+     * anything else unclear is unknown.
+     */
     protected static SubmitResult classifyFailure(final int statusCode) {
+        if (statusCode == HTTPResponse.STATUS_TOO_MANY_REQUESTS) {
+            return SubmitResult.RATE_LIMITED;
+        }
         return statusCode >= 400 && statusCode < 500 ? SubmitResult.REJECTED : SubmitResult.UNKNOWN;
     }
 
-    /**
-     * Cancel an existing order on the exchange.
-     *
-     * @return true if the cancel request was accepted
-     */
-    protected abstract boolean cancelOrder(OrderContext ctx) throws Exception;
+    /** Why the OMS is told a refused cancel or amend failed: the rate limit for a 429, else the venue's refusal. */
+    protected static RejectReason rejectReasonFor(final HTTPResponse response) {
+        return response.getStatusCode() == HTTPResponse.STATUS_TOO_MANY_REQUESTS
+                ? RejectReason.RATE_LIMITED
+                : RejectReason.EXCHANGE_REJECTED;
+    }
+
+    /** How a venue answered a cancel. One with no clear answer throws an {@link IOException} instead. */
+    protected enum CancelResult {
+        ACCEPTED,
+        REJECTED,
+        /** Refused for the rate limit, by the venue or before it was sent: the order is still working. */
+        RATE_LIMITED
+    }
+
+    /** The reading of a refused cancel's response: the rate limit for a 429, else the venue's refusal. */
+    protected static CancelResult classifyCancelFailure(final HTTPResponse response) {
+        return response.getStatusCode() == HTTPResponse.STATUS_TOO_MANY_REQUESTS
+                ? CancelResult.RATE_LIMITED
+                : CancelResult.REJECTED;
+    }
+
+    /** Cancels an existing order on the exchange. */
+    protected abstract CancelResult cancelOrder(OrderContext ctx) throws Exception;
 
     private boolean tryEnqueueNewOrder(final OrderContext ctx) {
         final int idx = this.newOrderQueue.tryClaim();
@@ -414,6 +464,43 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         notice.leavesQty = venueRemaining;
         notice.correlationIdLength = existing.correlationIdLength;
         System.arraycopy(existing.correlationIdBytes, 0, notice.correlationIdBytes, 0, existing.correlationIdLength);
+        this.writerReportQueue.commit(idx);
+    }
+
+    /**
+     * Tells the reader all an {@link OrderContext#awaitsFinalFill} order will ever fill, as the venue's answer to its
+     * submit put it. The fills themselves arrive on the reader's stream, before or after this.
+     */
+    protected final void enqueueFinalFill(final OrderContext existing, final long finalFillQty) {
+        final int idx = claimWriterReport();
+        final OrderContext notice = this.writerReportQueue.indexAt(idx);
+        notice.reset();
+        notice.finalFillNotice = true;
+        notice.finalFillQty = finalFillQty;
+        notice.clientOidCounter = existing.clientOidCounter;
+        notice.clientOidStrategyId = existing.clientOidStrategyId;
+        notice.correlationIdLength = existing.correlationIdLength;
+        System.arraycopy(existing.correlationIdBytes, 0, notice.correlationIdBytes, 0, existing.correlationIdLength);
+        this.writerReportQueue.commit(idx);
+    }
+
+    /**
+     * Tells the reader the venue's id for {@code existing}, from the submit's answer, on a venue whose events can't
+     * all be matched by a correlation id: the reader can then look the order up after a reconnect. Written straight
+     * into the queue, so it needs no pool slot.
+     */
+    protected final void enqueueVenueOrderId(final OrderContext existing) {
+        final int idx = claimWriterReport();
+        final OrderContext notice = this.writerReportQueue.indexAt(idx);
+        notice.reset();
+        notice.venueOrderIdNotice = true;
+        notice.clientOidCounter = existing.clientOidCounter;
+        notice.clientOidStrategyId = existing.clientOidStrategyId;
+        notice.correlationIdLength = existing.correlationIdLength;
+        System.arraycopy(existing.correlationIdBytes, 0, notice.correlationIdBytes, 0, existing.correlationIdLength);
+        notice.exchangeOrderIdLength = existing.exchangeOrderIdLength;
+        System.arraycopy(
+                existing.exchangeOrderIdBytes, 0, notice.exchangeOrderIdBytes, 0, existing.exchangeOrderIdLength);
         this.writerReportQueue.commit(idx);
     }
 

@@ -16,7 +16,6 @@ import group.gnometrading.sm.Security;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -36,15 +35,9 @@ class InboundJsonWebSocketReaderTest {
     @BeforeEach
     void setUp() {
         outputBuffer = new SequencedRingBuffer<>(Mbp10Schema::new, new GlobalSequence());
-        outputBuffer.start();
 
         reader = new TestJsonWebSocketReader(outputBuffer);
         reader.pauseControl.release();
-    }
-
-    @AfterEach
-    void tearDown() {
-        outputBuffer.shutdown();
     }
 
     // ========== handleGatewayMessage — empty/whitespace ==========

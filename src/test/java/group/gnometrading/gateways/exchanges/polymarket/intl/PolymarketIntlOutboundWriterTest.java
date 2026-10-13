@@ -9,6 +9,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockingDetails;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -20,6 +21,8 @@ import group.gnometrading.gateways.outbound.exchanges.polymarket.intl.Polymarket
 import group.gnometrading.gateways.outbound.exchanges.polymarket.intl.PolymarketIntlOrderSigner;
 import group.gnometrading.gateways.outbound.exchanges.polymarket.intl.PolymarketIntlOrderSignerAccess;
 import group.gnometrading.gateways.outbound.exchanges.polymarket.intl.PolymarketIntlOutboundWriter;
+import group.gnometrading.logging.LogMessage;
+import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.http.HTTPClient;
 import group.gnometrading.networking.http.HTTPProtocol;
 import group.gnometrading.networking.http.HTTPResponse;
@@ -31,6 +34,7 @@ import group.gnometrading.schemas.ModifyOrderDecoder;
 import group.gnometrading.schemas.Order;
 import group.gnometrading.schemas.OrderStatus;
 import group.gnometrading.schemas.OrderType;
+import group.gnometrading.schemas.RejectReason;
 import group.gnometrading.schemas.SchemaType;
 import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
@@ -78,6 +82,7 @@ class PolymarketIntlOutboundWriterTest {
     private ManyToOneRingBuffer<OrderContext> newOrderQueue;
     private ManyToOneRingBuffer<OrderContext> writerReportQueue;
     private HTTPClient httpClient;
+    private final Logger logger = mock(Logger.class);
     private PolymarketIntlAuthHeaders authHeaders;
     private HTTPResponse httpResponse;
     private PolymarketIntlOutboundWriter writer;
@@ -242,6 +247,31 @@ class PolymarketIntlOutboundWriterTest {
     }
 
     @Test
+    void submitOrder_TradingDisabled503_IsRejectedWithoutResending() throws Exception {
+        // Polymarket's 503: trading disabled, cancel-only or post-only mode. A refusal, not a lost answer.
+        stubPost(ByteBuffer.wrap("{\"error\":\"Trading is currently cancel-only.\"}".getBytes(StandardCharsets.UTF_8)));
+        when(httpResponse.isSuccess()).thenReturn(false);
+        when(httpResponse.getStatusCode()).thenReturn(503);
+
+        publishOrder(Side.Bid, price("0.55"), qty("10"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, false);
+        writer.doWork();
+
+        assertSingleReject();
+        capturePostBody(); // a single POST
+    }
+
+    @Test
+    void submitOrder_NullOrderIdInTheAnswer_IsStillAccepted() throws Exception {
+        stubPost(ByteBuffer.wrap(
+                "{\"success\":true,\"orderID\":null,\"status\":\"live\"}".getBytes(StandardCharsets.UTF_8)));
+
+        publishOrder(Side.Bid, price("0.55"), qty("10"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, false);
+        writer.doWork();
+
+        assertEquals(0, drainQueue(writerReportQueue).size());
+    }
+
+    @Test
     void submitOrder_RegistersTheOrderHashBeforeSending() throws Exception {
         stubPost(successResponse(ORDER_HASH));
 
@@ -306,7 +336,7 @@ class PolymarketIntlOutboundWriterTest {
     void submitOrder_NoAnswerThenNotFoundOnTheVenue_IsRejected() throws Exception {
         stubPost(null);
         when(httpResponse.isSuccess()).thenReturn(false);
-        when(httpResponse.getStatusCode()).thenReturn(503, 400);
+        when(httpResponse.getStatusCode()).thenReturn(502, 400);
         final HTTPResponse lookup = mock(HTTPResponse.class);
         when(lookup.isSuccess()).thenReturn(false);
         when(lookup.getStatusCode()).thenReturn(404);
@@ -398,6 +428,158 @@ class PolymarketIntlOutboundWriterTest {
         assertTrue(body.contains("\"takerAmount\":\"2000000000\""), body);
     }
 
+    // ========== IOC and FOK: the venue's "spend this much" orders ==========
+
+    @Test
+    void iocBuy_DollarsRoundDownToWholeCents_SharesToTheTicksDecimals() throws Exception {
+        // The venue refuses a marketable BUY whose dollars have more than 2 decimals (seen live: 5.03 @ 0.38).
+        stubPost(fakAnswer("1.91", "5.0263"));
+
+        publishOrder(Side.Bid, price("0.38"), qty("5.03"), OrderType.LIMIT, TimeInForce.IMMEDIATE_OR_CANCELED, false);
+        writer.doWork();
+
+        final String body = capturePostBody();
+        assertTrue(body.contains("\"makerAmount\":\"1910000\""), body);
+        assertTrue(body.contains("\"takerAmount\":\"5026300\""), body);
+    }
+
+    @Test
+    void gtcBuy_KeepsTheExactAmounts() throws Exception {
+        stubPost(successResponse(hashOf(Side.Bid, "0.38", "5.03", 0)));
+
+        publishOrder(Side.Bid, price("0.38"), qty("5.03"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, false);
+        writer.doWork();
+
+        final String body = capturePostBody();
+        assertTrue(body.contains("\"makerAmount\":\"1911400\""), body);
+        assertTrue(body.contains("\"takerAmount\":\"5030000\""), body);
+    }
+
+    @Test
+    void iocBuy_HandsTheReaderWhatMatched_SoAnOverfillIsWaitedFor() throws Exception {
+        // Seen live: BUY 5 @ 0.38 with the ask at 0.37 spent all $1.90 and took 5.135136 shares.
+        stubPost(fakAnswer("1.9", "5.135136"));
+
+        publishOrder(Side.Bid, price("0.38"), qty("5"), OrderType.LIMIT, TimeInForce.IMMEDIATE_OR_CANCELED, false);
+        writer.doWork();
+
+        assertTrue(drainQueue(newOrderQueue).get(0).awaitsFinalFill, "the reader waits for the venue's total");
+        final List<OrderContext> notices = drainQueue(writerReportQueue);
+        assertEquals(1, notices.size());
+        assertTrue(notices.get(0).finalFillNotice);
+        assertEquals(qty("5.135136"), notices.get(0).finalFillQty);
+    }
+
+    @Test
+    void iocSell_HandsTheReaderTheSharesThatMatched() throws Exception {
+        stubPost(fakAnswer("4", "1.44"));
+
+        publishOrder(Side.Ask, price("0.36"), qty("5"), OrderType.LIMIT, TimeInForce.IMMEDIATE_OR_CANCELED, false);
+        writer.doWork();
+
+        assertEquals(
+                qty("4"), drainQueue(writerReportQueue).get(0).finalFillQty, "a partial fill: the rest was killed");
+    }
+
+    @Test
+    void delayedIoc_TellsTheReaderTheTotalIsUnknown() throws Exception {
+        stubPost(ByteBuffer.wrap(
+                "{\"errorMsg\":\"\",\"takingAmount\":\"\",\"makingAmount\":\"\",\"status\":\"delayed\",\"success\":true}"
+                        .getBytes(StandardCharsets.UTF_8)));
+
+        publishOrder(Side.Bid, price("0.38"), qty("5"), OrderType.LIMIT, TimeInForce.IMMEDIATE_OR_CANCELED, false);
+        writer.doWork();
+
+        final List<OrderContext> notices = drainQueue(writerReportQueue);
+        assertEquals(1, notices.size());
+        assertTrue(notices.get(0).finalFillNotice);
+        assertEquals(OrderContext.QTY_ABSENT, notices.get(0).finalFillQty);
+    }
+
+    @Test
+    void gtcOrder_NeedsNoFinalFillNotice() throws Exception {
+        stubPost(successResponse(hashOf(Side.Bid, "0.55", "10", 0)));
+
+        publishOrder(Side.Bid, price("0.55"), qty("10"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, false);
+        writer.doWork();
+
+        assertEquals(false, drainQueue(newOrderQueue).get(0).awaitsFinalFill);
+        assertEquals(0, drainQueue(writerReportQueue).size());
+    }
+
+    private static ByteBuffer fakAnswer(final String makingAmount, final String takingAmount) {
+        return ByteBuffer.wrap(("{\"errorMsg\":\"\",\"takingAmount\":\"" + takingAmount + "\",\"makingAmount\":\""
+                        + makingAmount + "\",\"status\":\"matched\",\"success\":true}")
+                .getBytes(StandardCharsets.UTF_8));
+    }
+
+    // ========== Why the venue refused ==========
+    // The OMS only learns EXCHANGE_REJECTED; the venue's own words go to the log.
+
+    @Test
+    void refusedSubmit_LogsTheVenuesMessage() throws Exception {
+        stubPost(ByteBuffer.wrap(
+                "{\"error\":\"invalid post-only order: order crosses book\"}".getBytes(StandardCharsets.UTF_8)));
+        when(httpResponse.isSuccess()).thenReturn(false);
+        when(httpResponse.getStatusCode()).thenReturn(400);
+
+        publishOrder(Side.Bid, price("0.55"), qty("10"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, true);
+        writer.doWork();
+
+        final String line = rejectionLogLine();
+        assertTrue(line.contains("submit") && line.contains("400") && line.contains("order crosses book"), line);
+        assertTrue(line.contains(" 0x"), "names the order by its hash: " + line);
+    }
+
+    @Test
+    void submitAnsweredWithSuccessFalse_LogsTheVenuesMessage() throws Exception {
+        stubPost(ByteBuffer.wrap("{\"success\":false,\"errorMsg\":\"order_version_mismatch\",\"orderID\":\"\"}"
+                .getBytes(StandardCharsets.UTF_8)));
+
+        publishOrder(Side.Bid, price("0.55"), qty("10"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, false);
+        writer.doWork();
+
+        assertTrue(rejectionLogLine().contains("order_version_mismatch"), rejectionLogLine());
+    }
+
+    @Test
+    void refusedCancel_LogsTheVenuesReason() throws Exception {
+        final long counter = submitWorkingOrder();
+        stubDelete(
+                ByteBuffer.wrap(("{\"not_canceled\":{\"" + ORDER_HASH + "\":\"order can't be found\"},\"canceled\":[]}")
+                        .getBytes(StandardCharsets.UTF_8)));
+
+        publishCancel(counter);
+        writer.doWork();
+
+        final String line = rejectionLogLine();
+        assertTrue(line.contains("cancel") && line.contains("order can't be found"), line);
+    }
+
+    @Test
+    void lostAnswer_LogsNoRefusal() throws Exception {
+        stubPost(null);
+        when(httpResponse.isSuccess()).thenReturn(false);
+        when(httpResponse.getStatusCode()).thenReturn(0);
+
+        publishOrder(Side.Bid, price("0.55"), qty("10"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, false);
+        writer.doWork();
+
+        assertTrue(
+                mockingDetails(logger).getInvocations().stream()
+                        .noneMatch(call -> call.getArgument(0) == LogMessage.ORDER_REJECTED_BY_VENUE),
+                "the venue said nothing");
+    }
+
+    private String rejectionLogLine() {
+        final Object[] call = mockingDetails(logger).getInvocations().stream()
+                .filter(invocation -> invocation.getArgument(0) == LogMessage.ORDER_REJECTED_BY_VENUE)
+                .findFirst()
+                .orElseThrow()
+                .getRawArguments();
+        return String.format((String) call[1], (Object[]) call[2]);
+    }
+
     // ========== Cancel ==========
 
     @Test
@@ -445,6 +627,22 @@ class PolymarketIntlOutboundWriterTest {
     }
 
     @Test
+    void cancelOrder_RateLimitedIsACancelRejectForTheRateLimit() throws Exception {
+        final long clientOid = submitWorkingOrder();
+        stubDelete(null);
+        when(httpResponse.isSuccess()).thenReturn(false);
+        when(httpResponse.getStatusCode()).thenReturn(429);
+
+        publishCancel(clientOid);
+        writer.doWork();
+
+        final List<OrderContext> reports = drainQueue(writerReportQueue);
+        assertEquals(1, reports.size());
+        assertEquals(ExecType.CANCEL_REJECT, reports.get(0).execType);
+        assertEquals(RejectReason.RATE_LIMITED, reports.get(0).rejectReason);
+    }
+
+    @Test
     void cancelOrder_UnknownOrderIsANoOp() throws Exception {
         publishCancel(999L);
         writer.doWork();
@@ -483,6 +681,7 @@ class PolymarketIntlOutboundWriterTest {
                 "0xcondition:" + TOKEN_ID,
                 "TEST-YES");
         return new PolymarketIntlOutboundWriter(
+                logger,
                 orderBuffer,
                 newOrderQueue,
                 writerReportQueue,

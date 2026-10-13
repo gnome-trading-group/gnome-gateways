@@ -131,6 +131,63 @@ class PolymarketIntlOrderSignerTest {
         assertEquals(SALT, order.salt());
     }
 
+    // Type 3: the deposit wallet is maker and signer, and the key behind it signs a TypedDataSign wrapper of the order.
+    private static final String DEPOSIT_WALLET = "0x2222222222222222222222222222222222222222";
+
+    static Stream<Arguments> depositWalletVectors() {
+        return Stream.of(
+                Arguments.of(
+                        false,
+                        0,
+                        5500000L,
+                        10000000L,
+                        "0x35e9229f5074ca20bc9dfed0bc35a83e492085bbe39e9292d8d0f146006583851f0a696d09c6ddb491d216ff97fe4d6d3e12976ba9f0c1998c3ba9ba04a7015e1b3264e159346253e26a64e00b69032db0e7d32f94628de3e6eecb50304d7af3d2c946808dc89f54ec1621cbb1f78f7f7417d7042c71403c99242a9b112a1529ff4f726465722875696e743235362073616c742c61646472657373206d616b65722c61646472657373207369676e65722c75696e7432353620746f6b656e49642c75696e74323536206d616b6572416d6f756e742c75696e743235362074616b6572416d6f756e742c75696e743820736964652c75696e7438207369676e6174757265547970652c75696e743235362074696d657374616d702c62797465733332206d657461646174612c62797465733332206275696c6465722900ba",
+                        "0x48abb5edd42106b656b654ee08356a0f060ec29280b801412d5d5f636fa6d410"),
+                Arguments.of(
+                        false,
+                        1,
+                        10000000L,
+                        5500000L,
+                        "0xa6b53763cfe9ad2e9555845c7534856dffc6651d57e40c251e569e5a2914ea4e3539f32a84c5908e83965db6c883e473c6f3a69963eccbd8c1d0c8118a1a2ff21c3264e159346253e26a64e00b69032db0e7d32f94628de3e6eecb50304d7af3d29b10111e3aed180c306ba7a2959437df3ac193dcb7fb68c8cb2e5e7e7eb0f61f4f726465722875696e743235362073616c742c61646472657373206d616b65722c61646472657373207369676e65722c75696e7432353620746f6b656e49642c75696e74323536206d616b6572416d6f756e742c75696e743235362074616b6572416d6f756e742c75696e743820736964652c75696e7438207369676e6174757265547970652c75696e743235362074696d657374616d702c62797465733332206d657461646174612c62797465733332206275696c6465722900ba",
+                        "0x65431f24d58f4d62625e943546e107941f2a22b9c63b0abe2638aafaea70fb3c"),
+                Arguments.of(
+                        true,
+                        0,
+                        5500000L,
+                        10000000L,
+                        "0x606e5d053a54cc7406fb49aa2d3dd8540c1ecaaa3dd78906ce511ced339070467357e37081625e2754e58889df5d59cb7e520cb7efe1aa414ad7ee04454405561c9b858f53327b0bd13af8ec14cfb35234fb9eb7b0504d1a4e61f433840d30e81ac946808dc89f54ec1621cbb1f78f7f7417d7042c71403c99242a9b112a1529ff4f726465722875696e743235362073616c742c61646472657373206d616b65722c61646472657373207369676e65722c75696e7432353620746f6b656e49642c75696e74323536206d616b6572416d6f756e742c75696e743235362074616b6572416d6f756e742c75696e743820736964652c75696e7438207369676e6174757265547970652c75696e743235362074696d657374616d702c62797465733332206d657461646174612c62797465733332206275696c6465722900ba",
+                        "0x32412628546cee19af643b58fe832ee70246d7985bc38ef3486d1a840887ac95"),
+                Arguments.of(
+                        true,
+                        1,
+                        10000000L,
+                        5500000L,
+                        "0x7b93091dc26c1f9c2a308e802803eb85e898b1799f4cfde1c2ddc455e68dcd640b7ba9da142d7bb078fb6172b101c78286f30f35c758cff6fbf2b824a645ddeb1c9b858f53327b0bd13af8ec14cfb35234fb9eb7b0504d1a4e61f433840d30e81a9b10111e3aed180c306ba7a2959437df3ac193dcb7fb68c8cb2e5e7e7eb0f61f4f726465722875696e743235362073616c742c61646472657373206d616b65722c61646472657373207369676e65722c75696e7432353620746f6b656e49642c75696e74323536206d616b6572416d6f756e742c75696e743235362074616b6572416d6f756e742c75696e743820736964652c75696e7438207369676e6174757265547970652c75696e743235362074696d657374616d702c62797465733332206d657461646174612c62797465733332206275696c6465722900ba",
+                        "0x8e4d5f7821ff79026614b7dcea54db4e5951add54bb9c3478c172aa0623ed764"));
+    }
+
+    @ParameterizedTest
+    @MethodSource("depositWalletVectors")
+    void depositWalletSignatureAndOrderHashMatchReferenceClient(
+            boolean negRisk,
+            int side,
+            long makerAmount,
+            long takerAmount,
+            String expectedSignature,
+            String expectedOrderHash) {
+        final PolymarketIntlOrderSigner signer = PolymarketIntlOrderSignerAccess.withSalt(
+                PRIVATE_KEY, EOA, DEPOSIT_WALLET, PolymarketIntlOrderSigner.SIGNATURE_TYPE_POLY_1271, SALT);
+
+        final PolymarketIntlOrderSigner.SignedOrder order =
+                signer.signOrder(TOKEN_ID, makerAmount, takerAmount, side, TIMESTAMP_MILLIS, negRisk);
+
+        assertEquals(expectedSignature, order.signatureHex());
+        assertEquals(expectedOrderHash, orderHashHex(order), "the venue's orderID is still the plain order hash");
+        assertEquals(DEPOSIT_WALLET, order.maker());
+        assertEquals(DEPOSIT_WALLET, order.signer());
+        assertEquals(3, order.signatureType());
+    }
+
     @Test
     void saltAdvancesPerOrderSoIdenticalOrdersHashDifferently() {
         final PolymarketIntlOrderSigner signer = PolymarketIntlOrderSignerAccess.withSalt(
@@ -158,7 +215,7 @@ class PolymarketIntlOrderSignerTest {
 
     @Test
     void unsupportedSignatureTypeIsRejected() {
-        assertThrows(IllegalArgumentException.class, () -> new PolymarketIntlOrderSigner(PRIVATE_KEY, EOA, EOA, 3));
+        assertThrows(IllegalArgumentException.class, () -> new PolymarketIntlOrderSigner(PRIVATE_KEY, EOA, EOA, 4));
     }
 
     @Test

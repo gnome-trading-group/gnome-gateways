@@ -1,6 +1,7 @@
 package group.gnometrading.gateways.outbound.exchanges.kalshi;
 
 import group.gnometrading.codecs.json.JsonDecoder;
+import group.gnometrading.gateways.ratelimit.RateLimitedRetry;
 import group.gnometrading.networking.http.HTTPClient;
 import group.gnometrading.networking.http.HTTPProtocol;
 import group.gnometrading.networking.http.HTTPResponse;
@@ -51,18 +52,12 @@ final class KalshiOrderPages {
         do {
             final String path = ORDERS_PATH + "?ticker=" + ticker + filter + "&limit=" + PAGE_LIMIT
                     + (cursor.isEmpty() ? "" : "&cursor=" + URLEncoder.encode(cursor, StandardCharsets.UTF_8));
-            // Kalshi signs the path without its query string.
-            this.authSigner.sign(this.epochMillis.getAsLong(), "GET", ORDERS_PATH);
-            final HTTPResponse response = this.httpClient.get(
-                    HTTPProtocol.HTTPS,
-                    this.apiHost,
-                    path,
-                    "KALSHI-ACCESS-KEY",
-                    this.authSigner.apiKey(),
-                    "KALSHI-ACCESS-TIMESTAMP",
-                    this.authSigner.timestamp(),
-                    "KALSHI-ACCESS-SIGNATURE",
-                    this.authSigner.signature());
+            HTTPResponse response;
+            int attempt = 0;
+            do {
+                attempt++;
+                response = getPage(path);
+            } while (RateLimitedRetry.shouldRetry(response, attempt));
             if (!response.isSuccess() || response.getBody() == null) {
                 throw new IOException("Kalshi order list failed with status " + response.getStatusCode());
             }
@@ -73,6 +68,21 @@ final class KalshiOrderPages {
             cursor = readCursor(page.duplicate());
         } while (!cursor.isEmpty());
         return pages;
+    }
+
+    private HTTPResponse getPage(final String path) throws IOException {
+        // Kalshi signs the path without its query string.
+        this.authSigner.sign(this.epochMillis.getAsLong(), "GET", ORDERS_PATH);
+        return this.httpClient.get(
+                HTTPProtocol.HTTPS,
+                this.apiHost,
+                path,
+                "KALSHI-ACCESS-KEY",
+                this.authSigner.apiKey(),
+                "KALSHI-ACCESS-TIMESTAMP",
+                this.authSigner.timestamp(),
+                "KALSHI-ACCESS-SIGNATURE",
+                this.authSigner.signature());
     }
 
     private String readCursor(final ByteBuffer page) {

@@ -25,6 +25,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.function.LongSupplier;
 import org.agrona.concurrent.EpochNanoClock;
 
 public final class KalshiOutboundWriter extends OutboundSocketWriter {
@@ -84,6 +85,8 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
 
     private final MutableString cancelPath;
     private final KalshiOrderPages orderPages;
+    // Kept to sign requests that may be retried; a method reference made per call would allocate.
+    private final LongSupplier epochMillisSupplier = this::epochMillis;
 
     public KalshiOutboundWriter(
             final Logger logger,
@@ -112,7 +115,7 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
         this.marketTicker = colonIdx >= 0 ? exchangeSecurityId.substring(0, colonIdx) : exchangeSecurityId;
         this.isNoListing = "no".equalsIgnoreCase(suffix);
         this.cancelRoutingQuery = routingQuery(KalshiApiUtil.SHARD_UNKNOWN);
-        this.orderPages = new KalshiOrderPages(httpClient, apiHost, authSigner, this::epochMillis);
+        this.orderPages = new KalshiOrderPages(httpClient, apiHost, authSigner, this.epochMillisSupplier);
         // Room for the routing query with any shard number.
         this.cancelPath = new MutableString(ORDER_PATH.length()
                 + 1
@@ -142,7 +145,7 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
 
     private int fetchExchangeIndex() throws IOException {
         return KalshiApiUtil.fetchExchangeIndex(
-                this.httpClient, this.apiHost, this.authSigner, epochMillis(), this.marketTicker);
+                this.httpClient, this.apiHost, this.authSigner, this.epochMillisSupplier, this.marketTicker);
     }
 
     private byte[] routingQuery(final int shard) {
@@ -291,7 +294,8 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
     /** Logs a refusal with Kalshi's own reason; only on the error path, so building the text is fine. */
     private void logRejection(
             final String action, final OrderContext ctx, final int status, final HTTPResponse response) {
-        if (status <= 0) {
+        // The rate limiter logs its own refusals, once, rather than one line for each.
+        if (status <= 0 || response.isRefusedLocally()) {
             return;
         }
         final ByteBuffer body = response.getBody();
@@ -420,7 +424,7 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
     }
 
     @Override
-    protected boolean cancelOrder(final OrderContext ctx) throws Exception {
+    protected CancelResult cancelOrder(final OrderContext ctx) throws Exception {
         if (!venueIdKnown(ctx)) {
             // The submit's outcome is still unknown and Kalshi lists no such order: nothing can be sent, and the
             // OMS gets the same answer as for a cancel that never reached the venue.
@@ -448,9 +452,9 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
 
         if (!response.isSuccess()) {
             logRejection("cancel", ctx, response.getStatusCode(), response);
-            return false;
+            return classifyCancelFailure(response);
         }
-        return true;
+        return CancelResult.ACCEPTED;
     }
 
     @Override
@@ -508,7 +512,7 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
                     remaining);
         } else {
             logRejection("amend", ctx, response.getStatusCode(), response);
-            enqueueCancelReject(ctx, RejectReason.EXCHANGE_REJECTED);
+            enqueueCancelReject(ctx, rejectReasonFor(response));
         }
     }
 

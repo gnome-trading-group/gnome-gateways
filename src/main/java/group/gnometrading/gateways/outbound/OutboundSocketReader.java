@@ -20,6 +20,7 @@ import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Listing;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.Collection;
 import org.agrona.collections.Long2ObjectHashMap;
 import org.agrona.concurrent.EpochNanoClock;
 
@@ -193,6 +194,14 @@ public abstract class OutboundSocketReader implements GnomeAgent {
             applyAcceptedAmend(src);
             return;
         }
+        if (src.finalFillNotice) {
+            applyFinalFill(src);
+            return;
+        }
+        if (src.venueOrderIdNotice) {
+            applyVenueOrderId(src);
+            return;
+        }
         if (src.execType == ExecType.REJECT) {
             // The writer registers an order before sending it, and frees its own copy on a reject.
             discardOrderContext(computeKey(src.correlationIdBytes, src.correlationIdLength));
@@ -244,6 +253,120 @@ public abstract class OutboundSocketReader implements GnomeAgent {
                 ctx.leavesQty,
                 OrderExecutionReportEncoder.timestampEventNullValue(),
                 this.clock.nanoTime());
+    }
+
+    /**
+     * Records the venue's total for the order, and ends it if its fills already reached it. Without a total (the
+     * venue didn't say), the order goes back to ending at its own size or on the venue's word, like any other.
+     */
+    private void applyFinalFill(final OrderContext src) {
+        final long key = computeKey(src.correlationIdBytes, src.correlationIdLength);
+        final OrderContext ctx = this.orderContexts.get(key);
+        if (ctx == null) {
+            return;
+        }
+        if (src.finalFillQty == OrderContext.QTY_ABSENT) {
+            ctx.awaitsFinalFill = false;
+            if (ctx.cumulativeFilledQty >= ctx.originalQty) {
+                publishFilledWithoutNewFill(ctx, key);
+            }
+            return;
+        }
+        ctx.finalFillQty = src.finalFillQty;
+        if (ctx.cumulativeFilledQty < ctx.finalFillQty) {
+            return;
+        }
+        if (ctx.cumulativeFilledQty >= ctx.originalQty) {
+            publishFilledWithoutNewFill(ctx, key);
+        } else {
+            publishCanceled(ctx, key, OrderExecutionReportEncoder.timestampEventNullValue());
+        }
+    }
+
+    /** Records the venue's id for an order the reader holds, which may have finished meanwhile. */
+    private void applyVenueOrderId(final OrderContext src) {
+        final long key = computeKey(src.correlationIdBytes, src.correlationIdLength);
+        final OrderContext ctx = this.orderContexts.get(key);
+        if (ctx == null) {
+            return;
+        }
+        ctx.exchangeOrderIdLength = src.exchangeOrderIdLength;
+        System.arraycopy(src.exchangeOrderIdBytes, 0, ctx.exchangeOrderIdBytes, 0, src.exchangeOrderIdLength);
+        onVenueOrderId(ctx, key);
+    }
+
+    /**
+     * Called when the writer reports the venue's id for an order this reader holds, under {@code key}. Venues that
+     * index their orders by that id override it.
+     */
+    protected void onVenueOrderId(final OrderContext ctx, final long key) {}
+
+    /**
+     * Ends an order its fills already completed with a {@link ExecType#FILL} that adds nothing, which the OMS reads
+     * as the order filled: its fills were reported as partial while the venue's total was still unknown.
+     */
+    private void publishFilledWithoutNewFill(final OrderContext ctx, final long key) {
+        prepareExecReportHeader(ctx);
+        this.execReport.encoder.execType(ExecType.FILL);
+        this.execReport.encoder.orderStatus(OrderStatus.FILLED);
+        this.execReport.encoder.rejectReason(RejectReason.NULL_VAL);
+        this.execReport.encoder.filledQty(0);
+        this.execReport.encoder.fillPrice(0);
+        this.execReport.encoder.fee(0);
+        this.execReport.encoder.cumulativeQty(ctx.cumulativeFilledQty);
+        this.execReport.encoder.leavesQty(0);
+        this.execReport.encoder.timestampEvent(OrderExecutionReportEncoder.timestampEventNullValue());
+        this.execReport.encoder.timestampRecv(this.clock.nanoTime());
+        publishExecReport();
+        releaseOrderContext(key);
+    }
+
+    /**
+     * Whether a fill that brought the order to {@code ctx.cumulativeFilledQty} ends it: at its own size, or for an
+     * {@link OrderContext#awaitsFinalFill} order at the venue's total, once known.
+     */
+    protected static boolean fillsComplete(final OrderContext ctx) {
+        if (!ctx.awaitsFinalFill) {
+            return ctx.cumulativeFilledQty >= ctx.originalQty;
+        }
+        return ctx.finalFillQty != OrderContext.QTY_ABSENT && ctx.cumulativeFilledQty >= ctx.finalFillQty;
+    }
+
+    /** Ends the order with a {@link ExecType#CANCEL} that keeps its fills so far, and releases it. */
+    protected final void publishCanceled(final OrderContext ctx, final long key, final long timestampEvent) {
+        prepareExecReportHeader(ctx);
+        this.execReport.encoder.execType(ExecType.CANCEL);
+        this.execReport.encoder.orderStatus(OrderStatus.CANCELED);
+        this.execReport.encoder.rejectReason(RejectReason.NULL_VAL);
+        this.execReport.encoder.filledQty(OrderExecutionReportEncoder.filledQtyNullValue());
+        this.execReport.encoder.fillPrice(OrderExecutionReportEncoder.fillPriceNullValue());
+        this.execReport.encoder.fee(OrderExecutionReportEncoder.feeNullValue());
+        this.execReport.encoder.cumulativeQty(ctx.cumulativeFilledQty);
+        this.execReport.encoder.leavesQty(0);
+        this.execReport.encoder.timestampEvent(timestampEvent);
+        this.execReport.encoder.timestampRecv(this.recvTimestamp);
+        publishExecReport();
+        releaseOrderContext(key);
+    }
+
+    /**
+     * Ends an order the venue refused after taking it, before acknowledging it, with a {@link ExecType#REJECT}, and
+     * releases it. On venues that validate an order only after assigning it an id.
+     */
+    protected final void publishRejected(final OrderContext ctx, final long key, final long timestampEvent) {
+        prepareExecReportHeader(ctx);
+        this.execReport.encoder.execType(ExecType.REJECT);
+        this.execReport.encoder.orderStatus(OrderStatus.REJECTED);
+        this.execReport.encoder.rejectReason(RejectReason.EXCHANGE_REJECTED);
+        this.execReport.encoder.filledQty(OrderExecutionReportEncoder.filledQtyNullValue());
+        this.execReport.encoder.fillPrice(OrderExecutionReportEncoder.fillPriceNullValue());
+        this.execReport.encoder.fee(OrderExecutionReportEncoder.feeNullValue());
+        this.execReport.encoder.cumulativeQty(0);
+        this.execReport.encoder.leavesQty(0);
+        this.execReport.encoder.timestampEvent(timestampEvent);
+        this.execReport.encoder.timestampRecv(this.recvTimestamp);
+        publishExecReport();
+        releaseOrderContext(key);
     }
 
     /** Publishes the order's {@link ExecType#NEW} acknowledgement and records that it was sent. */
@@ -312,6 +435,14 @@ public abstract class OutboundSocketReader implements GnomeAgent {
     protected final long lastHeardMillis() {
         final long lastHeard = this.recvTimestamp;
         return (lastHeard > 0 ? lastHeard : this.createdAtNanos) / NANOS_PER_MILLI;
+    }
+
+    /**
+     * The orders this reader holds: on the reader's own thread, or the supervisor's while the reader is paused.
+     * Iterating it doesn't allocate, but visits every order, so it is for rare paths.
+     */
+    protected final Collection<OrderContext> heldOrders() {
+        return this.orderContexts.values();
     }
 
     protected final OrderContext findOrderContext(final long key) {

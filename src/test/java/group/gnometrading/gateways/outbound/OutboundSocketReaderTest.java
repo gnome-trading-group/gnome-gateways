@@ -11,6 +11,7 @@ import group.gnometrading.schemas.OrderStatus;
 import group.gnometrading.schemas.RejectReason;
 import group.gnometrading.schemas.SchemaType;
 import group.gnometrading.sequencer.GlobalSequence;
+import group.gnometrading.sequencer.SequencedPoller;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Exchange;
 import group.gnometrading.sm.Listing;
@@ -40,6 +41,7 @@ class OutboundSocketReaderTest {
             "TEST");
 
     private SequencedRingBuffer<OrderExecutionReport> execReportBuffer;
+    private SequencedPoller poller;
     private ManyToOneRingBuffer<OrderContext> newOrderQueue;
     private ManyToOneRingBuffer<OrderContext> writerReportQueue;
     private ManyToOneRingBuffer<OrderContext> releasedOrderQueue;
@@ -51,13 +53,12 @@ class OutboundSocketReaderTest {
     void setUp() {
         captured = new CopyOnWriteArrayList<>();
         execReportBuffer = new SequencedRingBuffer<>(OrderExecutionReport::new, new GlobalSequence());
-        execReportBuffer.handleEventsWith((globalSeq, templateId, buffer, length) -> {
+        poller = execReportBuffer.createPoller((globalSeq, templateId, buffer, length) -> {
             final OrderExecutionReport copy = new OrderExecutionReport();
             copy.buffer.putBytes(0, buffer, 0, length);
             copy.wrap(copy.buffer);
             captured.add(copy);
         });
-        execReportBuffer.start();
         newOrderQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 256);
         writerReportQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 256);
         releasedOrderQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
@@ -72,7 +73,6 @@ class OutboundSocketReaderTest {
             reader.pauseControl.release();
             runner.close();
         }
-        execReportBuffer.shutdown();
     }
 
     // ========== doWork — basic ==========
@@ -148,6 +148,34 @@ class OutboundSocketReaderTest {
 
         assertEquals(1, reader.doWork());
         assertEquals(0, reader.doWork());
+    }
+
+    @Test
+    void venueOrderIdNotice_RecordsTheIdOnTheHeldOrder_WithoutReporting() throws Exception {
+        final String correlation = "corr-1";
+        enqueueNewOrder(correlation, 1L, 2, 3L, 10L);
+        reader.doWork();
+        final int idx = writerReportQueue.tryClaim();
+        final OrderContext notice = writerReportQueue.indexAt(idx);
+        notice.reset();
+        notice.venueOrderIdNotice = true;
+        notice.clientOidCounter = 1L;
+        final byte[] bytes = correlation.getBytes(StandardCharsets.UTF_8);
+        System.arraycopy(bytes, 0, notice.correlationIdBytes, 0, bytes.length);
+        notice.correlationIdLength = bytes.length;
+        final byte[] venueId = "V-1".getBytes(StandardCharsets.UTF_8);
+        System.arraycopy(venueId, 0, notice.exchangeOrderIdBytes, 0, venueId.length);
+        notice.exchangeOrderIdLength = venueId.length;
+        writerReportQueue.commit(idx);
+
+        reader.doWork();
+
+        final long key = TestOutboundSocketReader.testComputeKey(bytes, bytes.length);
+        final OrderContext held = reader.testFindOrderContext(key);
+        assertEquals(
+                "V-1", new String(held.exchangeOrderIdBytes, 0, held.exchangeOrderIdLength, StandardCharsets.UTF_8));
+        assertEquals(List.of(key), reader.venueIdKeys);
+        assertTrue(captured.isEmpty());
     }
 
     @Test
@@ -276,6 +304,7 @@ class OutboundSocketReaderTest {
         assertThrows(IOException.class, () -> reader.connect());
 
         Thread.sleep(100);
+        poller.poll();
         assertTrue(reader.pauseControl.isPaused(), "it never resumes without having caught up");
         assertFalse(reader.steps.contains("apply"));
     }
@@ -549,10 +578,10 @@ class OutboundSocketReaderTest {
         }
     }
 
-    private void waitForReports(final int count) {
+    private void waitForReports(final int count) throws Exception {
         final long deadline = System.currentTimeMillis() + 2000;
         while (captured.size() < count && System.currentTimeMillis() < deadline) {
-            Thread.yield();
+            poller.poll();
         }
     }
 
@@ -627,6 +656,13 @@ class OutboundSocketReaderTest {
 
         @Override
         public void keepAlive() throws IOException {}
+
+        final List<Long> venueIdKeys = new CopyOnWriteArrayList<>();
+
+        @Override
+        protected void onVenueOrderId(final OrderContext ctx, final long key) {
+            venueIdKeys.add(key);
+        }
 
         OrderContext testFindOrderContext(final long key) {
             return findOrderContext(key);

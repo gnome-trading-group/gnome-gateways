@@ -512,6 +512,20 @@ class KalshiOutboundWriterTest {
     }
 
     @Test
+    void submitOrder_RateLimited_IsRejectedForTheRateLimitAndNotResent() throws Exception {
+        mockPostFailure();
+        when(httpResponse.getStatusCode()).thenReturn(429);
+
+        publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
+        writer.doWork();
+
+        final List<OrderContext> rejects = drainQueue(writerReportQueue);
+        assertEquals(1, rejects.size());
+        assertEquals(ExecType.REJECT, rejects.get(0).execType);
+        assertEquals(RejectReason.RATE_LIMITED, rejects.get(0).rejectReason);
+    }
+
+    @Test
     void submitOrder_SendsCorrectHeaderNames() throws Exception {
         mockPostSuccess(orderResponse("order-header-test"));
 
@@ -682,6 +696,24 @@ class KalshiOutboundWriterTest {
         assertEquals(1, rejects.size());
         assertEquals(ExecType.CANCEL_REJECT, rejects.get(0).execType);
         assertEquals(OrderStatus.CANCELED, rejects.get(0).orderStatus);
+    }
+
+    @Test
+    void cancelOrder_RateLimited_IsACancelRejectForTheRateLimit() throws Exception {
+        mockPostSuccess(orderResponse("exchange-order-xyz"));
+        publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
+        writer.doWork();
+        final long clientOidCounter = drainQueue(newOrderQueue).get(0).clientOidCounter;
+
+        mockDeleteFailure();
+        when(httpResponse.getStatusCode()).thenReturn(429);
+        publishCancel(clientOidCounter);
+        writer.doWork();
+
+        final List<OrderContext> rejects = drainQueue(writerReportQueue);
+        assertEquals(1, rejects.size());
+        assertEquals(ExecType.CANCEL_REJECT, rejects.get(0).execType);
+        assertEquals(RejectReason.RATE_LIMITED, rejects.get(0).rejectReason);
     }
 
     @Test

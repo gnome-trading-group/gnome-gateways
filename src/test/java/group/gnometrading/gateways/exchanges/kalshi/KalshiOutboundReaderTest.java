@@ -24,6 +24,7 @@ import group.gnometrading.schemas.SchemaType;
 import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
 import group.gnometrading.sequencer.GlobalSequence;
+import group.gnometrading.sequencer.SequencedPoller;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Exchange;
 import group.gnometrading.sm.Listing;
@@ -45,7 +46,6 @@ import java.util.Base64;
 import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -71,6 +71,7 @@ class KalshiOutboundReaderTest {
     }
 
     private SequencedRingBuffer<OrderExecutionReport> execReportBuffer;
+    private SequencedPoller poller;
     private ManyToOneRingBuffer<OrderContext> newOrderQueue;
     private ManyToOneRingBuffer<OrderContext> writerReportQueue;
     private ManyToOneRingBuffer<OrderContext> releasedOrderQueue;
@@ -86,13 +87,12 @@ class KalshiOutboundReaderTest {
     void setUp() throws Exception {
         captured = new CopyOnWriteArrayList<>();
         execReportBuffer = new SequencedRingBuffer<>(OrderExecutionReport::new, new GlobalSequence());
-        execReportBuffer.handleEventsWith((globalSeq, templateId, buffer, length) -> {
+        poller = execReportBuffer.createPoller((globalSeq, templateId, buffer, length) -> {
             final OrderExecutionReport copy = new OrderExecutionReport();
             copy.buffer.putBytes(0, buffer, 0, length);
             copy.wrap(copy.buffer);
             captured.add(copy);
         });
-        execReportBuffer.start();
 
         newOrderQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
         writerReportQueue = new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 64);
@@ -128,11 +128,6 @@ class KalshiOutboundReaderTest {
                 0.07,
                 0.0175);
         reader.pauseControl.release();
-    }
-
-    @AfterEach
-    void tearDown() {
-        execReportBuffer.shutdown();
     }
 
     // ========== Connecting ==========
@@ -1073,10 +1068,10 @@ class KalshiOutboundReaderTest {
         reader.doWork();
     }
 
-    private void waitForReports(final int count) {
+    private void waitForReports(final int count) throws Exception {
         final long deadline = System.currentTimeMillis() + 2_000;
         while (captured.size() < count && System.currentTimeMillis() < deadline) {
-            Thread.yield();
+            poller.poll();
         }
     }
 
