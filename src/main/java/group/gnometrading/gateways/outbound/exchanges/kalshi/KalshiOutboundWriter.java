@@ -3,6 +3,7 @@ package group.gnometrading.gateways.outbound.exchanges.kalshi;
 import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.codecs.json.JsonEncoder;
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
+import group.gnometrading.gateways.outbound.IdleConnections;
 import group.gnometrading.gateways.outbound.OrderContext;
 import group.gnometrading.gateways.outbound.OutboundSocketWriter;
 import group.gnometrading.logging.LogMessage;
@@ -25,10 +26,14 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.function.LongSupplier;
 import org.agrona.concurrent.EpochNanoClock;
 
 public final class KalshiOutboundWriter extends OutboundSocketWriter {
+
+    // Kalshi closes a connection after about a minute idle.
+    private static final long MAX_IDLE_CONNECTION_NANOS = TimeUnit.SECONDS.toNanos(45);
 
     private static final String ORDER_PATH = "/trade-api/v2/portfolio/events/orders";
     private static final String EXCHANGE_STATUS_PATH = "/trade-api/v2/exchange/status";
@@ -58,6 +63,7 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
 
     private final Logger logger;
     private final HTTPClient httpClient;
+    private final IdleConnections idleConnections;
     private final String apiHost;
     private final KalshiAuthSigner authSigner;
     private final EpochNanoClock clock;
@@ -104,6 +110,7 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
         this.logger = logger;
         this.httpClient = httpClient;
         this.apiHost = apiHost;
+        this.idleConnections = new IdleConnections(logger, "Kalshi", httpClient, apiHost, MAX_IDLE_CONNECTION_NANOS);
         this.authSigner = authSigner;
         this.clock = clock;
         this.jsonEncoder.wrap(this.jsonBodyBuffer);
@@ -716,5 +723,10 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
 
     private long epochMillis() {
         return this.clock.nanoTime() / NANOS_PER_MILLI;
+    }
+
+    @Override
+    protected void keepConnectionsWarm() {
+        this.idleConnections.keepWarm();
     }
 }

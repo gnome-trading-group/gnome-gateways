@@ -3,6 +3,7 @@ package group.gnometrading.gateways.outbound.exchanges.polymarket.intl;
 import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.codecs.json.JsonEncoder;
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
+import group.gnometrading.gateways.outbound.IdleConnections;
 import group.gnometrading.gateways.outbound.OrderContext;
 import group.gnometrading.gateways.outbound.OutboundSocketWriter;
 import group.gnometrading.logging.LogMessage;
@@ -22,6 +23,7 @@ import group.gnometrading.utils.ScaledMath;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.TimeUnit;
 import org.agrona.concurrent.EpochNanoClock;
 
 /**
@@ -31,6 +33,9 @@ import org.agrona.concurrent.EpochNanoClock;
  * on this venue, and the base class refuses any modify that arrives.
  */
 public final class PolymarketIntlOutboundWriter extends OutboundSocketWriter {
+
+    // Through Cloudflare a connection still answered after two minutes idle and was silently dead by five.
+    private static final long MAX_IDLE_CONNECTION_NANOS = TimeUnit.SECONDS.toNanos(60);
 
     private static final int HTTP_NOT_FOUND = 404;
     private static final int MAX_LOGGED_REASON_CHARS = 500;
@@ -48,6 +53,7 @@ public final class PolymarketIntlOutboundWriter extends OutboundSocketWriter {
 
     private final Logger logger;
     private final HTTPClient httpClient;
+    private final IdleConnections idleConnections;
     private final String clobHost;
     private final PolymarketIntlOrderSigner orderSigner;
     private final PolymarketIntlAuthHeaders authHeaders;
@@ -81,6 +87,8 @@ public final class PolymarketIntlOutboundWriter extends OutboundSocketWriter {
         this.logger = logger;
         this.httpClient = httpClient;
         this.clobHost = clobHost;
+        this.idleConnections = new IdleConnections(
+                logger, "Polymarket International", httpClient, clobHost, MAX_IDLE_CONNECTION_NANOS);
         this.orderSigner = orderSigner;
         this.authHeaders = authHeaders;
         this.marketInfo = marketInfo;
@@ -411,5 +419,10 @@ public final class PolymarketIntlOutboundWriter extends OutboundSocketWriter {
             return "FAK";
         }
         return "GTC";
+    }
+
+    @Override
+    protected void keepConnectionsWarm() {
+        this.idleConnections.keepWarm();
     }
 }

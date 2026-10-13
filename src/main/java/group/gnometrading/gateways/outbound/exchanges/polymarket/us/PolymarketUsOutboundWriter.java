@@ -3,6 +3,7 @@ package group.gnometrading.gateways.outbound.exchanges.polymarket.us;
 import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.codecs.json.JsonEncoder;
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
+import group.gnometrading.gateways.outbound.IdleConnections;
 import group.gnometrading.gateways.outbound.OrderContext;
 import group.gnometrading.gateways.outbound.OutboundSocketWriter;
 import group.gnometrading.logging.LogMessage;
@@ -20,6 +21,7 @@ import group.gnometrading.utils.ByteBufferUtils;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.TimeUnit;
 import java.util.function.LongSupplier;
 import org.agrona.concurrent.EpochNanoClock;
 
@@ -36,6 +38,9 @@ import org.agrona.concurrent.EpochNanoClock;
  */
 public final class PolymarketUsOutboundWriter extends OutboundSocketWriter {
 
+    // Through Cloudflare a connection still answered after two minutes idle and was silently dead by five.
+    private static final long MAX_IDLE_CONNECTION_NANOS = TimeUnit.SECONDS.toNanos(60);
+
     private static final long NANOS_PER_MILLI = 1_000_000L;
     private static final int MAX_LOGGED_REASON_CHARS = 500;
     // IOCs whose outcome a lost answer left unknown; more than this and every IOC is refused until they settle.
@@ -44,6 +49,7 @@ public final class PolymarketUsOutboundWriter extends OutboundSocketWriter {
 
     private final Logger logger;
     private final HTTPClient httpClient;
+    private final IdleConnections idleConnections;
     private final String apiHost;
     private final PolymarketUsAuthSigner signer;
     // Kept to sign requests that may be retried; a method reference made per call would allocate.
@@ -84,6 +90,8 @@ public final class PolymarketUsOutboundWriter extends OutboundSocketWriter {
         this.logger = logger;
         this.httpClient = httpClient;
         this.apiHost = apiHost;
+        this.idleConnections =
+                new IdleConnections(logger, "Polymarket US", httpClient, apiHost, MAX_IDLE_CONNECTION_NANOS);
         this.signer = signer;
         this.marketInfo = marketInfo;
         this.venueListing = new PolymarketUsListing(listing);
@@ -518,5 +526,10 @@ public final class PolymarketUsOutboundWriter extends OutboundSocketWriter {
 
     private long epochMillis() {
         return this.clock.nanoTime() / NANOS_PER_MILLI;
+    }
+
+    @Override
+    protected void keepConnectionsWarm() {
+        this.idleConnections.keepWarm();
     }
 }

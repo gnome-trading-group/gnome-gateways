@@ -410,6 +410,42 @@ class OutboundSocketWriterTest {
     }
 
     @Test
+    void idlePass_KeepsConnectionsWarm() throws Exception {
+        writer.keepWarmInterval = 0;
+
+        writer.doWork();
+        writer.doWork();
+
+        assertEquals(2, writer.keepWarmCalls);
+    }
+
+    @Test
+    void passThatHandlesAnOrder_LeavesConnectionsAlone() throws Exception {
+        writer.keepWarmInterval = 0;
+        publishOrder(
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
+
+        writer.doWork();
+
+        assertEquals(0, writer.keepWarmCalls, "nothing that could hold up an order");
+    }
+
+    @Test
+    void connectionsAreKeptWarmAtMostOncePerInterval() throws Exception {
+        writer.keepWarmInterval = java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(50);
+        Thread.sleep(60);
+
+        for (int i = 0; i < 1_000; i++) {
+            writer.doWork();
+        }
+        assertEquals(1, writer.keepWarmCalls);
+
+        Thread.sleep(60);
+        writer.doWork();
+        assertEquals(2, writer.keepWarmCalls);
+    }
+
+    @Test
     void cancelUnknownOrderId_IsNoOp() throws Exception {
         publishCancel(999L, 2, 3L);
         writer.doWork();
@@ -1012,6 +1048,8 @@ class OutboundSocketWriterTest {
         boolean submitResult = true;
         boolean resendsSafe = true;
         CancelResult cancelResult = CancelResult.ACCEPTED;
+        int keepWarmCalls;
+        long keepWarmInterval = Long.MAX_VALUE / 2;
         Exception modifyException;
         // Scripted answers, consumed in order before falling back to the defaults. An exception is thrown.
         final Deque<Exception> prepareScript = new ArrayDeque<>();
@@ -1096,6 +1134,16 @@ class OutboundSocketWriterTest {
                 throw scripted;
             }
             return cancelResult;
+        }
+
+        @Override
+        protected void keepConnectionsWarm() {
+            keepWarmCalls++;
+        }
+
+        @Override
+        protected long keepWarmIntervalNanos() {
+            return keepWarmInterval;
         }
 
         @Override

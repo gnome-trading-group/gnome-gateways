@@ -18,12 +18,14 @@ import group.gnometrading.schemas.RejectReason;
 import group.gnometrading.sequencer.SequencedPoller;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import java.io.IOException;
+import java.util.concurrent.TimeUnit;
 import org.agrona.collections.Long2ObjectHashMap;
 import org.agrona.concurrent.UnsafeBuffer;
 
 public abstract class OutboundSocketWriter implements GnomeAgent {
 
     private static final int MAX_RESOLVE_ATTEMPTS = 2;
+    private static final long KEEP_WARM_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(1);
 
     private final SequencedPoller orderPoller;
     protected final ManyToOneRingBuffer<OrderContext> newOrderQueue;
@@ -41,6 +43,7 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
     // Thrown from doWork once the poll has moved past the message: thrown inside it, the poller would
     // deliver the same message again forever.
     private Exception orderFailure;
+    private long lastKeepWarmNanos = System.nanoTime();
 
     protected final Order order = new Order();
     protected final CancelOrder cancelOrder = new CancelOrder();
@@ -85,7 +88,34 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
             this.orderFailure = null;
             throw failure;
         }
+        if (released + polled == 0) {
+            maybeKeepConnectionsWarm();
+        }
         return released + polled;
+    }
+
+    /** Only on a pass with nothing to do, so it never holds up an order. */
+    private void maybeKeepConnectionsWarm() {
+        final long now = System.nanoTime();
+        if (now - this.lastKeepWarmNanos >= keepWarmIntervalNanos()) {
+            this.lastKeepWarmNanos = now;
+            keepConnectionsWarm();
+        }
+    }
+
+    /**
+     * Called on the writer's thread, about once a {@link #keepWarmIntervalNanos} while no orders are arriving, for the
+     * venue to replace connections that are closed or have been idle long enough to be dropped, so the next order
+     * finds one ready. Must not throw: a failure only means the next request connects for itself.
+     */
+    protected void keepConnectionsWarm() {}
+
+    /**
+     * How often {@link #keepConnectionsWarm} is called while idle; a second by default, well inside the shortest idle
+     * timeout measured (Kalshi's minute). Override to change it, e.g. to run it on every idle pass in a test.
+     */
+    protected long keepWarmIntervalNanos() {
+        return KEEP_WARM_INTERVAL_NANOS;
     }
 
     @Override
