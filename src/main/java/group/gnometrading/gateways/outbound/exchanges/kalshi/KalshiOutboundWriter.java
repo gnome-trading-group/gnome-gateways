@@ -169,6 +169,10 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
 
     @Override
     protected boolean prepareOrder(final OrderContext ctx) {
+        if (this.order.decoder.orderType() == OrderType.MARKET) {
+            // Kalshi needs a price on every order (it dropped market orders); the OMS sends a priced IOC instead.
+            return false;
+        }
         long price = this.order.decoder.price();
         Side side = this.order.decoder.side();
         if (this.isNoListing) {
@@ -181,7 +185,6 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
                 price,
                 this.order.decoder.size(),
                 side,
-                this.order.decoder.orderType(),
                 this.order.decoder.timeInForce(),
                 this.order.decoder.flags().postOnly(),
                 ctx);
@@ -535,7 +538,6 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
             final long price,
             final long size,
             final Side side,
-            final OrderType orderType,
             final TimeInForce tif,
             final boolean postOnly,
             final OrderContext ctx) {
@@ -554,7 +556,7 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
         this.jsonEncoder.writeComma();
         writeSizeField(size);
         this.jsonEncoder.writeComma();
-        this.jsonEncoder.writeObjectEntry("time_in_force", resolveTimeInForce(orderType, tif));
+        this.jsonEncoder.writeObjectEntry("time_in_force", resolveTimeInForce(tif));
         this.jsonEncoder.writeComma();
         this.jsonEncoder.writeObjectEntry("self_trade_prevention_type", "maker");
         if (postOnly) {
@@ -672,14 +674,12 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
                 body, start, end, Statics.SIZE_SCALING_FACTOR, OrderContext.QTY_ABSENT);
     }
 
-    private static String resolveTimeInForce(final OrderType orderType, final TimeInForce tif) {
-        if (orderType == OrderType.MARKET) {
-            return "fill_or_kill";
-        }
-        if (tif == TimeInForce.IMMEDIATE_OR_CANCELED) {
-            return "immediate_or_cancel";
-        }
-        return "good_till_canceled";
+    private static String resolveTimeInForce(final TimeInForce tif) {
+        return switch (tif) {
+            case IMMEDIATE_OR_CANCELED -> "immediate_or_cancel";
+            case FILL_OR_KILL -> "fill_or_kill";
+            default -> "good_till_canceled";
+        };
     }
 
     private long epochMillis() {

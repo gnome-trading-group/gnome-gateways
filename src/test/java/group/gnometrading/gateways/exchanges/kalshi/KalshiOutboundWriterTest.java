@@ -19,6 +19,7 @@ import group.gnometrading.schemas.ExecType;
 import group.gnometrading.schemas.ModifyOrder;
 import group.gnometrading.schemas.ModifyOrderDecoder;
 import group.gnometrading.schemas.Order;
+import group.gnometrading.schemas.OrderDecoder;
 import group.gnometrading.schemas.OrderStatus;
 import group.gnometrading.schemas.OrderType;
 import group.gnometrading.schemas.RejectReason;
@@ -686,10 +687,41 @@ class KalshiOutboundWriterTest {
     }
 
     @Test
-    void submitOrder_MarketOrder_UsesFillOrKill() throws Exception {
+    void submitOrder_MarketOrder_IsRefusedWithoutSending() throws Exception {
+        publishOrder(
+                Side.Bid,
+                OrderDecoder.priceNullValue(),
+                qty("5.0"),
+                OrderType.MARKET,
+                TimeInForce.IMMEDIATE_OR_CANCELED);
+        writer.doWork();
+
+        verify(httpClient, never())
+                .post(
+                        any(),
+                        anyString(),
+                        any(GnomeString.class),
+                        any(byte[].class),
+                        anyInt(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString());
+        final List<OrderContext> reports = drainQueue(writerReportQueue);
+        assertEquals(1, reports.size());
+        assertEquals(ExecType.REJECT, reports.get(0).execType);
+        assertEquals(RejectReason.GATEWAY_REJECTED, reports.get(0).rejectReason);
+    }
+
+    @Test
+    void submitOrder_LimitFok_UsesFillOrKill() throws Exception {
         mockPostSuccess(orderResponse("order-fok"));
 
-        publishOrder(Side.Bid, price("0.50"), qty("5.0"), OrderType.MARKET, TimeInForce.GOOD_TILL_CANCELED);
+        publishOrder(Side.Bid, price("0.50"), qty("5.0"), OrderType.LIMIT, TimeInForce.FILL_OR_KILL);
         writer.doWork();
 
         assertTrue(captureLastPostBody().contains("\"time_in_force\":\"fill_or_kill\""));
