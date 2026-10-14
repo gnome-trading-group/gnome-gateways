@@ -20,6 +20,8 @@ import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Listing;
 import group.gnometrading.strings.GnomeString;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import org.agrona.concurrent.EpochNanoClock;
 
 public final class LighterInboundReader extends InboundJsonWebSocketReader<Mbp10Schema>
@@ -30,10 +32,16 @@ public final class LighterInboundReader extends InboundJsonWebSocketReader<Mbp10
     // What a venue number that can't be read parses to; every real price and size is non-negative.
     private static final long UNREADABLE = -1L;
     private static final long NO_NONCE = -1L;
+    private static final byte[] PING = "{\"type\":\"ping\"}".getBytes(StandardCharsets.US_ASCII);
+    private static final byte[] PONG = "{\"type\":\"pong\"}".getBytes(StandardCharsets.US_ASCII);
 
     private final MbpBufferBook book;
     private final String orderBookChannel;
     private final String tradeChannel;
+    // Fixed messages, so nothing encodes them: the supervisor sends the ping and the reader the pong, at the same
+    // moment as often as not, and a shared encoder would mix the two. Each buffer is only ever sent by one thread.
+    private final ByteBuffer pingBuffer = ByteBuffer.wrap(PING);
+    private final ByteBuffer pongBuffer = ByteBuffer.wrap(PONG);
     private long lastTradePrice;
     private long lastTradeSize;
     private long lastSequenceNumber;
@@ -306,30 +314,17 @@ public final class LighterInboundReader extends InboundJsonWebSocketReader<Mbp10
         this.writeSubscription(this.tradeChannel);
     }
 
+    /** The reader's answer to the venue's ping, on the reader thread. */
     private void sendPong() {
-        // { "type": "pong" }
-        final InboundJsonWebSocketWriter jsonInboundWebSocketWriter = (InboundJsonWebSocketWriter) this.socketWriter;
-        final JsonEncoder jsonEncoder = jsonInboundWebSocketWriter.getJsonEncoder();
-
-        jsonEncoder.writeObjectStart();
-        jsonEncoder.writeObjectEntry("type", "pong");
-        jsonEncoder.writeObjectEnd();
-
-        ((InboundWebSocketWriter) this.socketWriter)
-                .writeText(jsonInboundWebSocketWriter.getAndFlipJsonBodyBuffer(), true);
+        this.pongBuffer.rewind();
+        ((InboundWebSocketWriter) this.socketWriter).writeText(this.pongBuffer, true);
     }
 
+    /** The supervisor's keep-alive, on its own thread. */
     @Override
     protected void keepAlive() throws IOException {
-        // { "type": "ping" }
-        final InboundJsonWebSocketWriter jsonInboundWebSocketWriter = (InboundJsonWebSocketWriter) this.socketWriter;
-        final JsonEncoder jsonEncoder = jsonInboundWebSocketWriter.getJsonEncoder();
-        jsonEncoder.writeObjectStart();
-        jsonEncoder.writeObjectEntry("type", "ping");
-        jsonEncoder.writeObjectEnd();
-
-        ((InboundWebSocketWriter) this.socketWriter)
-                .writeText(jsonInboundWebSocketWriter.getAndFlipJsonBodyBuffer(), true);
+        this.pingBuffer.rewind();
+        ((InboundWebSocketWriter) this.socketWriter).writeText(this.pingBuffer, true);
     }
 
     @Override

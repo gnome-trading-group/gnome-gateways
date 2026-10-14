@@ -20,6 +20,8 @@ public final class ReaderPauseControl {
     // before the supervisor looks, and its state alone would then read as never having resumed.
     private volatile long resumeGeneration;
     private volatile long resumedGeneration;
+    // What else a stop must reach: a reader blocked writing to a full ring never comes back to look at stopped.
+    private volatile Runnable onStop = () -> {};
 
     public ReaderPauseControl() {
         this(Thread::yield);
@@ -91,6 +93,15 @@ public final class ReaderPauseControl {
      */
     public void stop() {
         this.stopped = true;
+        this.onStop.run();
+    }
+
+    /**
+     * Reader, once, as it is built: what a stop must also release. A reader waiting for room in its output ring, behind
+     * a consumer that has stopped polling, never returns to its next pass to see the stop.
+     */
+    public void onStop(final Runnable action) {
+        this.onStop = action;
     }
 
     /** Leaves the interrupt set, so a shutdown still sees it; a connect timeout clears its own. */

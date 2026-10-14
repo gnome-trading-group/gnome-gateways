@@ -50,6 +50,8 @@ public abstract class InboundSocketReader<T extends Schema> implements GnomeAgen
             Listing listing) {
         this.logger = logger;
         this.sequencedRingBuffer = outputBuffer;
+        // It is this ring's only producer, so its own stop may end a wait on the ring.
+        this.pauseControl.onStop(this.sequencedRingBuffer::stop);
         this.clock = clock;
         this.socketWriter = socketWriter;
         this.listing = listing;

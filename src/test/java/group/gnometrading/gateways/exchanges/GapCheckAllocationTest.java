@@ -29,20 +29,19 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPairGenerator;
 import java.util.concurrent.atomic.AtomicLong;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
  * The gap checks run on every market data message, so a feed that has no gap must read without allocating. Each
  * reader is fed a stream that is correctly numbered from end to end through a stub socket, and measured once warm.
  */
+@Tag("allocation")
 class GapCheckAllocationTest {
 
     private static final int WARM_UP = 20_000;
     private static final int MEASURED = 10_000;
-    // When the JIT is slow (a busy machine) a round can still be running unoptimised code; allocating per message
-    // would show in every round, so one round without it is enough.
-    private static final int ROUNDS = 5;
-    private static final int MESSAGES = 1 + WARM_UP + ROUNDS * MEASURED;
+    private static final int MESSAGES = 1 + WARM_UP + MEASURED;
 
     @Test
     void kalshiSequenceCheckDoesNotAllocate() throws Exception {
@@ -138,17 +137,13 @@ class GapCheckAllocationTest {
         final long threadId = Thread.currentThread().getId();
 
         read(feed, reader, 1 + WARM_UP);
-        long fewest = Long.MAX_VALUE;
-        for (int round = 0; round < ROUNDS; round++) {
-            final long before = threads.getThreadAllocatedBytes(threadId);
-            read(feed, reader, MEASURED);
-            fewest = Math.min(fewest, threads.getThreadAllocatedBytes(threadId) - before);
-        }
+        final long before = threads.getThreadAllocatedBytes(threadId);
+        read(feed, reader, MEASURED);
+        final long allocated = threads.getThreadAllocatedBytes(threadId) - before;
 
         assertEquals(MESSAGES, feed.client.served, "every message was read, none failed the check");
         // Measuring can itself allocate a little; anything per message would be hundreds of kilobytes here.
-        assertTrue(
-                fewest < 2_048, "allocated at least " + fewest + " bytes in every round of " + MEASURED + " messages");
+        assertTrue(allocated < 2_048, "allocated " + allocated + " bytes over " + MEASURED + " messages");
     }
 
     private static void read(final Feed feed, final InboundSocketReader<Mbp10Schema> reader, final int count)

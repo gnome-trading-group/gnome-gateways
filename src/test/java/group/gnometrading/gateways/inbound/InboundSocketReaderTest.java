@@ -16,10 +16,12 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.agrona.concurrent.EpochNanoClock;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.BeforeEach;
@@ -649,6 +651,51 @@ class InboundSocketReaderTest {
         assertSame(cause, thrown.getCause());
         // Paused, so the reader stops touching the broken socket until it is reconnected.
         assertTrue(socketReader.pauseControl.isPauseRequested());
+    }
+
+    /**
+     * A reader waiting for room behind a consumer that never polls used to wait forever, so shutdown hung on it. A stop
+     * releases it: the runner closes, and the reader counts as exited, with no error reported.
+     */
+    @Test
+    @Timeout(10)
+    void aReaderWaitingOnAFullRingStopsWhenStopped() throws Exception {
+        final SequencedRingBuffer<Mbp10Schema> ring =
+                new SequencedRingBuffer<>(Mbp10Schema::new, new GlobalSequence(), 8);
+        ring.createPoller((seq, templateId, buffer, length) -> {});
+        final List<Throwable> errors = new CopyOnWriteArrayList<>();
+        final AtomicReference<GnomeAgentRunner> runnerRef = new AtomicReference<>();
+        final CountDownLatch built = new CountDownLatch(1);
+        // The ring has one producer: the reader is built, and claims its first slot, on the thread that runs it.
+        final Thread readerThread = new Thread(() -> {
+            socketReader = new TestSocketReader(ring, clock, true);
+            socketReader.buffer = false;
+            for (int i = 0; i < 20; i++) {
+                socketReader.addNextReadResult(ByteBuffer.allocate(64));
+            }
+            socketReader.pauseControl.release();
+            runnerRef.set(new GnomeAgentRunner(socketReader, errors::add));
+            built.countDown();
+            runnerRef.get().run();
+        });
+        readerThread.setDaemon(true);
+        readerThread.start();
+        assertTrue(built.await(5, TimeUnit.SECONDS));
+        final long deadline = System.currentTimeMillis() + 5_000;
+        while (socketReader.readSocketCallCount.get() < 8 && System.currentTimeMillis() < deadline) {
+            Thread.yield();
+        }
+        Thread.sleep(200);
+        // The reader claims its next slot as it publishes: after the 8th message, that claim waits for room.
+        assertEquals(8, socketReader.readSocketCallCount.get(), "the reader is waiting for room");
+
+        socketReader.pauseControl.stop();
+        runnerRef.get().close();
+
+        assertTrue(runnerRef.get().isClosed());
+        assertTrue(errors.isEmpty(), "a stop isn't an error: " + errors);
+        // The supervisor's disconnect waits for this; were it never set, shutdown would hang there instead.
+        socketReader.pauseControl.pause();
     }
 
     @Test

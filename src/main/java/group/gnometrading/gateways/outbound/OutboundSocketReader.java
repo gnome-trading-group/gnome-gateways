@@ -65,6 +65,8 @@ public abstract class OutboundSocketReader implements GnomeAgent {
             Listing listing) {
         this.logger = logger;
         this.execReportBuffer = execReportBuffer;
+        // It is this ring's only producer, so its own stop may end a wait on the ring.
+        this.pauseControl.onStop(this.execReportBuffer::stop);
         this.newOrderQueue = newOrderQueue;
         this.writerReportQueue = writerReportQueue;
         this.releasedOrderQueue = releasedOrderQueue;

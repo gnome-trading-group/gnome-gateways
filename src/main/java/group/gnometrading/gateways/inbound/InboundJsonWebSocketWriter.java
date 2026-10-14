@@ -6,15 +6,16 @@ import java.nio.ByteBuffer;
 
 public final class InboundJsonWebSocketWriter extends InboundWebSocketWriter {
 
-    private static final int DEFAULT_Json_BODY_BUFFER_SIZE = 1 << 11;
-
     private final JsonEncoder jsonEncoder;
     private final ThreadLocal<ByteBuffer> jsonBodyBuffer;
 
     public InboundJsonWebSocketWriter(WebSocketClient socketClient, JsonEncoder jsonEncoder) {
         super(socketClient);
         this.jsonEncoder = jsonEncoder;
-        this.jsonBodyBuffer = ThreadLocal.withInitial(() -> ByteBuffer.allocate(DEFAULT_Json_BODY_BUFFER_SIZE));
+        // No bigger than a write slot holds once framed: a body too long to send then fails as it is written, where
+        // the cause is plain.
+        final int bodySize = slotSize() - MAX_FRAME_HEADER;
+        this.jsonBodyBuffer = ThreadLocal.withInitial(() -> ByteBuffer.allocate(bodySize));
     }
 
     public JsonEncoder getJsonEncoder() {

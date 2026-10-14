@@ -26,6 +26,18 @@ class ReaderPauseControlTest {
     }
 
     @Test
+    void stop_AlsoReleasesWhatTheReaderRegistered() {
+        final ReaderPauseControl control = new ReaderPauseControl();
+        final AtomicBoolean released = new AtomicBoolean();
+        control.onStop(() -> released.set(true));
+
+        control.stop();
+
+        assertTrue(released.get());
+        assertFalse(control.awaitIfPaused(), "and the reader itself is stopped");
+    }
+
+    @Test
     void pause_ReturnsOnceTheReaderStops() throws Exception {
         final ReaderPauseControl control = new ReaderPauseControl();
         startReader(control);

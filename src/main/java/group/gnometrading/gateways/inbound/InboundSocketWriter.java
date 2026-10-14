@@ -43,6 +43,11 @@ public abstract class InboundSocketWriter implements GnomeAgent {
         return true;
     }
 
+    /** The most bytes one message, framed, may take. */
+    public final int slotSize() {
+        return this.writeBufferSize;
+    }
+
     public final Object socketLock() {
         return this.socketLock;
     }
@@ -56,6 +61,11 @@ public abstract class InboundSocketWriter implements GnomeAgent {
 
     private void handleWrite(ByteBuffer buffer) {
         buffer.flip();
+        // A slot committed empty: its message failed to frame and was never meant to be sent.
+        if (!buffer.hasRemaining()) {
+            buffer.clear();
+            return;
+        }
         try {
             synchronized (this.socketLock) {
                 // A message for a connection that has since closed cannot be sent, and failing on it would only
