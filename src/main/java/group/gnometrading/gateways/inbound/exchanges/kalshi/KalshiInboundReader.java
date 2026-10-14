@@ -9,6 +9,7 @@ import group.gnometrading.gateways.inbound.InboundSocketWriter;
 import group.gnometrading.gateways.inbound.InboundWebSocketWriter;
 import group.gnometrading.gateways.inbound.mbp.Mbp10Book;
 import group.gnometrading.gateways.inbound.mbp.Mbp10SchemaFactory;
+import group.gnometrading.gateways.inbound.mbp.MbpBook;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.schemas.Action;
@@ -53,7 +54,9 @@ import org.agrona.concurrent.EpochNanoClock;
  *
  * <p>For binary markets, the listing's {@code exchangeSecurityId} may carry a {@code :yes} or
  * {@code :no} suffix (e.g., {@code "KXELONMARS-99:yes"}). This suffix is stripped before
- * subscribing because a single WebSocket subscription covers both YES and NO order sides.
+ * subscribing because a single WebSocket subscription covers both YES and NO order sides. A
+ * {@code :no} listing is priced in NO terms, as its orders are: its book and trades are the
+ * complement of the YES ones (bids are the YES asks at 1 - p, and a YES buyer is a NO seller).
  *
  * <p>Assumes Kalshi sends {@code "type"} before {@code "msg"} within each WebSocket message,
  * consistent with observed API behavior.
@@ -88,6 +91,7 @@ public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10S
     private final String apiKey;
     private final PrivateKey privateKey;
     private final String marketTicker;
+    private final boolean noListing;
 
     // Full-depth internal book indexed by price in cents (1–99). Zero means no orders at that level.
     private final long[] yesQty = new long[PRICE_ARRAY_SIZE];
@@ -116,6 +120,7 @@ public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10S
         final String rawId = listing.exchangeSecurityId();
         final int colonIdx = rawId.indexOf(':');
         this.marketTicker = (colonIdx > 0) ? rawId.substring(0, colonIdx) : rawId;
+        this.noListing = colonIdx > 0 && "no".equalsIgnoreCase(rawId.substring(colonIdx + 1));
         this.lastTimestampNanos = Mbp10Encoder.timestampEventNullValue();
     }
 
@@ -374,17 +379,22 @@ public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10S
         if (tradePrice < 0 || tradeSize < 0) {
             return;
         }
+        publishTrade(tsMs * NANOS_PER_MILLI, tradePrice, tradeSize, takerIsBid ? Side.Bid : Side.Ask);
+    }
+
+    /** A trade in the listing's own terms: on the NO listing, buying YES at p is selling NO at 1 - p. */
+    private void publishTrade(final long timestamp, final long yesPrice, final long size, final Side yesTakerSide) {
         prepareEncoder();
-        schema.encoder.timestampEvent(tsMs * NANOS_PER_MILLI);
+        schema.encoder.timestampEvent(timestamp);
         schema.encoder.sequence(Mbp10Encoder.sequenceNullValue());
-        schema.encoder.price(tradePrice);
-        schema.encoder.size(tradeSize);
+        schema.encoder.price(this.noListing ? MbpBook.complement(yesPrice) : yesPrice);
+        schema.encoder.size(size);
         schema.encoder.action(Action.Trade);
-        schema.encoder.side(takerIsBid ? Side.Bid : Side.Ask);
+        schema.encoder.side(this.noListing ? opposite(yesTakerSide) : yesTakerSide);
         schema.encoder.depth(Mbp10Encoder.depthNullValue());
         schema.encoder.flags().clear();
         schema.encoder.flags().marketByPrice(true);
-        book.writeTo(schema);
+        writeBook();
         offer();
     }
 
@@ -438,8 +448,24 @@ public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10S
         schema.encoder.flags().clear();
         schema.encoder.flags().marketByPrice(true);
         schema.encoder.flags().maybeBadBook(suspect);
-        book.writeTo(schema);
+        writeBook();
         offer();
+    }
+
+    private void writeBook() {
+        if (this.noListing) {
+            this.book.writeComplementTo(schema);
+        } else {
+            this.book.writeTo(schema);
+        }
+    }
+
+    /** The other outcome's aggressor: a YES buyer sells NO. An unknown side stays unknown. */
+    private static Side opposite(final Side side) {
+        if (side == Side.Bid) {
+            return Side.Ask;
+        }
+        return side == Side.Ask ? Side.Bid : side;
     }
 
     private void prepareEncoder() {

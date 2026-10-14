@@ -65,6 +65,11 @@ class KalshiInboundReaderTest {
 
     @BeforeEach
     void setUp() {
+        // Use ":yes" suffix to verify it is stripped before subscription
+        useListing(MARKET_TICKER + ":yes");
+    }
+
+    private void useListing(final String exchangeSecurityId) {
         captured = new CopyOnWriteArrayList<>();
         ringBuffer = new SequencedRingBuffer<>(Mbp10Schema::new, new GlobalSequence());
         poller = ringBuffer.createPoller((globalSequence, templateId, buffer, length) -> {
@@ -79,13 +84,12 @@ class KalshiInboundReaderTest {
         when(response.isSuccess()).thenReturn(true);
         when(response.getOpcode()).thenReturn(Opcode.TEXT);
 
-        // Use ":yes" suffix to verify it is stripped before subscription
         Listing listing = new Listing(
                 1,
                 new Exchange(2, "KALSHI", "Kalshi", "global", SchemaType.MBP_10),
                 new Security(3, "TEST", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
-                MARKET_TICKER + ":yes",
-                "TEST-YES");
+                exchangeSecurityId,
+                "TEST");
         reader = new KalshiInboundReader(
                 new NullLogger(),
                 ringBuffer,
@@ -546,6 +550,62 @@ class KalshiInboundReaderTest {
         process(delta(2, "10.00"));
 
         assertFalse(captured.get(captured.size() - 1).decoder.flags().maybeBadBook());
+    }
+
+    /** The NO listing trades the same market priced in NO terms: its book is the YES book's complement. */
+    @Test
+    void noListingPublishesTheComplementOfTheYesBook() throws Exception {
+        useListing(MARKET_TICKER + ":no");
+        processSnapshot();
+        process(delta(2, "0.00"));
+
+        final Mbp10Schema schema = captured.get(0);
+        // NO bids are the YES asks (NO levels at 0.50 and 0.54, in YES terms) at 1 - p, best first.
+        assertEquals(price("0.50"), schema.decoder.bidPrice0());
+        assertEquals(size("75"), schema.decoder.bidSize0());
+        assertEquals(price("0.46"), schema.decoder.bidPrice1());
+        assertEquals(size("50"), schema.decoder.bidSize1());
+        assertEquals(Mbp10Encoder.bidPrice2NullValue(), schema.decoder.bidPrice2());
+        // NO asks are the YES bids (0.55, 0.50) at 1 - p.
+        assertEquals(price("0.45"), schema.decoder.askPrice0());
+        assertEquals(size("100"), schema.decoder.askSize0());
+        assertEquals(price("0.50"), schema.decoder.askPrice1());
+        assertEquals(size("200"), schema.decoder.askSize1());
+        assertEquals(Mbp10Encoder.askPrice2NullValue(), schema.decoder.askPrice2());
+    }
+
+    @Test
+    void noListingTradeIsTheSameTradeInNoTerms() throws Exception {
+        useListing(MARKET_TICKER + ":no");
+        processSnapshot();
+        process(
+                """
+                {"type":"trade","sid":2,"seq":3,"msg":{"trade_id":"uuid","market_ticker":"TEST-TICKER",\
+                "yes_price_dollars":"0.550","no_price_dollars":"0.450","count_fp":"10.00",\
+                "taker_side":"yes","taker_book_side":"bid","ts_ms":1700000000000}}
+                """);
+
+        final Mbp10Schema schema = captured.get(0);
+        assertEquals(Action.Trade, schema.decoder.action());
+        // Buying YES at 0.55 is selling NO at 0.45.
+        assertEquals(Side.Ask, schema.decoder.side());
+        assertEquals(price("0.45"), schema.decoder.price());
+        assertEquals(size("10"), schema.decoder.size());
+        assertEquals(price("0.45"), schema.decoder.askPrice0());
+    }
+
+    @Test
+    void noListingSuspectBookIsInNoTermsToo() throws Exception {
+        useListing(MARKET_TICKER + ":no");
+        processSnapshot();
+        process(delta(2, "10.00"));
+
+        assertGap(delta(4, "10.00"));
+
+        final Mbp10Schema suspect = captured.get(captured.size() - 1);
+        assertTrue(suspect.decoder.flags().maybeBadBook());
+        assertEquals(price("0.45"), suspect.decoder.askPrice0());
+        assertEquals(size("110"), suspect.decoder.askSize0());
     }
 
     private static String delta(final long seq, final String quantity) {

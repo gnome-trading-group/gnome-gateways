@@ -523,6 +523,17 @@ class PolymarketIntlOutboundWriterTest {
                         "{\"error\":\"invalid post-only order: order crosses book\"}",
                         RejectReason.POST_ONLY_WOULD_CROSS),
                 Arguments.of(400, "{\"error\":\"not enough balance / allowance\"}", RejectReason.INSUFFICIENT_FUNDS),
+                // The CLOB's answers to a BUY and an unheld SELL it couldn't cover, captured live in Phase 0.
+                Arguments.of(
+                        400,
+                        "{\"error\":\"not enough balance / allowance: the balance is not enough -\\u003e balance:"
+                                + " 15958100, order amount: 17841500\"}",
+                        RejectReason.INSUFFICIENT_FUNDS),
+                Arguments.of(
+                        400,
+                        "{\"error\":\"not enough balance / allowance: the balance is not enough -\\u003e balance:"
+                                + " 0, order amount: 1700000000\"}",
+                        RejectReason.INSUFFICIENT_FUNDS),
                 Arguments.of(503, "{\"error\":\"Trading is currently cancel-only.\"}", RejectReason.MARKET_CLOSED),
                 Arguments.of(400, "{\"error\":\"invalid order payload\"}", RejectReason.EXCHANGE_REJECTED),
                 Arguments.of(503, "{\"error\":\"Trading is currently disabled.\"}", RejectReason.EXCHANGE_REJECTED),

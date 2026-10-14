@@ -31,7 +31,9 @@ import org.agrona.concurrent.EpochNanoClock;
  * <p>Subscribes to {@code SUBSCRIPTION_TYPE_MARKET_DATA} and {@code SUBSCRIPTION_TYPE_TRADE} for
  * one market slug on {@code /v1/ws/markets}. Each market is a single book priced in long (YES)
  * terms, so both the {@code :long} and {@code :short} listings of a market consume the same
- * stream; the suffix is stripped before subscribing.
+ * stream; the suffix is stripped before subscribing. A {@code :short} listing is priced in NO
+ * terms, as its orders are: its book and trades are the complement of the long ones (bids are
+ * the long asks at 1 - p, and a long buyer is a short seller).
  *
  * <p>Every {@code marketData} message carries the top of the book sorted best-to-worst, so the
  * book is rebuilt from each message rather than patched. Prices and quantities are decimal
@@ -56,6 +58,7 @@ public final class PolymarketUsInboundReader extends InboundJsonWebSocketReader<
     private final Mbp10Book book;
     private final PolymarketUsAuthSigner signer;
     private final String marketSlug;
+    private final boolean shortListing;
 
     private long tradePrice;
     private long tradeSize;
@@ -77,6 +80,9 @@ public final class PolymarketUsInboundReader extends InboundJsonWebSocketReader<
         this.book = (Mbp10Book) this.internalBook;
         this.signer = signer;
         this.marketSlug = marketSlug(listing.exchangeSecurityId());
+        final String exchangeSecurityId = listing.exchangeSecurityId();
+        final int colon = exchangeSecurityId.lastIndexOf(':');
+        this.shortListing = colon > 0 && "short".equalsIgnoreCase(exchangeSecurityId.substring(colon + 1));
     }
 
     public static String marketSlug(final String exchangeSecurityId) {
@@ -189,7 +195,7 @@ public final class PolymarketUsInboundReader extends InboundJsonWebSocketReader<
         this.schema.encoder.depth(Mbp10Encoder.depthNullValue());
         this.schema.encoder.flags().clear();
         this.schema.encoder.flags().marketByPrice(true);
-        this.book.writeTo(this.schema);
+        writeBook();
         offer();
     }
 
@@ -261,15 +267,31 @@ public final class PolymarketUsInboundReader extends InboundJsonWebSocketReader<
         prepareEncoder();
         this.schema.encoder.timestampEvent(this.tradeTimestamp);
         this.schema.encoder.sequence(Mbp10Encoder.sequenceNullValue());
-        this.schema.encoder.price(this.tradePrice);
+        this.schema.encoder.price(this.shortListing ? MbpBook.complement(this.tradePrice) : this.tradePrice);
         this.schema.encoder.size(this.tradeSize);
         this.schema.encoder.action(Action.Trade);
-        this.schema.encoder.side(this.tradeSide);
+        this.schema.encoder.side(this.shortListing ? opposite(this.tradeSide) : this.tradeSide);
         this.schema.encoder.depth(Mbp10Encoder.depthNullValue());
         this.schema.encoder.flags().clear();
         this.schema.encoder.flags().marketByPrice(true);
-        this.book.writeTo(this.schema);
+        writeBook();
         offer();
+    }
+
+    private void writeBook() {
+        if (this.shortListing) {
+            this.book.writeComplementTo(this.schema);
+        } else {
+            this.book.writeTo(this.schema);
+        }
+    }
+
+    /** The other outcome's aggressor: a YES buyer sells NO. An unknown side stays unknown. */
+    private static Side opposite(final Side side) {
+        if (side == Side.Bid) {
+            return Side.Ask;
+        }
+        return side == Side.Ask ? Side.Bid : side;
     }
 
     /**

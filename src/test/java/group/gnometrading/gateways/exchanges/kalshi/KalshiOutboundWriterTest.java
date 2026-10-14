@@ -383,6 +383,24 @@ class KalshiOutboundWriterTest {
     }
 
     @Test
+    void submit_CrossingPostOnly_IsRejectedAsWouldCross() throws Exception {
+        mockPostFailure();
+        when(httpResponse.getStatusCode()).thenReturn(400);
+        // Kalshi demo's answer to a post-only bid at the ask, captured in Phase 0.
+        when(httpResponse.getBody())
+                .thenReturn(ByteBuffer.wrap(
+                        "{\"error\":{\"code\":\"invalid_order\",\"message\":\"invalid order\",\"details\":\"post only cross\"}}"
+                                .getBytes(StandardCharsets.UTF_8)));
+
+        publishOrder(Side.Bid, price("0.56"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
+        writer.doWork();
+
+        assertEquals(
+                RejectReason.POST_ONLY_WOULD_CROSS,
+                drainQueue(writerReportQueue).get(0).rejectReason);
+    }
+
+    @Test
     void submit_RefusedForAReasonWithNoMapping_IsAPlainVenueRefusal() throws Exception {
         mockPostFailure();
         when(httpResponse.getStatusCode()).thenReturn(400);

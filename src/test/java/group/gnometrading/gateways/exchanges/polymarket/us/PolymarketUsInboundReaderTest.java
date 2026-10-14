@@ -1,6 +1,7 @@
 package group.gnometrading.gateways.exchanges.polymarket.us;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
@@ -57,6 +58,10 @@ class PolymarketUsInboundReaderTest {
 
     @BeforeEach
     void setUp() throws Exception {
+        useListing(SLUG + ":long");
+    }
+
+    private void useListing(final String exchangeSecurityId) throws Exception {
         captured = new CopyOnWriteArrayList<>();
         ringBuffer = new SequencedRingBuffer<>(Mbp10Schema::new, new GlobalSequence());
         poller = ringBuffer.createPoller((globalSequence, templateId, buffer, length) -> {
@@ -80,13 +85,13 @@ class PolymarketUsInboundReaderTest {
                 "test-key",
                 PolymarketUsAuthSigner.parseSecretKey(Base64.getEncoder().encodeToString(seed)));
 
-        // ":short" listings share the long-priced book; the suffix is stripped before subscribing.
+        // Both legs read the one long-priced stream; the suffix is stripped before subscribing.
         final Listing listing = new Listing(
                 1,
                 new Exchange(6, "POLYMARKET_US", "POLYMARKET_US", "us-east-1", SchemaType.MBP_10),
                 new Security(3, "TEST", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
-                SLUG + ":short",
-                "PM_US-TEST-SHORT");
+                exchangeSecurityId,
+                "PM_US-TEST");
         reader = new PolymarketUsInboundReader(
                 new NullLogger(),
                 ringBuffer,
@@ -341,6 +346,83 @@ class PolymarketUsInboundReaderTest {
                 "tradeTime":"2024-01-15T10:30:00Z","taker":{"side":"ORDER_SIDE_BUY","intent":"ORDER_INTENT_BUY_LONG"}}}
                 """);
         assertEquals(Side.Bid, captured.get(0).decoder.side());
+    }
+
+    @Test
+    void shortListingSubscribesToTheSameMarket() throws Exception {
+        useListing(SLUG + ":short");
+        final List<String> sent = new ArrayList<>();
+        doAnswer(inv -> {
+                    final ByteBuffer payload = inv.getArgument(2);
+                    sent.add(StandardCharsets.UTF_8.decode(payload.duplicate()).toString());
+                    return null;
+                })
+                .when(client)
+                .wrapMessage(any(), eq(Opcode.TEXT), any());
+
+        invoke("subscribe");
+
+        assertTrue(sent.get(0).contains("\"marketSlugs\":[\"" + SLUG + "\"]"));
+    }
+
+    /** The short (NO) listing is priced in NO terms, as its orders are: its book is the long book's complement. */
+    @Test
+    void shortListingPublishesTheComplementOfTheLongBook() throws Exception {
+        useListing(SLUG + ":short");
+        process(
+                """
+                {"marketData":{"bids":[{"px":{"value":"0.1510","currency":"USD"},"qty":"14.0000"},\
+                {"px":{"value":"0.1420","currency":"USD"},"qty":"55.5"}],\
+                "offers":[{"px":{"value":"0.1520","currency":"USD"},"qty":"1381.0000"}],\
+                "transactTime":"2026-10-02T14:22:56.542213551Z"}}
+                """);
+
+        final Mbp10Schema schema = captured.get(0);
+        // NO bids are the long offers at 1 - p; NO asks the long bids, best first.
+        assertEquals(price("0.848"), schema.decoder.bidPrice0());
+        assertEquals(size("1381"), schema.decoder.bidSize0());
+        assertEquals(Mbp10Encoder.bidPrice1NullValue(), schema.decoder.bidPrice1());
+        assertEquals(price("0.849"), schema.decoder.askPrice0());
+        assertEquals(size("14"), schema.decoder.askSize0());
+        assertEquals(price("0.858"), schema.decoder.askPrice1());
+        assertEquals(size("55.5"), schema.decoder.askSize1());
+        assertEquals(Mbp10Encoder.askPrice2NullValue(), schema.decoder.askPrice2());
+    }
+
+    @Test
+    void shortListingTradeIsTheSameTradeInNoTerms() throws Exception {
+        useListing(SLUG + ":short");
+        process(
+                """
+                {"marketData":{"bids":[{"px":{"value":"0.55","currency":"USD"},"qty":"3"}],\
+                "offers":[{"px":{"value":"0.56","currency":"USD"},"qty":"4"}],"transactTime":"2026-10-02T14:00:00Z"}}
+                """);
+        process(
+                """
+                {"trade":{"price":{"value":"0.555","currency":"USD"},"quantity":{"value":"0.50","currency":"USD"},\
+                "tradeTime":"2024-01-15T10:30:00Z","taker":{"side":"ORDER_SIDE_SELL","intent":"ORDER_INTENT_SELL_LONG"}}}
+                """);
+
+        final Mbp10Schema schema = captured.get(1);
+        assertEquals(Action.Trade, schema.decoder.action());
+        // Selling long at 0.555 is buying short at 0.445.
+        assertEquals(Side.Bid, schema.decoder.side());
+        assertEquals(price("0.445"), schema.decoder.price());
+        assertEquals(size("0.5"), schema.decoder.size());
+        assertEquals(price("0.44"), schema.decoder.bidPrice0());
+        assertEquals(price("0.45"), schema.decoder.askPrice0());
+    }
+
+    @Test
+    void shortListingTradeWithNoKnownSideKeepsNone() throws Exception {
+        useListing(SLUG + ":short");
+        process(
+                """
+                {"trade":{"price":{"value":"0.6","currency":"USD"},"quantity":{"value":"2","currency":"USD"},\
+                "tradeTime":"2024-01-15T10:30:00Z","taker":{"intent":"ORDER_INTENT_UNDEFINED"}}}
+                """);
+        assertEquals(Side.None, captured.get(0).decoder.side());
+        assertEquals(price("0.4"), captured.get(0).decoder.price());
     }
 
     @Test

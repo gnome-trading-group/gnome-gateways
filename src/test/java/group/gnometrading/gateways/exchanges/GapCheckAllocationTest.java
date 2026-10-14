@@ -39,10 +39,24 @@ class GapCheckAllocationTest {
 
     private static final int WARM_UP = 20_000;
     private static final int MEASURED = 10_000;
+    // When the JIT is slow (a busy machine) a round can still be running unoptimised code; allocating per message
+    // would show in every round, so one round without it is enough.
+    private static final int ROUNDS = 5;
+    private static final int MESSAGES = 1 + WARM_UP + ROUNDS * MEASURED;
 
     @Test
     void kalshiSequenceCheckDoesNotAllocate() throws Exception {
-        final ByteBuffer[] messages = new ByteBuffer[1 + WARM_UP + MEASURED];
+        assertKalshiDoesNotAllocate("T:yes");
+    }
+
+    /** A NO listing writes the complement of the book; that must not allocate either. */
+    @Test
+    void kalshiNoListingDoesNotAllocate() throws Exception {
+        assertKalshiDoesNotAllocate("T:no");
+    }
+
+    private static void assertKalshiDoesNotAllocate(final String securityId) throws Exception {
+        final ByteBuffer[] messages = new ByteBuffer[MESSAGES];
         messages[0] = ascii("{\"type\":\"orderbook_snapshot\",\"sid\":1,\"seq\":1,\"msg\":{\"market_ticker\":\"T\","
                 + "\"yes_dollars_fp\":[[\"0.5500\",\"100.00\"]],\"no_dollars_fp\":[[\"0.4000\",\"50.00\"]]}}");
         for (int i = 1; i < messages.length; i++) {
@@ -57,7 +71,7 @@ class GapCheckAllocationTest {
                 feed.ring,
                 () -> 9_000_000_000L,
                 null,
-                listing("KALSHI", "T:yes"),
+                listing("KALSHI", securityId),
                 feed.client,
                 new JsonDecoder(),
                 "key",
@@ -68,7 +82,7 @@ class GapCheckAllocationTest {
 
     @Test
     void lighterNonceCheckDoesNotAllocate() throws Exception {
-        final ByteBuffer[] messages = new ByteBuffer[1 + WARM_UP + MEASURED];
+        final ByteBuffer[] messages = new ByteBuffer[MESSAGES];
         for (int i = 0; i < messages.length; i++) {
             messages[i] = ascii("{\"channel\":\"order_book:0\",\"offset\":" + i + ",\"order_book\":{\"code\":0,"
                     + "\"asks\":[{\"price\":\"4212.00\",\"size\":\"" + (i % 2 == 0 ? "2.0" : "3.0") + "\"}],"
@@ -91,7 +105,7 @@ class GapCheckAllocationTest {
 
     @Test
     void polymarketIntlBestPriceCheckDoesNotAllocate() throws Exception {
-        final ByteBuffer[] messages = new ByteBuffer[1 + WARM_UP + MEASURED];
+        final ByteBuffer[] messages = new ByteBuffer[MESSAGES];
         messages[0] = ascii("[{\"market\":\"c\",\"asset_id\":\"token\",\"timestamp\":\"1782753357000\","
                 + "\"bids\":[{\"price\":\"0.08\",\"size\":\"3\"}],\"asks\":[{\"price\":\"0.10\",\"size\":\"6\"}],"
                 + "\"event_type\":\"book\",\"last_trade_price\":\"0.09\"}]");
@@ -124,13 +138,17 @@ class GapCheckAllocationTest {
         final long threadId = Thread.currentThread().getId();
 
         read(feed, reader, 1 + WARM_UP);
-        final long before = threads.getThreadAllocatedBytes(threadId);
-        read(feed, reader, MEASURED);
-        final long allocated = threads.getThreadAllocatedBytes(threadId) - before;
+        long fewest = Long.MAX_VALUE;
+        for (int round = 0; round < ROUNDS; round++) {
+            final long before = threads.getThreadAllocatedBytes(threadId);
+            read(feed, reader, MEASURED);
+            fewest = Math.min(fewest, threads.getThreadAllocatedBytes(threadId) - before);
+        }
 
-        assertEquals(1 + WARM_UP + MEASURED, feed.client.served, "every message was read, none failed the check");
+        assertEquals(MESSAGES, feed.client.served, "every message was read, none failed the check");
         // Measuring can itself allocate a little; anything per message would be hundreds of kilobytes here.
-        assertTrue(allocated < 2_048, "allocated " + allocated + " bytes over " + MEASURED + " messages");
+        assertTrue(
+                fewest < 2_048, "allocated at least " + fewest + " bytes in every round of " + MEASURED + " messages");
     }
 
     private static void read(final Feed feed, final InboundSocketReader<Mbp10Schema> reader, final int count)

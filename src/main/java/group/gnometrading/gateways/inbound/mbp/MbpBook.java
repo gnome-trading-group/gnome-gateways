@@ -3,6 +3,7 @@ package group.gnometrading.gateways.inbound.mbp;
 import group.gnometrading.gateways.inbound.Book;
 import group.gnometrading.schemas.Mbp10Encoder;
 import group.gnometrading.schemas.Mbp10Schema;
+import group.gnometrading.schemas.Statics;
 import group.gnometrading.utils.Copyable;
 import java.util.Objects;
 
@@ -114,6 +115,99 @@ public class MbpBook implements Book<Mbp10Schema> {
         schema.encoder.askPrice9(this.asks[9].price);
         schema.encoder.askSize9(this.asks[9].size);
         schema.encoder.askCount9(this.asks[9].count);
+    }
+
+    /**
+     * Writes the book of the market's other outcome. A binary contract pays $1 between its two outcomes, so a bid for
+     * one at p is an offer of the other at 1 - p: the other outcome's bids are these asks, and its asks these bids, at
+     * the complement, best first. Venues that keep one book per market (Kalshi, Polymarket US) publish it this way for
+     * their NO listings, which are priced in their own terms.
+     */
+    public final void writeComplementTo(final Mbp10Schema schema) {
+        schema.encoder.bidPrice0(complement(this.asks[0].price));
+        schema.encoder.bidSize0(this.asks[0].size);
+        schema.encoder.bidCount0(this.asks[0].count);
+
+        schema.encoder.bidPrice1(complement(this.asks[1].price));
+        schema.encoder.bidSize1(this.asks[1].size);
+        schema.encoder.bidCount1(this.asks[1].count);
+
+        schema.encoder.bidPrice2(complement(this.asks[2].price));
+        schema.encoder.bidSize2(this.asks[2].size);
+        schema.encoder.bidCount2(this.asks[2].count);
+
+        schema.encoder.bidPrice3(complement(this.asks[3].price));
+        schema.encoder.bidSize3(this.asks[3].size);
+        schema.encoder.bidCount3(this.asks[3].count);
+
+        schema.encoder.bidPrice4(complement(this.asks[4].price));
+        schema.encoder.bidSize4(this.asks[4].size);
+        schema.encoder.bidCount4(this.asks[4].count);
+
+        schema.encoder.bidPrice5(complement(this.asks[5].price));
+        schema.encoder.bidSize5(this.asks[5].size);
+        schema.encoder.bidCount5(this.asks[5].count);
+
+        schema.encoder.bidPrice6(complement(this.asks[6].price));
+        schema.encoder.bidSize6(this.asks[6].size);
+        schema.encoder.bidCount6(this.asks[6].count);
+
+        schema.encoder.bidPrice7(complement(this.asks[7].price));
+        schema.encoder.bidSize7(this.asks[7].size);
+        schema.encoder.bidCount7(this.asks[7].count);
+
+        schema.encoder.bidPrice8(complement(this.asks[8].price));
+        schema.encoder.bidSize8(this.asks[8].size);
+        schema.encoder.bidCount8(this.asks[8].count);
+
+        schema.encoder.bidPrice9(complement(this.asks[9].price));
+        schema.encoder.bidSize9(this.asks[9].size);
+        schema.encoder.bidCount9(this.asks[9].count);
+
+        schema.encoder.askPrice0(complement(this.bids[0].price));
+        schema.encoder.askSize0(this.bids[0].size);
+        schema.encoder.askCount0(this.bids[0].count);
+
+        schema.encoder.askPrice1(complement(this.bids[1].price));
+        schema.encoder.askSize1(this.bids[1].size);
+        schema.encoder.askCount1(this.bids[1].count);
+
+        schema.encoder.askPrice2(complement(this.bids[2].price));
+        schema.encoder.askSize2(this.bids[2].size);
+        schema.encoder.askCount2(this.bids[2].count);
+
+        schema.encoder.askPrice3(complement(this.bids[3].price));
+        schema.encoder.askSize3(this.bids[3].size);
+        schema.encoder.askCount3(this.bids[3].count);
+
+        schema.encoder.askPrice4(complement(this.bids[4].price));
+        schema.encoder.askSize4(this.bids[4].size);
+        schema.encoder.askCount4(this.bids[4].count);
+
+        schema.encoder.askPrice5(complement(this.bids[5].price));
+        schema.encoder.askSize5(this.bids[5].size);
+        schema.encoder.askCount5(this.bids[5].count);
+
+        schema.encoder.askPrice6(complement(this.bids[6].price));
+        schema.encoder.askSize6(this.bids[6].size);
+        schema.encoder.askCount6(this.bids[6].count);
+
+        schema.encoder.askPrice7(complement(this.bids[7].price));
+        schema.encoder.askSize7(this.bids[7].size);
+        schema.encoder.askCount7(this.bids[7].count);
+
+        schema.encoder.askPrice8(complement(this.bids[8].price));
+        schema.encoder.askSize8(this.bids[8].size);
+        schema.encoder.askCount8(this.bids[8].count);
+
+        schema.encoder.askPrice9(complement(this.bids[9].price));
+        schema.encoder.askSize9(this.bids[9].size);
+        schema.encoder.askCount9(this.bids[9].count);
+    }
+
+    /** 1 - price, in the schema's fixed point; an empty level stays empty. */
+    public static long complement(final long price) {
+        return price == Mbp10Encoder.askPrice0NullValue() ? price : Statics.PRICE_SCALING_FACTOR - price;
     }
 
     @Override
