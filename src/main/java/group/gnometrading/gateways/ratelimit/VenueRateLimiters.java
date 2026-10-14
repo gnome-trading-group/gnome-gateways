@@ -1,6 +1,8 @@
 package group.gnometrading.gateways.ratelimit;
 
 import group.gnometrading.logging.Logger;
+import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import org.agrona.concurrent.EpochClock;
 import org.agrona.concurrent.NanoClock;
@@ -30,5 +32,10 @@ public final class VenueRateLimiters {
         return this.limiters.computeIfAbsent(
                 limits.venue() + '/' + account,
                 key -> new VenueRateLimiter(limits, this.logger, this.clock, this.epochClock));
+    }
+
+    /** Every limiter created so far, by venue and account ("KALSHI/key-id"), for reporting. */
+    public Map<String, VenueRateLimiter> all() {
+        return new TreeMap<>(this.limiters);
     }
 }

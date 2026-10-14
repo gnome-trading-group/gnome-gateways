@@ -617,6 +617,7 @@ class KalshiInboundReaderTest {
 
     private void assertGap(final String message) throws Exception {
         final int before = captured.size();
+        final long resyncsBefore = reader.bookResyncs();
         when(client.read()).thenReturn(response);
         when(response.getBody()).thenReturn(ByteBuffer.wrap(message.getBytes(StandardCharsets.UTF_8)));
         assertThrows(SocketClosedException.class, () -> reader.doWork());
@@ -626,6 +627,7 @@ class KalshiInboundReaderTest {
         }
         assertEquals(before + 1, captured.size(), "one suspect book, then nothing");
         assertTrue(captured.get(before).decoder.flags().maybeBadBook());
+        assertEquals(resyncsBefore + 1, reader.bookResyncs(), "counted for the session's heartbeat");
     }
 
     private void processSnapshot() throws Exception {

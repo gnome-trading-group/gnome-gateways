@@ -77,6 +77,11 @@ public final class VenueRateLimiter implements RequestGate {
     // Whether the bucket has made a request wait, or refused one, since its budget was last adjusted.
     private final AtomicIntegerArray heldBack;
 
+    /** Whether requests are being refused locally because a budget is spent. Any thread. */
+    public boolean isThrottling() {
+        return this.throttling;
+    }
+
     VenueRateLimiter(
             final VenueRateLimits limits, final Logger logger, final NanoClock clock, final EpochClock epochClock) {
         this(limits, logger, clock, epochClock, LockSupport::parkNanos);

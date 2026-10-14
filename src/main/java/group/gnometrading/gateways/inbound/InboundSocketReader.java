@@ -13,6 +13,7 @@ import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Listing;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.concurrent.atomic.AtomicLong;
 import org.agrona.concurrent.EpochNanoClock;
 
 public abstract class InboundSocketReader<T extends Schema> implements GnomeAgent, SchemaFactory<T> {
@@ -41,6 +42,9 @@ public abstract class InboundSocketReader<T extends Schema> implements GnomeAgen
 
     public final ReaderPauseControl pauseControl = new ReaderPauseControl();
     public volatile boolean buffer;
+    // Every resync since start, for the session's heartbeat: each one drops the connection, and enough of them in a
+    // minute exit the session.
+    private final AtomicLong bookResyncs = new AtomicLong();
 
     public InboundSocketReader(
             Logger logger,
@@ -265,8 +269,14 @@ public abstract class InboundSocketReader<T extends Schema> implements GnomeAgen
      */
     protected final void resyncBook(final long expected, final long received, final int cause) {
         this.logger.log(LogMessage.MARKET_DATA_GAP, this.listing.listingId(), expected, received, cause);
+        this.bookResyncs.incrementAndGet();
         publishSuspectBook();
         onSocketClose(null);
+    }
+
+    /** How many times the book has been found wrong and resynced since the reader started. Any thread. */
+    public final long bookResyncs() {
+        return this.bookResyncs.get();
     }
 
     /**

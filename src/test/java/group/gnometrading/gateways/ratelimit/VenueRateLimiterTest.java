@@ -1,6 +1,7 @@
 package group.gnometrading.gateways.ratelimit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -100,9 +101,11 @@ class VenueRateLimiterTest {
         admitAll(limiter, HTTPMethod.POST, "/v1/orders");
         limiter.beforeRequest(HTTPMethod.POST, "/v1/orders");
         limiter.beforeRequest(HTTPMethod.POST, "/v1/orders");
+        assertTrue(limiter.isThrottling());
 
         clock.now += SECOND;
         limiter.beforeRequest(HTTPMethod.POST, "/v1/orders");
+        assertFalse(limiter.isThrottling());
 
         assertEquals(List.of(LogMessage.RATE_LIMIT_THROTTLING, LogMessage.RATE_LIMIT_RECOVERED), logger.messages);
         assertTrue(logger.lines.get(0).contains("refusing requests locally"));
@@ -402,6 +405,9 @@ class VenueRateLimiterTest {
         assertSame(first, limiters.forAccount(VenueRateLimits.polymarketUs(), "key-1"));
         assertNotSame(first, limiters.forAccount(VenueRateLimits.polymarketUs(), "key-2"));
         assertNotSame(first, limiters.forAccount(VenueRateLimits.kalshi(), "key-1"));
+        assertEquals(
+                List.of("Kalshi/key-1", "Polymarket US/key-1", "Polymarket US/key-2"),
+                List.copyOf(limiters.all().keySet()));
     }
 
     @Test
