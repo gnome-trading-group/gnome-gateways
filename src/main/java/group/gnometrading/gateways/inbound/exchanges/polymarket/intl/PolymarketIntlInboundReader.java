@@ -28,6 +28,7 @@ public final class PolymarketIntlInboundReader extends InboundJsonWebSocketReade
         implements MbpBufferSchemaFactory {
 
     private static final int MAX_BOOK_LEVELS = 1 << 10;
+    private static final long NO_VENUE_BEST = -1L;
     private static final long NANOS_PER_MILLI = 1_000_000L;
     private static final byte[] PING = "PING".getBytes(StandardCharsets.US_ASCII);
     private static final byte EVENT_TYPE_UNKNOWN = 0;
@@ -42,6 +43,10 @@ public final class PolymarketIntlInboundReader extends InboundJsonWebSocketReade
         private long size;
         private Side side;
         private boolean snapshotInitialized;
+        // The venue's best prices after the last of this message's changes to the asset, if it had any.
+        private boolean hasVenueBest;
+        private long venueBestBid;
+        private long venueBestAsk;
 
         private void reset() {
             this.type = EVENT_TYPE_UNKNOWN;
@@ -50,10 +55,27 @@ public final class PolymarketIntlInboundReader extends InboundJsonWebSocketReade
             this.size = Mbp10Encoder.sizeNullValue();
             this.side = Side.None;
             this.snapshotInitialized = false;
+            this.hasVenueBest = false;
         }
     }
 
     private final MbpBufferBook book;
+    // The last match whose best prices still have to be checked, once its timestamp has passed. Reset by the
+    // supervisor's subscribe, on its own thread, while the reader is paused.
+    private volatile boolean pendingCheck;
+    private long pendingTimestamp;
+    private long pendingVenueBid;
+    private long pendingVenueAsk;
+    private long pendingBookBid;
+    private long pendingBookAsk;
+    // The price change being read; fields rather than locals so that reading one allocates nothing.
+    private boolean changeMatchesToken;
+    private long changePrice;
+    private long changeSize;
+    private long changeBestBid;
+    private long changeBestAsk;
+    private boolean changeIsBid;
+    private boolean changeSideParsed;
     private final ParsedEvent parsedEvent;
     private final ByteBuffer pingBuffer;
     private final String tokenId;
@@ -158,7 +180,7 @@ public final class PolymarketIntlInboundReader extends InboundJsonWebSocketReade
         } else if (isEventPrice(name)) {
             event.price = key.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR, Mbp10Encoder.priceNullValue());
         } else if (name.equals("price_changes")) {
-            parsePriceChanges(key);
+            parsePriceChanges(key, event);
         } else if (name.equals("size")) {
             event.size = key.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR, Mbp10Encoder.sizeNullValue());
         } else if (name.equals("side")) {
@@ -200,13 +222,17 @@ public final class PolymarketIntlInboundReader extends InboundJsonWebSocketReade
         }
         switch (event.type) {
             case EVENT_TYPE_BOOK -> {
+                // A whole book replaces what the check was waiting to compare.
+                this.pendingCheck = false;
                 if (event.price != Mbp10Encoder.priceNullValue()) {
                     this.lastTradePrice = event.price;
                 }
                 emit(event.timestamp, Action.Modify, Side.None, this.lastTradePrice, this.lastTradeSize);
             }
-            case EVENT_TYPE_PRICE_CHANGE -> emit(
-                    event.timestamp, Action.Modify, Side.None, this.lastTradePrice, this.lastTradeSize);
+            case EVENT_TYPE_PRICE_CHANGE -> {
+                checkBestPrices(event);
+                emit(event.timestamp, Action.Modify, Side.None, this.lastTradePrice, this.lastTradeSize);
+            }
             case EVENT_TYPE_LAST_TRADE -> {
                 if (event.price == Mbp10Encoder.priceNullValue()) {
                     return;
@@ -221,6 +247,50 @@ public final class PolymarketIntlInboundReader extends InboundJsonWebSocketReade
                 // Other event types are retained in the lossless archive.
             }
         }
+    }
+
+    /**
+     * The venue sends, with every change, its own best bid and ask once the match that caused it has fully applied. One
+     * match's changes can come as several messages sharing a timestamp, so mid-match the book and those prices can
+     * disagree for a moment. Once the timestamp moves on, they must agree; if they don't, the book missed a change.
+     * Measured live over 19,624 matches on two busy markets: they always agreed.
+     */
+    private void checkBestPrices(final ParsedEvent event) {
+        if (this.pendingCheck && event.timestamp != this.pendingTimestamp) {
+            this.pendingCheck = false;
+            if (this.pendingBookBid != this.pendingVenueBid) {
+                resyncBook(this.pendingVenueBid, this.pendingBookBid, GAP_BEST_PRICE);
+            }
+            if (this.pendingBookAsk != this.pendingVenueAsk) {
+                resyncBook(this.pendingVenueAsk, this.pendingBookAsk, GAP_BEST_PRICE);
+            }
+        }
+        if (event.hasVenueBest) {
+            this.pendingCheck = true;
+            this.pendingTimestamp = event.timestamp;
+            this.pendingVenueBid = event.venueBestBid;
+            this.pendingVenueAsk = event.venueBestAsk;
+            // The venue's word for an empty side: no bid is 0, no ask is 1.
+            this.pendingBookBid = this.book.bestBid(0L);
+            this.pendingBookAsk = this.book.bestAsk(Statics.PRICE_SCALING_FACTOR);
+        }
+    }
+
+    @Override
+    protected void publishSuspectBook() {
+        prepareEncoder();
+        this.schema.encoder.timestampEvent(this.pendingTimestamp);
+        this.schema.encoder.sequence(Mbp10Encoder.sequenceNullValue());
+        this.schema.encoder.price(this.lastTradePrice);
+        this.schema.encoder.size(this.lastTradeSize);
+        this.schema.encoder.action(Action.Modify);
+        this.schema.encoder.side(Side.None);
+        this.schema.encoder.depth(Mbp10Encoder.depthNullValue());
+        this.schema.encoder.flags().clear();
+        this.schema.encoder.flags().marketByPrice(true);
+        this.schema.encoder.flags().maybeBadBook(true);
+        this.book.writeTo(this.schema);
+        offer();
     }
 
     private long parseTimestamp(final JsonDecoder.JsonNode node) {
@@ -274,12 +344,12 @@ public final class PolymarketIntlInboundReader extends InboundJsonWebSocketReade
         updateLevel(isBid, price, size);
     }
 
-    private void parsePriceChanges(final JsonDecoder.JsonNode node) {
+    private void parsePriceChanges(final JsonDecoder.JsonNode node, final ParsedEvent event) {
         try (var changes = node.asArray()) {
             while (changes.hasNextItem()) {
                 try (var changeNode = changes.nextItem();
                         var change = changeNode.asObject()) {
-                    parsePriceChange(change);
+                    parsePriceChange(change, event);
                 }
             }
         }
@@ -289,34 +359,47 @@ public final class PolymarketIntlInboundReader extends InboundJsonWebSocketReade
      * A change the book can't read throws: skipped, the level would stay wrong until the venue next touches it. The
      * reconnect that follows brings a fresh snapshot, and a change is never sent again, so it can't loop.
      */
-    private void parsePriceChange(final JsonDecoder.JsonObject change) {
-        boolean matchesToken = false;
-        long price = Mbp10Encoder.askPrice0NullValue();
-        long size = Mbp10Encoder.askSize0NullValue();
-        boolean isBid = false;
-        boolean sideParsed = false;
-
+    private void parsePriceChange(final JsonDecoder.JsonObject change, final ParsedEvent event) {
+        this.changeMatchesToken = false;
+        this.changePrice = Mbp10Encoder.askPrice0NullValue();
+        this.changeSize = Mbp10Encoder.askSize0NullValue();
+        this.changeBestBid = NO_VENUE_BEST;
+        this.changeBestAsk = NO_VENUE_BEST;
+        this.changeIsBid = false;
+        this.changeSideParsed = false;
         while (change.hasNextKey()) {
             try (var key = change.nextKey()) {
-                final GnomeString name = key.getName();
-                if (name.equals("asset_id")) {
-                    matchesToken = key.asString().equals(this.tokenId);
-                } else if (name.equals("price")) {
-                    price = key.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR);
-                } else if (name.equals("size")) {
-                    size = key.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR);
-                } else if (name.equals("side")) {
-                    final GnomeString side = key.asString();
-                    isBid = side.equals("BUY");
-                    sideParsed = isBid || side.equals("SELL");
-                }
+                parseChangeKey(key.getName(), key);
             }
         }
 
-        if (!matchesToken || !sideParsed) {
+        if (!this.changeMatchesToken || !this.changeSideParsed) {
             return;
         }
-        updateLevel(isBid, price, size);
+        updateLevel(this.changeIsBid, this.changePrice, this.changeSize);
+        if (this.changeBestBid != NO_VENUE_BEST && this.changeBestAsk != NO_VENUE_BEST) {
+            event.hasVenueBest = true;
+            event.venueBestBid = this.changeBestBid;
+            event.venueBestAsk = this.changeBestAsk;
+        }
+    }
+
+    private void parseChangeKey(final GnomeString name, final JsonDecoder.JsonNode key) {
+        if (name.equals("asset_id")) {
+            this.changeMatchesToken = key.asString().equals(this.tokenId);
+        } else if (name.equals("price")) {
+            this.changePrice = key.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR);
+        } else if (name.equals("size")) {
+            this.changeSize = key.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR);
+        } else if (name.equals("side")) {
+            final GnomeString side = key.asString();
+            this.changeIsBid = side.equals("BUY");
+            this.changeSideParsed = this.changeIsBid || side.equals("SELL");
+        } else if (name.equals("best_bid")) {
+            this.changeBestBid = key.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR);
+        } else if (name.equals("best_ask")) {
+            this.changeBestAsk = key.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR);
+        }
     }
 
     private void updateLevel(final boolean isBid, final long price, final long size) {
@@ -339,6 +422,7 @@ public final class PolymarketIntlInboundReader extends InboundJsonWebSocketReade
 
     @Override
     protected void subscribe() throws IOException {
+        this.pendingCheck = false;
         // { "assets_ids": ["<token_id>"], "type": "market" }
         final InboundJsonWebSocketWriter jsonInboundWebSocketWriter = (InboundJsonWebSocketWriter) this.socketWriter;
         final JsonEncoder jsonEncoder = jsonInboundWebSocketWriter.getJsonEncoder();

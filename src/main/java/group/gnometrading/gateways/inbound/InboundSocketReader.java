@@ -20,6 +20,12 @@ public abstract class InboundSocketReader<T extends Schema> implements GnomeAgen
     private static final int DEFAULT_BOOK_BUFFER_SIZE = 1 << 7; // 128 slots
     private static final int DEFAULT_REPLAY_BUFFER_SIZE = 1 << 11; // 2048 slots
 
+    /** Why a feed's book can't be trusted, in the order {@link LogMessage#MARKET_DATA_GAP} names them. */
+    protected static final int GAP_SEQUENCE = 0;
+
+    protected static final int GAP_NONCE = 1;
+    protected static final int GAP_BEST_PRICE = 2;
+
     private final Logger logger;
     private final SequencedRingBuffer<T> sequencedRingBuffer;
     public final EpochNanoClock clock;
@@ -244,4 +250,26 @@ public abstract class InboundSocketReader<T extends Schema> implements GnomeAgen
         logger.log(LogMessage.SOCKET_DISCONNECTED);
         throw new SocketClosedException(cause);
     }
+
+    /**
+     * The feed missed or reordered an update, so the book is wrong and stays wrong until the venue next sends that
+     * level. Publishes the book as it stands once more, flagged maybeBadBook, so whoever reads it knows from that
+     * moment, then drops the connection: the gateway reconnects, the new subscription starts with a fresh snapshot,
+     * and nothing is published in between. Throws, so the rest of the batch isn't read either.
+     *
+     * @param expected the venue's next sequence number, or its best price, as {@link LogMessage#MARKET_DATA_GAP} says
+     * @param received what came instead, or the book's best price
+     * @param cause one of {@link #GAP_SEQUENCE}, {@link #GAP_NONCE}, {@link #GAP_BEST_PRICE}
+     */
+    protected final void resyncBook(final long expected, final long received, final int cause) {
+        this.logger.log(LogMessage.MARKET_DATA_GAP, this.listing.listingId(), expected, received, cause);
+        publishSuspectBook();
+        onSocketClose(null);
+    }
+
+    /**
+     * Publishes the book as it stands, flagged maybeBadBook, for {@link #resyncBook}. Readers that detect gaps override
+     * this; the default publishes nothing.
+     */
+    protected void publishSuspectBook() {}
 }

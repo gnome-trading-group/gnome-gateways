@@ -225,6 +225,7 @@ class KalshiOutboundWriterTest {
         final List<OrderContext> reports = drainQueue(writerReportQueue);
         assertEquals(1, reports.size(), "Kalshi didn't take it, so it is not left in limbo");
         assertEquals(ExecType.REJECT, reports.get(0).execType);
+        assertEquals(RejectReason.MARKET_CLOSED, reports.get(0).rejectReason);
     }
 
     @Test
@@ -240,6 +241,7 @@ class KalshiOutboundWriterTest {
         final List<OrderContext> reports = drainQueue(writerReportQueue);
         assertEquals(1, reports.size(), "Kalshi says nothing is trading, so the order isn't left in limbo");
         assertEquals(ExecType.REJECT, reports.get(0).execType);
+        assertEquals(RejectReason.MARKET_CLOSED, reports.get(0).rejectReason);
     }
 
     @Test
@@ -361,6 +363,67 @@ class KalshiOutboundWriterTest {
                 .getRawArguments();
         final String line = String.format((String) call[1], (Object[]) call[2]);
         assertTrue(line.contains("400") && line.contains("insufficient_balance"), line);
+    }
+
+    @Test
+    void submit_InsufficientBalance_IsRejectedForInsufficientFunds() throws Exception {
+        mockPostFailure();
+        when(httpResponse.getStatusCode()).thenReturn(400);
+        when(httpResponse.getBody())
+                .thenReturn(ByteBuffer.wrap(
+                        "{\"error\":{\"code\":\"insufficient_balance\",\"message\":\"insufficient balance\"}}"
+                                .getBytes(StandardCharsets.UTF_8)));
+
+        publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
+        writer.doWork();
+
+        final List<OrderContext> rejects = drainQueue(writerReportQueue);
+        assertEquals(ExecType.REJECT, rejects.get(0).execType);
+        assertEquals(RejectReason.INSUFFICIENT_FUNDS, rejects.get(0).rejectReason);
+    }
+
+    @Test
+    void submit_RefusedForAReasonWithNoMapping_IsAPlainVenueRefusal() throws Exception {
+        mockPostFailure();
+        when(httpResponse.getStatusCode()).thenReturn(400);
+        when(httpResponse.getBody())
+                .thenReturn(ByteBuffer.wrap(
+                        "{\"error\":{\"code\":\"invalid_parameters\"}}".getBytes(StandardCharsets.UTF_8)));
+
+        publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
+        writer.doWork();
+
+        assertEquals(
+                RejectReason.EXCHANGE_REJECTED, drainQueue(writerReportQueue).get(0).rejectReason);
+    }
+
+    @Test
+    void submit_RateLimitedWithABodyThatNamesAReason_IsStillRateLimited() throws Exception {
+        mockPostFailure();
+        when(httpResponse.getStatusCode()).thenReturn(429);
+        when(httpResponse.getBody())
+                .thenReturn(ByteBuffer.wrap(
+                        "{\"error\":{\"code\":\"insufficient_balance\"}}".getBytes(StandardCharsets.UTF_8)));
+
+        publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
+        writer.doWork();
+
+        assertEquals(RejectReason.RATE_LIMITED, drainQueue(writerReportQueue).get(0).rejectReason);
+    }
+
+    @Test
+    void submit_ReadingTheReason_LeavesTheBodyForTheLog() throws Exception {
+        mockPostFailure();
+        when(httpResponse.getStatusCode()).thenReturn(400);
+        final ByteBuffer body =
+                ByteBuffer.wrap("{\"error\":{\"code\":\"insufficient_balance\"}}".getBytes(StandardCharsets.UTF_8));
+        when(httpResponse.getBody()).thenReturn(body);
+
+        publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
+        writer.doWork();
+
+        assertEquals(0, body.position());
+        assertEquals(body.capacity(), body.limit());
     }
 
     // ========== Submit order ==========
@@ -858,6 +921,41 @@ class KalshiOutboundWriterTest {
         final List<OrderContext> rejects = drainQueue(writerReportQueue);
         assertEquals(1, rejects.size());
         assertEquals(ExecType.CANCEL_REJECT, rejects.get(0).execType);
+        assertEquals(RejectReason.EXCHANGE_REJECTED, rejects.get(0).rejectReason);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"400, INSUFFICIENT_FUNDS", "429, RATE_LIMITED"})
+    void amendOrder_Refused_TellsTheOmsWhy(final int status, final RejectReason expected) throws Exception {
+        mockPostSuccess(orderResponse("exchange-order-amend-funds"));
+        publishOrder(Side.Bid, price("0.50"), qty("10.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED);
+        writer.doWork();
+        final long clientOidCounter = drainQueue(newOrderQueue).get(0).clientOidCounter;
+
+        final HTTPResponse amendFailure = response(
+                status, "{\"error\":{\"code\":\"insufficient_balance\",\"message\":\"insufficient balance\"}}");
+        when(httpClient.post(
+                        any(),
+                        anyString(),
+                        any(GnomeString.class),
+                        any(byte[].class),
+                        anyInt(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString()))
+                .thenReturn(amendFailure);
+
+        publishModify(clientOidCounter, price("0.60"), qty("50.0"));
+        writer.doWork();
+
+        final List<OrderContext> rejects = drainQueue(writerReportQueue);
+        assertEquals(ExecType.CANCEL_REJECT, rejects.get(0).execType);
+        assertEquals(expected, rejects.get(0).rejectReason);
     }
 
     @ParameterizedTest

@@ -292,7 +292,7 @@ public final class PolymarketUsOutboundReader extends OutboundJsonWebSocketReade
         if (order.state == PolymarketUsOrderFields.STATE_REJECTED && !ctx.acked) {
             logRejected(ctx, order);
             forget(ctx);
-            publishRejected(ctx, key, timestampEvent);
+            publishRejected(ctx, key, timestampEvent, order.rejectReason());
         } else if (order.terminal()) {
             forget(ctx);
             publishCanceled(ctx, key, timestampEvent);
@@ -466,9 +466,10 @@ public final class PolymarketUsOutboundReader extends OutboundJsonWebSocketReade
     private void logRejected(final OrderContext ctx, final PolymarketUsOrderFields order) {
         logger.logf(
                 LogMessage.ORDER_REJECTED_BY_VENUE,
-                "Polymarket US rejected %s (venue id %s) after taking it: %s",
+                "Polymarket US rejected %s (venue id %s) after taking it: %s %s",
                 new String(ctx.correlationIdBytes, 0, ctx.correlationIdLength, StandardCharsets.US_ASCII),
                 new String(ctx.exchangeOrderIdBytes, 0, ctx.exchangeOrderIdLength, StandardCharsets.US_ASCII),
+                new String(order.orderRejectReason, 0, order.orderRejectReasonLength, StandardCharsets.US_ASCII),
                 new String(order.text, 0, order.textLength, StandardCharsets.UTF_8));
     }
 

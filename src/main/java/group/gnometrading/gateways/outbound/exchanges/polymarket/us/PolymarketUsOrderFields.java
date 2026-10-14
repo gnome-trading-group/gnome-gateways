@@ -3,8 +3,11 @@ package group.gnometrading.gateways.outbound.exchanges.polymarket.us;
 import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.gateways.Rfc3339;
 import group.gnometrading.gateways.outbound.OrderContext;
+import group.gnometrading.gateways.outbound.VenueRejectText;
+import group.gnometrading.schemas.RejectReason;
 import group.gnometrading.schemas.Statics;
 import group.gnometrading.strings.GnomeString;
+import java.nio.ByteBuffer;
 
 /**
  * The fields of a Polymarket US {@code Order}, and of the {@code Execution} that wraps one on the private socket,
@@ -29,6 +32,7 @@ final class PolymarketUsOrderFields {
     static final int EXEC_REPLACE = 6;
 
     static final int TEXT_MAX_LENGTH = 200;
+    static final int REJECT_REASON_MAX_LENGTH = 64;
 
     static final int INTENT_UNKNOWN = 0;
     static final int INTENT_BUY_LONG = 1;
@@ -55,6 +59,12 @@ final class PolymarketUsOrderFields {
     // The venue's reason for a rejection; longer reasons are cut.
     final byte[] text = new byte[TEXT_MAX_LENGTH];
     int textLength;
+    // The venue's coded reason for a rejection, an ORD_REJECT_REASON_* name; longer names are cut.
+    final byte[] orderRejectReason = new byte[REJECT_REASON_MAX_LENGTH];
+    int orderRejectReasonLength;
+    // Views over the two, so they can be searched as a body is, without a buffer made per rejection.
+    private final ByteBuffer textView = ByteBuffer.wrap(this.text);
+    private final ByteBuffer orderRejectReasonView = ByteBuffer.wrap(this.orderRejectReason);
     long lastShares;
     long lastPx;
     boolean aggressor;
@@ -75,6 +85,7 @@ final class PolymarketUsOrderFields {
         this.createTimeNanos = Rfc3339.INVALID;
         this.execType = EXEC_OTHER;
         this.textLength = 0;
+        this.orderRejectReasonLength = 0;
         this.lastShares = 0;
         this.lastPx = 0;
         this.aggressor = false;
@@ -106,13 +117,31 @@ final class PolymarketUsOrderFields {
                     this.lastPx = amount(field);
                 } else if (name.equals("aggressor")) {
                     this.aggressor = field.asBoolean();
-                } else if (name.equals("transactTime")) {
-                    this.transactTimeNanos = Rfc3339.toEpochNanos(field.asString());
-                } else if (name.equals("text")) {
-                    this.textLength = copy(field.asString(), this.text);
+                } else {
+                    readExecutionTextField(name, field);
                 }
             }
         }
+    }
+
+    private void readExecutionTextField(final GnomeString name, final JsonDecoder.JsonNode field) {
+        if (name.equals("transactTime")) {
+            this.transactTimeNanos = Rfc3339.toEpochNanos(field.asString());
+        } else if (name.equals("text")) {
+            this.textLength = copy(field.asString(), this.text);
+        } else if (name.equals("orderRejectReason")) {
+            this.orderRejectReasonLength = copy(field.asString(), this.orderRejectReason);
+        }
+    }
+
+    /** Why the venue rejected the order, from its coded reason or else its text; EXCHANGE_REJECTED if neither says. */
+    RejectReason rejectReason() {
+        RejectReason reason =
+                VenueRejectText.POLYMARKET_US.classify(this.orderRejectReasonView, 0, this.orderRejectReasonLength);
+        if (reason == null) {
+            reason = VenueRejectText.POLYMARKET_US.classify(this.textView, 0, this.textLength);
+        }
+        return reason != null ? reason : RejectReason.EXCHANGE_REJECTED;
     }
 
     /** Reads an {@code Order}. */

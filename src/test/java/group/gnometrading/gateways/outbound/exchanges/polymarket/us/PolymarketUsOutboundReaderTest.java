@@ -239,6 +239,44 @@ class PolymarketUsOutboundReaderTest {
     }
 
     @Test
+    void rejectedWithACodeNotYetMapped_IsAPlainVenueRefusal() throws Exception {
+        enqueueResting(STAMP_1, 1, Side.Bid, "0.40", "1");
+
+        process(execution(
+                        "EXECUTION_TYPE_REJECTED",
+                        order("V1", "ORDER_STATE_REJECTED", "BUY_LONG", "0.40", 1, 0, "0", STAMP_1))
+                .replace(
+                        "\"text\":\"\"",
+                        "\"text\":\"order refused\", \"orderRejectReason\":\"ORD_REJECT_REASON_EXCHANGE_OPTION\""));
+
+        final OrderExecutionReport report = awaitReport(0);
+        assertEquals(ExecType.REJECT, report.decoder.execType());
+        assertEquals(RejectReason.EXCHANGE_REJECTED, report.decoder.rejectReason());
+    }
+
+    @Test
+    void execution_ReadsTheRejectCodeAndText_AndForgetsThemOnReset() {
+        final PolymarketUsOrderFields fields = new PolymarketUsOrderFields();
+        fields.reset();
+        final String execution = "{\"type\":\"EXECUTION_TYPE_REJECTED\", \"text\":\"order refused\", "
+                + "\"orderRejectReason\":\"ORD_REJECT_REASON_EXCHANGE_OPTION\"}";
+        try (var root = new JsonDecoder().wrap(ByteBuffer.wrap(execution.getBytes(StandardCharsets.UTF_8)));
+                var obj = root.asObject()) {
+            fields.readExecution(obj);
+        }
+
+        assertEquals(
+                "ORD_REJECT_REASON_EXCHANGE_OPTION",
+                new String(fields.orderRejectReason, 0, fields.orderRejectReasonLength, StandardCharsets.US_ASCII));
+        assertEquals("order refused", new String(fields.text, 0, fields.textLength, StandardCharsets.UTF_8));
+        assertEquals(RejectReason.EXCHANGE_REJECTED, fields.rejectReason());
+
+        fields.reset();
+        assertEquals(0, fields.orderRejectReasonLength);
+        assertEquals(0, fields.textLength);
+    }
+
+    @Test
     void otherOrders_AreIgnored() throws Exception {
         enqueueResting(STAMP_1, 1, Side.Bid, "0.40", "1");
 

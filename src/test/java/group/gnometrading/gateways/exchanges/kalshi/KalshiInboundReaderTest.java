@@ -1,7 +1,9 @@
 package group.gnometrading.gateways.exchanges.kalshi;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
@@ -10,6 +12,7 @@ import static org.mockito.Mockito.when;
 
 import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.codecs.json.JsonEncoder;
+import group.gnometrading.gateways.SocketClosedException;
 import group.gnometrading.gateways.inbound.InboundJsonWebSocketWriter;
 import group.gnometrading.gateways.inbound.exchanges.kalshi.KalshiInboundReader;
 import group.gnometrading.logging.NullLogger;
@@ -383,7 +386,7 @@ class KalshiInboundReaderTest {
         processSnapshot();
         process(
                 """
-                {"type":"orderbook_delta","sid":1,"seq":42,"msg":{"market_ticker":"TEST-TICKER",\
+                {"type":"orderbook_delta","sid":1,"seq":2,"msg":{"market_ticker":"TEST-TICKER",\
                 "price_dollars":"0.550","delta_fp":"10.00","side":"yes"}}
                 """);
 
@@ -477,6 +480,92 @@ class KalshiInboundReaderTest {
                 """);
 
         assertEquals(0, captured.size());
+    }
+
+    // ========== Gaps ==========
+
+    @Test
+    void contiguousSequenceIsNotAGap() throws Exception {
+        processSnapshot();
+        process(delta(2, "10.00"));
+        process(delta(3, "-5.00"));
+
+        assertEquals(2, captured.size());
+        assertFalse(captured.get(1).decoder.flags().maybeBadBook());
+    }
+
+    @Test
+    void missedDeltaPublishesTheBookAsSuspectAndDropsTheConnection() throws Exception {
+        processSnapshot();
+        process(delta(2, "10.00"));
+
+        assertGap(delta(4, "10.00"));
+
+        final Mbp10Schema suspect = captured.get(captured.size() - 1);
+        assertTrue(suspect.decoder.flags().maybeBadBook());
+        assertEquals(size("110"), suspect.decoder.bidSize0(), "the book as it stood, without the delta after the gap");
+    }
+
+    @Test
+    void repeatedOrEarlierSequenceIsAGapToo() throws Exception {
+        processSnapshot();
+        process(delta(2, "10.00"));
+
+        assertGap(delta(2, "10.00"));
+    }
+
+    @Test
+    void newSubscriptionStartsANewSequence() throws Exception {
+        processSnapshot();
+        process(delta(2, "10.00"));
+
+        // A reconnect subscribes again: a fresh snapshot, numbered from 1 under a new sid.
+        processNoEmit(
+                """
+                {"type":"orderbook_snapshot","sid":3,"seq":1,"msg":{"market_ticker":"TEST-TICKER",\
+                "yes_dollars_fp":[["0.5500","100.00"]],"no_dollars_fp":[]}}
+                """);
+        process(
+                """
+                {"type":"orderbook_delta","sid":3,"seq":2,"msg":{"market_ticker":"TEST-TICKER",\
+                "price_dollars":"0.550","delta_fp":"1.00","side":"yes","ts_ms":1700000000002}}
+                """);
+
+        assertFalse(captured.get(captured.size() - 1).decoder.flags().maybeBadBook());
+    }
+
+    @Test
+    void tradesOnTheirOwnSubscriptionDontCountAgainstTheBook() throws Exception {
+        processSnapshot();
+        process(
+                """
+                {"type":"trade","sid":2,"seq":7,"msg":{"trade_id":"uuid","market_ticker":"TEST-TICKER",\
+                "yes_price_dollars":"0.550","no_price_dollars":"0.450","count_fp":"10.00",\
+                "taker_side":"yes","taker_book_side":"bid","ts_ms":1700000000000}}
+                """);
+        process(delta(2, "10.00"));
+
+        assertFalse(captured.get(captured.size() - 1).decoder.flags().maybeBadBook());
+    }
+
+    private static String delta(final long seq, final String quantity) {
+        return "{\"type\":\"orderbook_delta\",\"sid\":1,\"seq\":" + seq + ",\"msg\":{\"market_ticker\":\"TEST-TICKER\","
+                + "\"price_dollars\":\"0.550\",\"delta_fp\":\"" + quantity
+                + "\",\"side\":\"yes\",\"ts_ms\":170000000000"
+                + seq + "}}";
+    }
+
+    private void assertGap(final String message) throws Exception {
+        final int before = captured.size();
+        when(client.read()).thenReturn(response);
+        when(response.getBody()).thenReturn(ByteBuffer.wrap(message.getBytes(StandardCharsets.UTF_8)));
+        assertThrows(SocketClosedException.class, () -> reader.doWork());
+        final long deadline = System.currentTimeMillis() + 1_000;
+        while (captured.size() == before && System.currentTimeMillis() < deadline) {
+            poller.poll();
+        }
+        assertEquals(before + 1, captured.size(), "one suspect book, then nothing");
+        assertTrue(captured.get(before).decoder.flags().maybeBadBook());
     }
 
     private void processSnapshot() throws Exception {

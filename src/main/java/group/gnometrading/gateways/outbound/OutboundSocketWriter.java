@@ -204,7 +204,7 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         // A first send can't be a duplicate of our own: the id is new, so the venue is refusing it for its own reasons.
         if (result == SubmitResult.REJECTED || result == SubmitResult.DUPLICATE) {
             this.activeOrders.remove(ctx.clientOidCounter);
-            rejectSubmit(ctx, RejectReason.EXCHANGE_REJECTED);
+            rejectSubmit(ctx, venueRejectReason(ctx));
         } else if (result == SubmitResult.RATE_LIMITED) {
             this.activeOrders.remove(ctx.clientOidCounter);
             rejectSubmit(ctx, RejectReason.RATE_LIMITED);
@@ -250,7 +250,16 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         return find(ctx) == SubmitResult.ACCEPTED ? SubmitResult.ACCEPTED : SubmitResult.UNKNOWN;
     }
 
+    private static RejectReason venueRejectReason(final OrderContext ctx) {
+        return ctx.rejectReason != null ? ctx.rejectReason : RejectReason.EXCHANGE_REJECTED;
+    }
+
+    /**
+     * Each send starts with no reason, so a refusal is only ever explained by its own answer: never by an earlier
+     * send's, nor by a lookup, which can't say why an order is missing.
+     */
     private SubmitResult send(final OrderContext ctx) throws Exception {
+        ctx.rejectReason = null;
         try {
             return submitOrder(ctx);
         } catch (final IOException e) {
@@ -352,7 +361,9 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
     /**
      * Sends the request {@link #prepareOrder} built. Unless {@link #resendsAreSafe} says otherwise, it may be called
      * again with the same request when an earlier send got no clear answer, so the request must be one the venue
-     * deduplicates. On acceptance, sets {@code ctx.exchangeOrderIdBytes} for later cancels.
+     * deduplicates. On acceptance, sets {@code ctx.exchangeOrderIdBytes} for later cancels. A refusal may set
+     * {@code ctx.rejectReason} to say why before returning {@link SubmitResult#REJECTED}; left unset, the OMS is told
+     * EXCHANGE_REJECTED.
      */
     protected abstract SubmitResult submitOrder(OrderContext ctx) throws Exception;
 
@@ -378,11 +389,16 @@ public abstract class OutboundSocketWriter implements GnomeAgent {
         return statusCode >= 400 && statusCode < 500 ? SubmitResult.REJECTED : SubmitResult.UNKNOWN;
     }
 
-    /** Why the OMS is told a refused cancel or amend failed: the rate limit for a 429, else the venue's refusal. */
-    protected static RejectReason rejectReasonFor(final HTTPResponse response) {
-        return response.getStatusCode() == HTTPResponse.STATUS_TOO_MANY_REQUESTS
-                ? RejectReason.RATE_LIMITED
-                : RejectReason.EXCHANGE_REJECTED;
+    /**
+     * Why the OMS is told a refused amend failed: the rate limit for a 429, else the reason the venue's text gives,
+     * else the venue's refusal.
+     */
+    protected static RejectReason rejectReasonFor(final HTTPResponse response, final VenueRejectText rejectText) {
+        if (response.getStatusCode() == HTTPResponse.STATUS_TOO_MANY_REQUESTS) {
+            return RejectReason.RATE_LIMITED;
+        }
+        final RejectReason reason = rejectText.classify(response.getBody());
+        return reason != null ? reason : RejectReason.EXCHANGE_REJECTED;
     }
 
     /** How a venue answered a cancel. One with no clear answer throws an {@link IOException} instead. */

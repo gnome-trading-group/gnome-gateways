@@ -23,6 +23,11 @@ class MbpBufferSide {
         this.buf = new UnsafeBuffer(new byte[maxLevels * ENTRY_SIZE]);
     }
 
+    /** The best level's price, or {@code empty} if the side has none. */
+    long bestPrice(final long empty) {
+        return this.depth == 0 ? empty : getPrice(0);
+    }
+
     /**
      * Direct update from the exchange. If `size` == 0, remove the level.
      *

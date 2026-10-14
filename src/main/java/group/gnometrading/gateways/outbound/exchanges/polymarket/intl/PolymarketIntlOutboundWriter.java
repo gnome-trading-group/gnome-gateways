@@ -6,6 +6,7 @@ import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
 import group.gnometrading.gateways.outbound.IdleConnections;
 import group.gnometrading.gateways.outbound.OrderContext;
 import group.gnometrading.gateways.outbound.OutboundSocketWriter;
+import group.gnometrading.gateways.outbound.VenueRejectText;
 import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.http.HTTPClient;
@@ -183,10 +184,12 @@ public final class PolymarketIntlOutboundWriter extends OutboundSocketWriter {
             // Polymarket's 503 is trading disabled, cancel-only or post-only mode: a refusal, not a lost answer.
             final int status = response.getStatusCode();
             logRejection("submit", ctx, status, response);
-            if (status == HTTP_SERVICE_UNAVAILABLE) {
-                return SubmitResult.REJECTED;
+            final SubmitResult result =
+                    status == HTTP_SERVICE_UNAVAILABLE ? SubmitResult.REJECTED : classifyFailure(status);
+            if (result == SubmitResult.REJECTED) {
+                ctx.rejectReason = VenueRejectText.POLYMARKET_INTL.classify(response.getBody());
             }
-            return classifyFailure(status);
+            return result;
         }
         return readSubmitResponse(response, ctx);
     }
@@ -224,7 +227,7 @@ public final class PolymarketIntlOutboundWriter extends OutboundSocketWriter {
     }
 
     /**
-     * Logs what the venue said when it refused, which the OMS only learns as EXCHANGE_REJECTED. Off the hot path:
+     * Logs what the venue said when it refused, which the OMS learns only as a coarse reason. Off the hot path:
      * a refusal allocates. No status and no body is no answer at all, so there is nothing to log.
      */
     private void logRejection(
@@ -324,6 +327,7 @@ public final class PolymarketIntlOutboundWriter extends OutboundSocketWriter {
         }
         if (!answer.success) {
             logRejection("submit", ctx, response.getStatusCode(), response);
+            ctx.rejectReason = VenueRejectText.POLYMARKET_INTL.classify(body);
             return SubmitResult.REJECTED;
         }
         if (answer.sawId && !answer.idMatches) {

@@ -5,6 +5,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import group.gnometrading.codecs.json.JsonDecoder;
+import group.gnometrading.gateways.SocketClosedException;
 import group.gnometrading.gateways.inbound.exchanges.lighter.LighterInboundReader;
 import group.gnometrading.logging.NullLogger;
 import group.gnometrading.networking.websockets.WebSocketClient;
@@ -236,6 +237,61 @@ public class LighterInboundReaderTest {
                         .getBytes(StandardCharsets.UTF_8)));
 
         assertThrows(NumberFormatException.class, () -> socketReader.doWork());
+    }
+
+    // ========== Gaps ==========
+
+    @Test
+    void chainedNoncesAreNotAGap() throws Exception {
+        processMessage(book("subscribed/order_book", 0, 100, "4212.00", "2.0"));
+        processMessage(book("update/order_book", 100, 150, "4212.00", "3.0"));
+        processMessage(book("update/order_book", 150, 151, "4212.00", "4.0"));
+
+        assertFalse(
+                capturedSchemas.get(capturedSchemas.size() - 1).decoder.flags().maybeBadBook());
+    }
+
+    @Test
+    void brokenNonceChainPublishesTheBookAsSuspectAndDropsTheConnection() throws Exception {
+        processMessage(book("subscribed/order_book", 0, 100, "4212.00", "2.0"));
+        processMessage(book("update/order_book", 100, 150, "4212.00", "3.0"));
+        final int before = capturedSchemas.size();
+
+        when(mockClient.read()).thenReturn(mockResponse);
+        when(mockResponse.getBody())
+                .thenReturn(ByteBuffer.wrap(
+                        book("update/order_book", 160, 170, "4212.00", "5.0").getBytes(StandardCharsets.UTF_8)));
+        assertThrows(SocketClosedException.class, () -> socketReader.doWork());
+
+        final long deadline = System.currentTimeMillis() + 1_000;
+        while (capturedSchemas.size() == before && System.currentTimeMillis() < deadline) {
+            poller.poll();
+        }
+        assertEquals(before + 1, capturedSchemas.size(), "one suspect book");
+        assertTrue(capturedSchemas.get(before).decoder.flags().maybeBadBook());
+        assertEquals(
+                1761585003002L * 1_000_000L, capturedSchemas.get(before).decoder.timestampEvent(), "last venue time");
+    }
+
+    @Test
+    void snapshotStartsTheChainWhateverItsBeginNonce() throws Exception {
+        processMessage(book("subscribed/order_book", 0, 100, "4212.00", "2.0"));
+        processMessage(book("update/order_book", 100, 101, "4212.00", "3.0"));
+
+        assertFalse(
+                capturedSchemas.get(capturedSchemas.size() - 1).decoder.flags().maybeBadBook());
+    }
+
+    private int bookCount;
+
+    private String book(
+            final String type, final long beginNonce, final long nonce, final String askPrice, final String askSize) {
+        bookCount++;
+        return "{\"channel\":\"order_book:0\",\"offset\":" + bookCount + ",\"order_book\":{\"code\":0,"
+                + "\"asks\":[{\"price\":\"" + askPrice + "\",\"size\":\"" + askSize + "\"}],"
+                + "\"bids\":[{\"price\":\"4209.00\",\"size\":\"3.0\"}],"
+                + "\"offset\":" + bookCount + ",\"nonce\":" + nonce + ",\"begin_nonce\":" + beginNonce + "},"
+                + "\"timestamp\":176158500300" + (bookCount % 10) + ",\"type\":\"" + type + "\"}";
     }
 
     // ========== Helper Methods ==========

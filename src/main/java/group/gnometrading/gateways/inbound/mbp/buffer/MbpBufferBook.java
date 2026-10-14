@@ -66,6 +66,16 @@ public final class MbpBufferBook implements Book<Mbp10Schema> {
         this.sequenceNumber = sequenceNumber;
     }
 
+    /** The highest bid's price, or {@code empty} if there are no bids. */
+    public long bestBid(final long empty) {
+        return this.bids.bestPrice(empty);
+    }
+
+    /** The lowest ask's price, or {@code empty} if there are no asks. */
+    public long bestAsk(final long empty) {
+        return this.asks.bestPrice(empty);
+    }
+
     public int updateAsk(final long price, final long size, final long count) {
         return this.asks.update(price, size, count);
     }

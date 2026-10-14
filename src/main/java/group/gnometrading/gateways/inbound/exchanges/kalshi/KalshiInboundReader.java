@@ -69,6 +69,7 @@ public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10S
     private static final long FINE_TICKS_PER_DOLLAR = TICKS_PER_DOLLAR * 10L;
     // What a venue number that can't be read parses to; every real price and size is non-negative.
     private static final long UNREADABLE = -1L;
+    private static final long NO_SEQUENCE = -1L;
     // Kalshi qty strings have 2 decimal places (cent-dollar precision). We store qty arrays
     // in cent-dollars (multiply by 100 on parse) so $0.01 orders are preserved. Divide by 100
     // when writing to the size field to keep the same schema scale as other exchanges.
@@ -93,6 +94,10 @@ public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10S
     private final long[] noQty = new long[PRICE_ARRAY_SIZE];
 
     private long lastTimestampNanos;
+    // The book subscription and the number its next message should carry. Reset by the supervisor's subscribe, on
+    // its own thread, while the reader is paused.
+    private volatile long bookSid = NO_SEQUENCE;
+    private long expectedSeq;
 
     public KalshiInboundReader(
             Logger logger,
@@ -137,6 +142,8 @@ public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10S
 
     @Override
     protected void subscribe() throws IOException {
+        // A new subscription numbers its messages from its own snapshot.
+        this.bookSid = NO_SEQUENCE;
         // {"id": 1, "cmd": "subscribe", "params": {"channels": ["orderbook_delta", "trade"], "market_tickers":
         // ["<ticker>"], "use_yes_price": true}}
         final InboundJsonWebSocketWriter jsonInboundWebSocketWriter = (InboundJsonWebSocketWriter) this.socketWriter;
@@ -187,24 +194,56 @@ public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10S
     protected void handleJsonMessage(final JsonDecoder.JsonNode node) {
         try (var obj = node.asObject()) {
             MsgType type = MsgType.UNKNOWN;
+            long sid = NO_SEQUENCE;
+            long seq = NO_SEQUENCE;
             while (obj.hasNextKey()) {
                 try (var key = obj.nextKey()) {
                     if (key.getName().equals("type")) {
                         type = parseMsgType(key.asString());
+                    } else if (key.getName().equals("sid")) {
+                        sid = key.asLong();
+                    } else if (key.getName().equals("seq")) {
+                        seq = key.asLong();
                     } else if (key.getName().equals("msg")) {
                         if (type == MsgType.SNAPSHOT) {
+                            this.bookSid = sid;
+                            this.expectedSeq = seq + 1;
                             parseSnapshot(key);
-                        } else if (type == MsgType.DELTA) {
+                            continue;
+                        }
+                        // Every message on the book's subscription is numbered, not only its deltas.
+                        checkBookSequence(sid, seq);
+                        if (type == MsgType.DELTA) {
                             parseDelta(key);
                         } else if (type == MsgType.TRADE) {
                             parseTrade(key);
                         }
                         // else: auto-consumed on close
                     }
-                    // id, sid, seq, and other fields: auto-consumed on close
+                    // id and other fields: auto-consumed on close
                 }
             }
         }
+    }
+
+    /**
+     * Kalshi numbers a subscription's messages one by one, the snapshot first, so any other number on a delta means
+     * one was missed or came out of order. Checked before the delta is applied.
+     */
+    private void checkBookSequence(final long sid, final long seq) {
+        if (this.bookSid == NO_SEQUENCE || sid != this.bookSid || seq == NO_SEQUENCE) {
+            return;
+        }
+        if (seq != this.expectedSeq) {
+            resyncBook(this.expectedSeq, seq, GAP_SEQUENCE);
+        }
+        this.expectedSeq = seq + 1;
+    }
+
+    @Override
+    protected void publishSuspectBook() {
+        refreshMbp10Book();
+        emitBookUpdate(true);
     }
 
     private MsgType parseMsgType(final GnomeString typeStr) {
@@ -384,6 +423,10 @@ public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10S
     }
 
     private void emitBookUpdate() {
+        emitBookUpdate(false);
+    }
+
+    private void emitBookUpdate(final boolean suspect) {
         prepareEncoder();
         schema.encoder.timestampEvent(lastTimestampNanos);
         schema.encoder.sequence(Mbp10Encoder.sequenceNullValue());
@@ -394,6 +437,7 @@ public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10S
         schema.encoder.depth(Mbp10Encoder.depthNullValue());
         schema.encoder.flags().clear();
         schema.encoder.flags().marketByPrice(true);
+        schema.encoder.flags().maybeBadBook(suspect);
         book.writeTo(schema);
         offer();
     }

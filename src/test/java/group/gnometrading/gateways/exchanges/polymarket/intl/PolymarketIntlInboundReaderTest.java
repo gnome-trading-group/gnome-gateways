@@ -1,11 +1,14 @@
 package group.gnometrading.gateways.exchanges.polymarket.intl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import group.gnometrading.codecs.json.JsonDecoder;
+import group.gnometrading.gateways.SocketClosedException;
 import group.gnometrading.gateways.inbound.exchanges.polymarket.intl.PolymarketIntlInboundReader;
 import group.gnometrading.logging.NullLogger;
 import group.gnometrading.networking.websockets.WebSocketClient;
@@ -280,6 +283,96 @@ class PolymarketIntlInboundReaderTest {
                                 .getBytes(StandardCharsets.UTF_8)));
 
         assertThrows(NumberFormatException.class, () -> reader.doWork());
+    }
+
+    // ========== Gaps ==========
+
+    private static final String GAP_BOOK =
+            """
+            [{"market":"condition-1","asset_id":"token-yes","timestamp":"1782753357257",\
+            "bids":[{"price":"0.08","size":"3"},{"price":"0.07","size":"4"}],\
+            "asks":[{"price":"0.10","size":"6"}],"event_type":"book","last_trade_price":"0.09"}]
+            """;
+
+    private static String change(
+            final String timestamp,
+            final String side,
+            final String price,
+            final String size,
+            final String bestBid,
+            final String bestAsk) {
+        return "{\"market\":\"condition-1\",\"price_changes\":[{\"asset_id\":\"token-yes\",\"price\":\"" + price
+                + "\",\"size\":\"" + size + "\",\"side\":\"" + side + "\",\"hash\":\"h\",\"best_bid\":\"" + bestBid
+                + "\",\"best_ask\":\"" + bestAsk + "\"}],\"timestamp\":\"" + timestamp
+                + "\",\"event_type\":\"price_change\"}";
+    }
+
+    @Test
+    void bestPricesThatAgreeAreNotAGap() throws Exception {
+        process(GAP_BOOK);
+        process(change("1782753357300", "BUY", "0.07", "5", "0.08", "0.10"));
+        process(change("1782753357301", "SELL", "0.11", "2", "0.08", "0.10"));
+        process(change("1782753357302", "BUY", "0.08", "0", "0.07", "0.10"));
+
+        assertFalse(captured.get(captured.size() - 1).decoder.flags().maybeBadBook());
+    }
+
+    /** One match's changes can come as several messages with one timestamp, each carrying the post-match prices. */
+    @Test
+    void disagreementWithinOneMatchIsNotAGap() throws Exception {
+        process(GAP_BOOK);
+        // The match removes 0.08 then 0.07; the venue's best bid (0.06) is right only once both have arrived.
+        process(change("1782753357300", "BUY", "0.08", "0", "0.06", "0.10"));
+        process(change("1782753357300", "BUY", "0.07", "0", "0.06", "0.10"));
+        process(change("1782753357300", "BUY", "0.06", "9", "0.06", "0.10"));
+        process(change("1782753357301", "SELL", "0.11", "2", "0.06", "0.10"));
+
+        assertFalse(captured.get(captured.size() - 1).decoder.flags().maybeBadBook());
+    }
+
+    @Test
+    void missedChangePublishesTheBookAsSuspectAndDropsTheConnection() throws Exception {
+        process(GAP_BOOK);
+        // The venue's best bid is 0.09: a bid we were never told about.
+        process(change("1782753357300", "BUY", "0.07", "5", "0.09", "0.10"));
+        final int before = captured.size();
+
+        when(client.read()).thenReturn(response);
+        when(response.getBody())
+                .thenReturn(ByteBuffer.wrap(change("1782753357301", "SELL", "0.11", "2", "0.09", "0.10")
+                        .getBytes(StandardCharsets.UTF_8)));
+        assertThrows(SocketClosedException.class, () -> reader.doWork());
+
+        final long deadline = System.currentTimeMillis() + 1_000;
+        while (captured.size() == before && System.currentTimeMillis() < deadline) {
+            poller.poll();
+        }
+        assertEquals(before + 1, captured.size(), "one suspect book, then nothing");
+        assertTrue(captured.get(before).decoder.flags().maybeBadBook());
+    }
+
+    @Test
+    void emptySideIsTheVenuesZeroOrOne() throws Exception {
+        process(
+                """
+                [{"market":"condition-1","asset_id":"token-yes","timestamp":"1782753357257",\
+                "bids":[{"price":"0.08","size":"3"}],"asks":[],"event_type":"book","last_trade_price":"0.09"}]
+                """);
+        process(change("1782753357300", "BUY", "0.08", "0", "0", "1"));
+        process(change("1782753357301", "BUY", "0.05", "1", "0.05", "1"));
+
+        assertFalse(captured.get(captured.size() - 1).decoder.flags().maybeBadBook());
+    }
+
+    @Test
+    void wholeBookClearsAPendingCheck() throws Exception {
+        process(GAP_BOOK);
+        process(change("1782753357300", "BUY", "0.07", "5", "0.09", "0.10"));
+        // The venue sends its whole book again before the next change: it replaces ours, and the stale check.
+        process(GAP_BOOK.replace("1782753357257", "1782753357301"));
+        process(change("1782753357302", "SELL", "0.11", "2", "0.08", "0.10"));
+
+        assertFalse(captured.get(captured.size() - 1).decoder.flags().maybeBadBook());
     }
 
     private void process(String message) throws Exception {

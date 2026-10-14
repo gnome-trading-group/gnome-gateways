@@ -353,11 +353,12 @@ public abstract class OutboundSocketReader implements GnomeAgent {
      * Ends an order the venue refused after taking it, before acknowledging it, with a {@link ExecType#REJECT}, and
      * releases it. On venues that validate an order only after assigning it an id.
      */
-    protected final void publishRejected(final OrderContext ctx, final long key, final long timestampEvent) {
+    protected final void publishRejected(
+            final OrderContext ctx, final long key, final long timestampEvent, final RejectReason reason) {
         prepareExecReportHeader(ctx);
         this.execReport.encoder.execType(ExecType.REJECT);
         this.execReport.encoder.orderStatus(OrderStatus.REJECTED);
-        this.execReport.encoder.rejectReason(RejectReason.EXCHANGE_REJECTED);
+        this.execReport.encoder.rejectReason(reason);
         this.execReport.encoder.filledQty(OrderExecutionReportEncoder.filledQtyNullValue());
         this.execReport.encoder.fillPrice(OrderExecutionReportEncoder.fillPriceNullValue());
         this.execReport.encoder.fee(OrderExecutionReportEncoder.feeNullValue());

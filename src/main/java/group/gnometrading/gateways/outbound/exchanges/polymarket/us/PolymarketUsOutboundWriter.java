@@ -6,6 +6,7 @@ import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
 import group.gnometrading.gateways.outbound.IdleConnections;
 import group.gnometrading.gateways.outbound.OrderContext;
 import group.gnometrading.gateways.outbound.OutboundSocketWriter;
+import group.gnometrading.gateways.outbound.VenueRejectText;
 import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.http.HTTPClient;
@@ -173,7 +174,11 @@ public final class PolymarketUsOutboundWriter extends OutboundSocketWriter {
         if (!response.isSuccess()) {
             final int status = response.getStatusCode();
             logRejection("submit", ctx, status, response);
-            return classifyFailure(status);
+            final SubmitResult result = classifyFailure(status);
+            if (result == SubmitResult.REJECTED) {
+                ctx.rejectReason = VenueRejectText.POLYMARKET_US.classify(response.getBody());
+            }
+            return result;
         }
         // An order the exchange refuses still gets an id, and its rejection comes on the order stream: the reader
         // reports it, as it does everything else that happens to the order.
@@ -330,7 +335,7 @@ public final class PolymarketUsOutboundWriter extends OutboundSocketWriter {
                 this.jsonBodyLength);
         if (!response.isSuccess()) {
             logRejection("modify", ctx, response.getStatusCode(), response);
-            enqueueCancelReject(ctx, rejectReasonFor(response));
+            enqueueCancelReject(ctx, rejectReasonFor(response, VenueRejectText.POLYMARKET_US));
             return;
         }
         ctx.originalQty = size;
@@ -499,7 +504,7 @@ public final class PolymarketUsOutboundWriter extends OutboundSocketWriter {
     }
 
     /**
-     * Logs what the venue said when it refused, which the OMS only learns as EXCHANGE_REJECTED. Off the hot path:
+     * Logs what the venue said when it refused, which the OMS learns only as a coarse reason. Off the hot path:
      * a refusal allocates. No status and no body is no answer at all, so there is nothing to log.
      */
     private void logRejection(

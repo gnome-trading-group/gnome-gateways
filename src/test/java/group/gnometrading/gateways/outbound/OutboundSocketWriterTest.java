@@ -23,8 +23,11 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -225,6 +228,87 @@ class OutboundSocketWriterTest {
         writer.doWork();
 
         assertEquals(ExecType.REJECT, drainQueue(writerReportQueue).get(0).execType);
+        assertEquals(0, writer.activeOrderCount());
+    }
+
+    @Test
+    void firstSubmitRefusedWithAReason_IsRejectedForIt() throws Exception {
+        writer.submitScript.add(SubmitResult.REJECTED);
+        writer.submitReasons.put(1, RejectReason.INSUFFICIENT_FUNDS);
+        publishOrder(
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
+
+        writer.doWork();
+
+        final List<OrderContext> reports = drainQueue(writerReportQueue);
+        assertEquals(ExecType.REJECT, reports.get(0).execType);
+        assertEquals(RejectReason.INSUFFICIENT_FUNDS, reports.get(0).rejectReason);
+    }
+
+    @Test
+    void firstSubmitSaysDuplicate_IgnoresAnyReasonAndIsAPlainRefusal() throws Exception {
+        writer.submitScript.add(SubmitResult.DUPLICATE);
+        publishOrder(
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
+
+        writer.doWork();
+
+        assertEquals(
+                RejectReason.EXCHANGE_REJECTED, drainQueue(writerReportQueue).get(0).rejectReason);
+    }
+
+    @Test
+    void unknownSubmit_ResendRefusedWithAReasonAndVenueLacksIt_KeepsTheResendsReason() throws Exception {
+        writer.submitScript.add(SubmitResult.UNKNOWN);
+        writer.submitScript.add(SubmitResult.REJECTED);
+        writer.submitReasons.put(2, RejectReason.POST_ONLY_WOULD_CROSS);
+        writer.findScript.add(SubmitResult.REJECTED);
+        publishOrder(
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
+
+        writer.doWork();
+
+        assertEquals(
+                RejectReason.POST_ONLY_WOULD_CROSS,
+                drainQueue(writerReportQueue).get(0).rejectReason,
+                "the lookup can't say why, so it doesn't replace the venue's reason");
+    }
+
+    @Test
+    void unknownSubmit_EachResendStartsWithoutTheLastOnesReason() throws Exception {
+        writer.submitScript.add(SubmitResult.UNKNOWN);
+        writer.submitScript.add(SubmitResult.REJECTED);
+        writer.submitReasons.put(1, RejectReason.MARKET_CLOSED);
+        writer.submitReasons.put(2, RejectReason.INSUFFICIENT_FUNDS);
+        writer.findScript.add(SubmitResult.UNKNOWN);
+        writer.submitScript.add(SubmitResult.REJECTED);
+        writer.findScript.add(SubmitResult.REJECTED);
+        publishOrder(
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
+
+        writer.doWork();
+
+        assertEquals(Arrays.asList(null, null, null), writer.reasonsSeenBySubmit);
+        assertEquals(RejectReason.INSUFFICIENT_FUNDS, writer.reasonsSeenByFind.get(0));
+        assertEquals(
+                RejectReason.EXCHANGE_REJECTED,
+                drainQueue(writerReportQueue).get(0).rejectReason,
+                "the last resend gave no reason");
+    }
+
+    @Test
+    void unknownSubmit_ResendRateLimitedAndVenueLacksIt_IsAPlainRefusalNotAnEarlierReason() throws Exception {
+        writer.submitScript.add(SubmitResult.UNKNOWN);
+        writer.submitReasons.put(1, RejectReason.INSUFFICIENT_FUNDS);
+        writer.submitScript.add(SubmitResult.RATE_LIMITED);
+        writer.findScript.add(SubmitResult.REJECTED);
+        publishOrder(
+                Side.Bid, price("0.50"), qty("1.0"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, 2, 3L, 1L, 1);
+
+        writer.doWork();
+
+        assertEquals(
+                RejectReason.EXCHANGE_REJECTED, drainQueue(writerReportQueue).get(0).rejectReason);
         assertEquals(0, writer.activeOrderCount());
     }
 
@@ -1056,6 +1140,11 @@ class OutboundSocketWriterTest {
         final Deque<Object> submitScript = new ArrayDeque<>();
         final Deque<Object> findScript = new ArrayDeque<>();
         final Deque<Exception> cancelScript = new ArrayDeque<>();
+        // The reason the venue gives on a given submit call, counted from 1; a find never gives one.
+        final Map<Integer, RejectReason> submitReasons = new HashMap<>();
+        // What ctx.rejectReason held as each submit and find began.
+        final List<RejectReason> reasonsSeenBySubmit = new ArrayList<>();
+        final List<RejectReason> reasonsSeenByFind = new ArrayList<>();
         int prepareCallCount = 0;
         int submitCallCount = 0;
         int findCallCount = 0;
@@ -1088,6 +1177,11 @@ class OutboundSocketWriterTest {
         @Override
         protected SubmitResult submitOrder(final OrderContext ctx) throws Exception {
             submitCallCount++;
+            reasonsSeenBySubmit.add(ctx.rejectReason);
+            final RejectReason reason = submitReasons.get(submitCallCount);
+            if (reason != null) {
+                ctx.rejectReason = reason;
+            }
             final Object scripted = submitScript.poll();
             if (scripted instanceof Exception e) {
                 throw e;
@@ -1112,6 +1206,7 @@ class OutboundSocketWriterTest {
         @Override
         protected SubmitResult findOrder(final OrderContext ctx) throws Exception {
             findCallCount++;
+            reasonsSeenByFind.add(ctx.rejectReason);
             final Object scripted = findScript.poll();
             if (scripted instanceof Exception e) {
                 throw e;

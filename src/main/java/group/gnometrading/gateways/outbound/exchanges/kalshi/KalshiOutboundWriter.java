@@ -6,6 +6,7 @@ import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
 import group.gnometrading.gateways.outbound.IdleConnections;
 import group.gnometrading.gateways.outbound.OrderContext;
 import group.gnometrading.gateways.outbound.OutboundSocketWriter;
+import group.gnometrading.gateways.outbound.VenueRejectText;
 import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.http.HTTPClient;
@@ -211,13 +212,18 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
             logRejection("submit", ctx, status, response);
             // A 503 while the shard isn't trading is Kalshi refusing every order, not a lost answer.
             if (status == HTTP_SERVICE_UNAVAILABLE && !shardIsTrading()) {
+                ctx.rejectReason = RejectReason.MARKET_CLOSED;
                 return SubmitResult.REJECTED;
             }
             // Kalshi's answer to a client_order_id it already has.
             if (status == HTTP_CONFLICT) {
                 return SubmitResult.DUPLICATE;
             }
-            return classifyFailure(status);
+            final SubmitResult result = classifyFailure(status);
+            if (result == SubmitResult.REJECTED) {
+                ctx.rejectReason = VenueRejectText.KALSHI.classify(response.getBody());
+            }
+            return result;
         }
         return parseOrderId(response, ctx) ? SubmitResult.ACCEPTED : SubmitResult.UNKNOWN;
     }
@@ -521,7 +527,7 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
                     remaining);
         } else {
             logRejection("amend", ctx, response.getStatusCode(), response);
-            enqueueCancelReject(ctx, rejectReasonFor(response));
+            enqueueCancelReject(ctx, rejectReasonFor(response, VenueRejectText.KALSHI));
         }
     }
 

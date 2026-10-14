@@ -514,7 +514,51 @@ class PolymarketIntlOutboundWriterTest {
     }
 
     // ========== Why the venue refused ==========
-    // The OMS only learns EXCHANGE_REJECTED; the venue's own words go to the log.
+    // The OMS learns a coarse reason; the venue's own words go to the log.
+
+    static Stream<Arguments> refusals() {
+        return Stream.of(
+                Arguments.of(
+                        400,
+                        "{\"error\":\"invalid post-only order: order crosses book\"}",
+                        RejectReason.POST_ONLY_WOULD_CROSS),
+                Arguments.of(400, "{\"error\":\"not enough balance / allowance\"}", RejectReason.INSUFFICIENT_FUNDS),
+                Arguments.of(503, "{\"error\":\"Trading is currently cancel-only.\"}", RejectReason.MARKET_CLOSED),
+                Arguments.of(400, "{\"error\":\"invalid order payload\"}", RejectReason.EXCHANGE_REJECTED),
+                Arguments.of(503, "{\"error\":\"Trading is currently disabled.\"}", RejectReason.EXCHANGE_REJECTED),
+                Arguments.of(429, "{\"error\":\"not enough balance / allowance\"}", RejectReason.RATE_LIMITED),
+                Arguments.of(
+                        200,
+                        "{\"success\":false,\"errorMsg\":\"not enough balance / allowance\",\"orderID\":\"\"}",
+                        RejectReason.INSUFFICIENT_FUNDS),
+                Arguments.of(
+                        200,
+                        "{\"success\":false,\"errorMsg\":\"invalid post-only order: order crosses book\"}",
+                        RejectReason.POST_ONLY_WOULD_CROSS),
+                Arguments.of(
+                        200,
+                        "{\"success\":false,\"errorMsg\":\"order_version_mismatch\",\"orderID\":\"\"}",
+                        RejectReason.EXCHANGE_REJECTED));
+    }
+
+    @ParameterizedTest
+    @MethodSource("refusals")
+    void refusedSubmit_TellsTheOmsWhy(final int status, final String answer, final RejectReason expected)
+            throws Exception {
+        final ByteBuffer body = ByteBuffer.wrap(answer.getBytes(StandardCharsets.UTF_8));
+        stubPost(body);
+        when(httpResponse.isSuccess()).thenReturn(status == 200);
+        when(httpResponse.getStatusCode()).thenReturn(status);
+
+        publishOrder(Side.Bid, price("0.55"), qty("10"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, true);
+        writer.doWork();
+
+        final List<OrderContext> reports = drainQueue(writerReportQueue);
+        assertEquals(1, reports.size());
+        assertEquals(ExecType.REJECT, reports.get(0).execType);
+        assertEquals(expected, reports.get(0).rejectReason);
+        assertEquals(0, body.position(), "the body is left for the log");
+    }
 
     @Test
     void refusedSubmit_LogsTheVenuesMessage() throws Exception {

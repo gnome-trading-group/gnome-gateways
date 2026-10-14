@@ -29,6 +29,7 @@ public final class LighterInboundReader extends InboundJsonWebSocketReader<Mbp10
     private static final int MAX_LEVELS = 10;
     // What a venue number that can't be read parses to; every real price and size is non-negative.
     private static final long UNREADABLE = -1L;
+    private static final long NO_NONCE = -1L;
 
     private final MbpBufferBook book;
     private final String orderBookChannel;
@@ -39,6 +40,10 @@ public final class LighterInboundReader extends InboundJsonWebSocketReader<Mbp10
     // Whether this connection's first order book, the snapshot, has been read; every one after it is an update.
     // Reset when the supervisor subscribes, on its own thread, while the reader is paused.
     private volatile boolean snapshotRead;
+    // The last update's nonce, which the next update's begin_nonce must match; and the last venue time seen, for a
+    // book published before the message's own time has been read.
+    private long lastNonce = NO_NONCE;
+    private long lastTimestamp = Mbp10Encoder.timestampEventNullValue();
 
     public LighterInboundReader(
             Logger logger,
@@ -87,6 +92,9 @@ public final class LighterInboundReader extends InboundJsonWebSocketReader<Mbp10
         if (shouldOffer) {
             this.schema.encoder.timestampEvent(timestamp);
             offer();
+        }
+        if (timestamp != Mbp10Encoder.timestampEventNullValue()) {
+            this.lastTimestamp = timestamp;
         }
     }
 
@@ -148,6 +156,8 @@ public final class LighterInboundReader extends InboundJsonWebSocketReader<Mbp10
     private boolean parseOrderBook(final JsonDecoder.JsonNode node) {
         int depth = Mbp10Encoder.depthNullValue();
         final boolean snapshot = !this.snapshotRead;
+        long nonce = NO_NONCE;
+        long beginNonce = NO_NONCE;
         try (var obj = node.asObject()) {
             while (obj.hasNextKey()) {
                 try (var key = obj.nextKey()) {
@@ -155,6 +165,10 @@ public final class LighterInboundReader extends InboundJsonWebSocketReader<Mbp10
                         depth = Math.min(depth, parseOrders(key, true, snapshot));
                     } else if (key.getName().equals("bids")) {
                         depth = Math.min(depth, parseOrders(key, false, snapshot));
+                    } else if (key.getName().equals("nonce")) {
+                        nonce = key.asLong();
+                    } else if (key.getName().equals("begin_nonce")) {
+                        beginNonce = key.asLong();
                     } else {
                         // NO-OP: consume it
                     }
@@ -162,6 +176,7 @@ public final class LighterInboundReader extends InboundJsonWebSocketReader<Mbp10
             }
         }
         this.snapshotRead = true;
+        checkNonce(snapshot, beginNonce, nonce);
         if (depth == Mbp10Encoder.depthNullValue() || depth >= MAX_LEVELS) {
             return false;
         }
@@ -181,6 +196,39 @@ public final class LighterInboundReader extends InboundJsonWebSocketReader<Mbp10
 
         this.book.writeTo(this.schema);
         return true;
+    }
+
+    /**
+     * Each update starts where the one before it ended: its begin_nonce is the previous message's nonce. Any other
+     * value means updates were missed. (offset can't tell: Lighter says it isn't contiguous.) The levels are already
+     * applied by then, but the book is resynced either way.
+     */
+    private void checkNonce(final boolean snapshot, final long beginNonce, final long nonce) {
+        if (nonce == NO_NONCE) {
+            return;
+        }
+        final long previous = this.lastNonce;
+        this.lastNonce = nonce;
+        if (!snapshot && previous != NO_NONCE && beginNonce != previous) {
+            resyncBook(previous, beginNonce, GAP_NONCE);
+        }
+    }
+
+    @Override
+    protected void publishSuspectBook() {
+        prepareEncoder();
+        this.schema.encoder.timestampEvent(this.lastTimestamp);
+        this.schema.encoder.sequence(this.lastSequenceNumber);
+        this.schema.encoder.price(this.lastTradePrice);
+        this.schema.encoder.size(this.lastTradeSize);
+        this.schema.encoder.action(Action.Modify);
+        this.schema.encoder.side(Side.None);
+        this.schema.encoder.depth(Mbp10Encoder.depthNullValue());
+        this.schema.encoder.flags().clear();
+        this.schema.encoder.flags().marketByPrice(true);
+        this.schema.encoder.flags().maybeBadBook(true);
+        this.book.writeTo(this.schema);
+        offer();
     }
 
     private int parseOrders(final JsonDecoder.JsonNode node, final boolean isAsk, final boolean snapshot) {
