@@ -37,9 +37,6 @@ class PolymarketIntlMarketInfoTest {
         assertEquals(Statics.PRICE_SCALING_FACTOR / 100, info.tickSize());
         assertEquals(5 * Statics.SIZE_SCALING_FACTOR, info.minOrderSize());
         assertTrue(info.negRisk());
-        assertEquals(0.05, info.feeRate(), 1e-12);
-        assertEquals(1.0, info.feeExponent(), 1e-12);
-        assertTrue(info.feeTakerOnly());
         assertFalse(info.takerOrderDelay(), "itode is omitted when false");
         assertEquals(0, info.minOrderAgeSeconds());
     }
@@ -51,7 +48,6 @@ class PolymarketIntlMarketInfoTest {
 
         assertEquals(Statics.PRICE_SCALING_FACTOR / 1000, info.tickSize());
         assertFalse(info.negRisk());
-        assertEquals(2.0, info.feeExponent(), 1e-12);
         assertTrue(info.takerOrderDelay());
         assertEquals(60, info.minOrderAgeSeconds());
     }

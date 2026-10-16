@@ -76,7 +76,7 @@ class PolymarketIntlOutboundWriterTest {
     private static final long TICK = Statics.PRICE_SCALING_FACTOR / 100;
     private static final long MIN_SIZE = 5 * Statics.SIZE_SCALING_FACTOR;
     private static final PolymarketIntlMarketInfo STANDARD_MARKET =
-            new PolymarketIntlMarketInfo(TICK, MIN_SIZE, false, 0.05, 1.0, true, false, 0);
+            new PolymarketIntlMarketInfo(TICK, MIN_SIZE, false, false, 0);
 
     private SequencedRingBuffer<Order> orderBuffer;
     private ManyToOneRingBuffer<OrderContext> newOrderQueue;
@@ -172,8 +172,7 @@ class PolymarketIntlOutboundWriterTest {
     void submitOrder_BodyMatchesReferenceClient(
             boolean negRisk, Side side, int signatureType, String maker, String expectedBody, String orderHash)
             throws Exception {
-        writer = buildWriter(
-                maker, signatureType, new PolymarketIntlMarketInfo(TICK, MIN_SIZE, negRisk, 0.05, 1.0, true, false, 0));
+        writer = buildWriter(maker, signatureType, new PolymarketIntlMarketInfo(TICK, MIN_SIZE, negRisk, false, 0));
         stubPost(successResponse(orderHash));
 
         publishOrder(side, price("0.55"), qty("10"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, false);

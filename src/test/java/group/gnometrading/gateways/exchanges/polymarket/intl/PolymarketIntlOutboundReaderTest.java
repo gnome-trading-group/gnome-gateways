@@ -13,7 +13,6 @@ import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
 import group.gnometrading.gateways.outbound.OrderContext;
 import group.gnometrading.gateways.outbound.exchanges.polymarket.intl.PolymarketIntlAuthHeaders;
-import group.gnometrading.gateways.outbound.exchanges.polymarket.intl.PolymarketIntlMarketInfo;
 import group.gnometrading.gateways.outbound.exchanges.polymarket.intl.PolymarketIntlOutboundReader;
 import group.gnometrading.gateways.outbound.exchanges.polymarket.intl.PolymarketIntlVenueOrderQuery;
 import group.gnometrading.logging.NullLogger;
@@ -35,6 +34,12 @@ import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Exchange;
 import group.gnometrading.sm.Listing;
 import group.gnometrading.sm.Security;
+import group.gnometrading.sm.fee.FeeComponent;
+import group.gnometrading.sm.fee.FeeKind;
+import group.gnometrading.sm.fee.FeeRounding;
+import group.gnometrading.sm.fee.FeeSchedule;
+import group.gnometrading.sm.fee.FeeSide;
+import group.gnometrading.sm.fee.FeeTimeline;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -60,8 +65,19 @@ class PolymarketIntlOutboundReaderTest {
 
     private static final long FIXED_NANO = 1_700_000_000_000_000_000L;
     private static final long ORIG_QTY = qty("10");
-    private static final PolymarketIntlMarketInfo TAKER_ONLY_FEES = new PolymarketIntlMarketInfo(
-            Statics.PRICE_SCALING_FACTOR / 100, qty("5"), false, 0.05, 1.0, true, false, 0);
+    private static final FeeTimeline TAKER_ONLY_FEES = fees(0.05, 1.0, true);
+
+    /** One schedule from the epoch on, as the registry stores a market's fd: rate, exponent, taker only. */
+    private static FeeTimeline fees(final double rate, final double exponent, final boolean takerOnly) {
+        final FeeSchedule schedule = new FeeSchedule(
+                "USD",
+                new FeeComponent[] {
+                    new FeeComponent(FeeKind.PRICE_CURVE, rate, takerOnly ? 0 : rate, exponent, FeeSide.BOTH)
+                },
+                new FeeRounding(
+                        FeeRounding.Mode.HALF_UP, Statics.PRICE_SCALING_FACTOR / 100_000, FeeRounding.Scope.FILL));
+        return new FeeTimeline(new long[] {0}, new long[] {FeeTimeline.OPEN_ENDED}, new FeeSchedule[] {schedule});
+    }
 
     private SequencedRingBuffer<OrderExecutionReport> execReportBuffer;
     private SequencedPoller poller;
@@ -177,8 +193,7 @@ class PolymarketIntlOutboundReaderTest {
     void takerFillAcrossLevels_IsPricedAndChargedFromItsLegs() throws Exception {
         // Seen live: $1.10 bought 117.352 YES from four resting orders, three of them NO buyers matched by minting.
         // The trade's own price (0.009) is only the best of them.
-        reader = buildReader(new PolymarketIntlMarketInfo(
-                Statics.PRICE_SCALING_FACTOR / 1000, qty("5"), false, 0.04, 1.0, true, false, 0));
+        reader = buildReader(fees(0.04, 1.0, true));
         enqueueOrder(ORDER_A, 1L, 0L, qty("110"), false);
         process(orderEvent("PLACEMENT", "LIVE", ORDER_A));
 
@@ -699,8 +714,7 @@ class PolymarketIntlOutboundReaderTest {
 
     @Test
     void takerFee_AppliesTheExponent() throws Exception {
-        reader = buildReader(new PolymarketIntlMarketInfo(
-                Statics.PRICE_SCALING_FACTOR / 100, qty("5"), false, 0.02, 2.0, true, false, 0));
+        reader = buildReader(fees(0.02, 2.0, true));
         enqueueOrder(ORDER_A, 1L);
         process(orderEvent("PLACEMENT", "LIVE", ORDER_A));
 
@@ -712,8 +726,7 @@ class PolymarketIntlOutboundReaderTest {
 
     @Test
     void makerFee_ChargedWhenTheMarketIsNotTakerOnly() throws Exception {
-        reader = buildReader(new PolymarketIntlMarketInfo(
-                Statics.PRICE_SCALING_FACTOR / 100, qty("5"), false, 0.05, 1.0, false, false, 0));
+        reader = buildReader(fees(0.05, 1.0, false));
         enqueueOrder(ORDER_A, 1L);
         process(orderEvent("PLACEMENT", "LIVE", ORDER_A));
 
@@ -784,7 +797,7 @@ class PolymarketIntlOutboundReaderTest {
 
     // ========== helpers ==========
 
-    private PolymarketIntlOutboundReader buildReader(final PolymarketIntlMarketInfo marketInfo) {
+    private PolymarketIntlOutboundReader buildReader(final FeeTimeline feeTimeline) {
         final Listing listing = new Listing(
                 7,
                 new Exchange(2, "POLYMARKET", "Polymarket", "global", SchemaType.MBP_10),
@@ -804,7 +817,7 @@ class PolymarketIntlOutboundReaderTest {
                 "test-key",
                 "test-secret",
                 "test-passphrase",
-                marketInfo,
+                feeTimeline,
                 new PolymarketIntlVenueOrderQuery(
                         restClient,
                         "clob.test",

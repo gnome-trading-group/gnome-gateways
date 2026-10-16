@@ -5,7 +5,6 @@ import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
 import group.gnometrading.gateways.Rfc3339;
 import group.gnometrading.gateways.outbound.OrderContext;
 import group.gnometrading.gateways.outbound.OutboundJsonWebSocketReader;
-import group.gnometrading.gateways.outbound.fee.PredictionMarketFees;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.http.HTTPClient;
 import group.gnometrading.networking.websockets.WebSocketClient;
@@ -20,6 +19,8 @@ import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Listing;
+import group.gnometrading.sm.fee.FeeSchedule;
+import group.gnometrading.sm.fee.FeeTimeline;
 import group.gnometrading.strings.GnomeString;
 import group.gnometrading.utils.ScaledMath;
 import java.io.IOException;
@@ -44,8 +45,7 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
     private static final int STATUS_CANCELED = 3;
 
     private final KalshiAuthSigner authSigner;
-    private final double takerFeeRate;
-    private final double makerFeeRate;
+    private final FeeTimeline feeTimeline;
     private final ParsedEvent parsedEvent = new ParsedEvent();
     private final byte[] subscribeMessage;
     private final String marketTicker;
@@ -67,8 +67,7 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
             final KalshiAuthSigner authSigner,
             final HTTPClient restClient,
             final String apiHost,
-            final double takerFeeRate,
-            final double makerFeeRate) {
+            final FeeTimeline feeTimeline) {
         super(
                 logger,
                 execReportBuffer,
@@ -80,8 +79,7 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
                 socketClient,
                 jsonDecoder);
         this.authSigner = authSigner;
-        this.takerFeeRate = takerFeeRate;
-        this.makerFeeRate = makerFeeRate;
+        this.feeTimeline = feeTimeline;
 
         // The YES and NO listings trade one market, so the suffix is not part of its ticker.
         final String exchangeSecurityId = listing.exchangeSecurityId();
@@ -435,8 +433,9 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
 
     /**
      * Fee for this fill, as a delta against the order's running total. Kalshi reports the fees it
-     * actually charged, split by liquidity, so those are used whenever present. The rate model is
-     * only a fallback for messages without them, and splits the fill by which cost bucket moved.
+     * actually charged, split by liquidity, so those are used whenever present. The listing's fee
+     * schedule is only a fallback for messages without them, and splits the fill by which cost
+     * bucket moved.
      */
     private long fillFee(
             final OrderContext ctx,
@@ -451,10 +450,15 @@ public final class KalshiOutboundReader extends OutboundJsonWebSocketReader {
             ctx.cumulativeFees = totalFees;
             return fee;
         }
+        final FeeSchedule schedule = this.feeTimeline.at(this.clock.nanoTime());
+        if (schedule == null) {
+            return 0;
+        }
         final double makerShare = costDelta > 0 ? Math.min(1.0, (double) makerCostDelta / costDelta) : 0.0;
         final long makerQty = (long) (fillDelta * makerShare);
-        final long fee = PredictionMarketFees.calculateScaledFee(fillPrice, makerQty, this.makerFeeRate, 1.0)
-                + PredictionMarketFees.calculateScaledFee(fillPrice, fillDelta - makerQty, this.takerFeeRate, 1.0);
+        final boolean buy = ctx.side == Side.Bid;
+        final long fee = schedule.fee(buy, fillPrice, makerQty, true, ctx.feeState)
+                + schedule.fee(buy, fillPrice, fillDelta - makerQty, false, ctx.feeState);
         ctx.cumulativeFees += fee;
         return fee;
     }

@@ -4,7 +4,6 @@ import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
 import group.gnometrading.gateways.outbound.OrderContext;
 import group.gnometrading.gateways.outbound.OutboundJsonWebSocketReader;
-import group.gnometrading.gateways.outbound.fee.PredictionMarketFees;
 import group.gnometrading.gateways.outbound.recovery.VenueOrder;
 import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.Logger;
@@ -15,9 +14,12 @@ import group.gnometrading.schemas.Liquidity;
 import group.gnometrading.schemas.OrderExecutionReport;
 import group.gnometrading.schemas.OrderExecutionReportEncoder;
 import group.gnometrading.schemas.OrderStatus;
+import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Listing;
+import group.gnometrading.sm.fee.FeeSchedule;
+import group.gnometrading.sm.fee.FeeTimeline;
 import group.gnometrading.strings.GnomeString;
 import group.gnometrading.utils.ScaledMath;
 import java.io.IOException;
@@ -49,7 +51,6 @@ public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketRea
     private static final long LOOKUP_SLACK_SECONDS = 60;
     // The order list can lag an order placed a moment ago, so one this young is never taken for ended.
     private static final long ENDED_GRACE_MILLIS = 5_000;
-    private static final long FEE_INCREMENT = Statics.PRICE_SCALING_FACTOR / 100_000;
     private static final byte[] PING = "PING".getBytes(StandardCharsets.US_ASCII);
 
     // More maker orders than this in one trade are dropped; a market maker has at most one per side.
@@ -74,7 +75,7 @@ public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketRea
     private final String apiKey;
     private final String secret;
     private final String passphrase;
-    private final PolymarketIntlMarketInfo marketInfo;
+    private final FeeTimeline feeTimeline;
     private final ByteBuffer pingBuffer;
     private final Listing listing;
     private final String conditionId;
@@ -109,7 +110,7 @@ public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketRea
             String apiKey,
             String secret,
             String passphrase,
-            PolymarketIntlMarketInfo marketInfo,
+            FeeTimeline feeTimeline,
             PolymarketIntlVenueOrderQuery catchUpQuery) {
         super(
                 logger,
@@ -124,7 +125,7 @@ public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketRea
         this.apiKey = apiKey;
         this.secret = secret;
         this.passphrase = passphrase;
-        this.marketInfo = marketInfo;
+        this.feeTimeline = feeTimeline;
         this.pingBuffer = ByteBuffer.wrap(PING);
         this.listing = listing;
         // exchangeSecurityId format: "{condition_id}:{token_id}"
@@ -330,7 +331,7 @@ public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketRea
         final long takerKey = computeKey(event.takerOrderIdBytes, event.takerOrderIdLength);
         final OrderContext taker = findOrderContext(takerKey);
         if (taker != null) {
-            priceTakerFill(event);
+            priceTakerFill(event, taker.side == Side.Bid);
             emitFill(taker, takerKey, event.size, this.takerFillPrice, this.takerFillFee, Liquidity.TAKER, event);
         }
         for (int i = 0; i < event.makerLegCount; i++) {
@@ -343,7 +344,7 @@ public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketRea
                         makerKey,
                         leg.matchedAmount,
                         leg.price,
-                        fee(leg.price, leg.matchedAmount, Liquidity.MAKER),
+                        fee(maker.side == Side.Bid, leg.price, leg.matchedAmount, Liquidity.MAKER),
                         Liquidity.MAKER,
                         event);
             }
@@ -414,24 +415,27 @@ public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketRea
      * of them: the average of their prices, and the fee each charges at its own. A resting order on the other outcome
      * (matched by minting or merging) trades this token at the complement of its price.
      */
-    private void priceTakerFill(final ParsedEvent event) {
+    private void priceTakerFill(final ParsedEvent event, final boolean buy) {
         long qty = 0;
         long notional = 0;
-        long rawFee = 0;
+        long rawFeePico = 0;
+        final FeeSchedule schedule = this.feeTimeline.at(this.clock.nanoTime());
         for (int i = 0; i < event.makerLegCount; i++) {
             final MakerLeg leg = event.makerLegs[i];
             final long price = isThisToken(leg) ? leg.price : Statics.PRICE_SCALING_FACTOR - leg.price;
             qty += leg.matchedAmount;
             notional += ScaledMath.multiplyDivide(price, leg.matchedAmount, Statics.SIZE_SCALING_FACTOR);
-            rawFee += rawFee(price, leg.matchedAmount);
+            if (schedule != null) {
+                rawFeePico += schedule.rawPico(buy, price, leg.matchedAmount, false);
+            }
         }
         if (qty <= 0) {
             this.takerFillPrice = event.price;
-            this.takerFillFee = fee(event.price, event.size, Liquidity.TAKER);
+            this.takerFillFee = fee(buy, event.price, event.size, Liquidity.TAKER);
             return;
         }
         this.takerFillPrice = (ScaledMath.multiplyDivide(2 * notional, Statics.SIZE_SCALING_FACTOR, qty) + 1) / 2;
-        this.takerFillFee = roundFee(rawFee);
+        this.takerFillFee = schedule == null ? 0 : schedule.roundFill(rawFeePico);
     }
 
     private boolean isThisToken(final MakerLeg leg) {
@@ -449,21 +453,16 @@ public final class PolymarketIntlOutboundReader extends OutboundJsonWebSocketRea
         return true;
     }
 
-    private long fee(final long fillPrice, final long fillQty, final Liquidity liquidity) {
-        if (liquidity == Liquidity.MAKER && this.marketInfo.feeTakerOnly()) {
+    /**
+     * The fill's fee from the market's schedule in the registry, which carries the rate Polymarket set when it listed
+     * the market and its rounding to $0.00001; nothing when no schedule is known.
+     */
+    private long fee(final boolean buy, final long fillPrice, final long fillQty, final Liquidity liquidity) {
+        final FeeSchedule schedule = this.feeTimeline.at(this.clock.nanoTime());
+        if (schedule == null) {
             return 0;
         }
-        return roundFee(rawFee(fillPrice, fillQty));
-    }
-
-    private long rawFee(final long fillPrice, final long fillQty) {
-        return PredictionMarketFees.calculateScaledFee(
-                fillPrice, fillQty, this.marketInfo.feeRate(), this.marketInfo.feeExponent());
-    }
-
-    /** Polymarket charges fees to 5 decimal places; anything under half of 0.00001 USDC is free. */
-    private static long roundFee(final long fee) {
-        return (fee + FEE_INCREMENT / 2) / FEE_INCREMENT * FEE_INCREMENT;
+        return schedule.fee(buy, fillPrice, fillQty, liquidity == Liquidity.MAKER, null);
     }
 
     private void setNullFillFields() {

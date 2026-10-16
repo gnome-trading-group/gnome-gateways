@@ -17,21 +17,11 @@ import java.nio.ByteBuffer;
  * @param tickSize price increment, scaled by {@link Statics#PRICE_SCALING_FACTOR}
  * @param minOrderSize smallest order in shares, scaled by {@link Statics#SIZE_SCALING_FACTOR}
  * @param negRisk whether orders settle through the neg-risk exchange
- * @param feeRate base fee rate {@code r}; the fee is {@code shares × r × (p(1−p))^e}
- * @param feeExponent fee curve exponent {@code e}
- * @param feeTakerOnly whether only takers pay the fee
  * @param takerOrderDelay whether the venue holds incoming taker orders briefly
  * @param minOrderAgeSeconds how long an order must rest before it can be cancelled
  */
 public record PolymarketIntlMarketInfo(
-        long tickSize,
-        long minOrderSize,
-        boolean negRisk,
-        double feeRate,
-        double feeExponent,
-        boolean feeTakerOnly,
-        boolean takerOrderDelay,
-        int minOrderAgeSeconds) {
+        long tickSize, long minOrderSize, boolean negRisk, boolean takerOrderDelay, int minOrderAgeSeconds) {
 
     /** The order-signing version this gateway implements; the venue reports its own at {@code /version}. */
     public static final int SUPPORTED_CLOB_VERSION = 2;
@@ -100,9 +90,6 @@ public record PolymarketIntlMarketInfo(
         private long tickSize = -1;
         private long minOrderSize = -1;
         private boolean negRisk;
-        private double feeRate;
-        private double feeExponent = 1.0;
-        private boolean feeTakerOnly = true;
         private boolean takerOrderDelay;
         private int minOrderAgeSeconds;
 
@@ -118,25 +105,6 @@ public record PolymarketIntlMarketInfo(
                 takerOrderDelay = entry.asBoolean();
             } else if (name.equals("oas")) {
                 minOrderAgeSeconds = entry.asInt();
-            } else if (name.equals("fd")) {
-                acceptFeeDetails(entry);
-            }
-        }
-
-        private void acceptFeeDetails(final JsonDecoder.JsonNode entry) {
-            try (var fd = entry.asObject()) {
-                while (fd.hasNextKey()) {
-                    try (var field = fd.nextKey()) {
-                        final GnomeString name = field.getName();
-                        if (name.equals("r")) {
-                            feeRate = field.asDouble();
-                        } else if (name.equals("e")) {
-                            feeExponent = field.asDouble();
-                        } else if (name.equals("to")) {
-                            feeTakerOnly = field.asBoolean();
-                        }
-                    }
-                }
             }
         }
 
@@ -144,15 +112,7 @@ public record PolymarketIntlMarketInfo(
             if (tickSize <= 0 || minOrderSize < 0) {
                 throw new IllegalStateException("Polymarket market info is missing its tick size or minimum size");
             }
-            return new PolymarketIntlMarketInfo(
-                    tickSize,
-                    minOrderSize,
-                    negRisk,
-                    feeRate,
-                    feeExponent,
-                    feeTakerOnly,
-                    takerOrderDelay,
-                    minOrderAgeSeconds);
+            return new PolymarketIntlMarketInfo(tickSize, minOrderSize, negRisk, takerOrderDelay, minOrderAgeSeconds);
         }
     }
 }

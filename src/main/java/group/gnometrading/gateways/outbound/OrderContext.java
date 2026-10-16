@@ -4,6 +4,7 @@ import group.gnometrading.schemas.ExecType;
 import group.gnometrading.schemas.OrderStatus;
 import group.gnometrading.schemas.RejectReason;
 import group.gnometrading.schemas.Side;
+import group.gnometrading.sm.fee.OrderFeeState;
 
 public final class OrderContext {
 
@@ -42,6 +43,8 @@ public final class OrderContext {
     public long cumulativeCost;
     public long cumulativeMakerCost;
     public long cumulativeFees;
+    // The order's fee rounding carried from fill to fill, for fees the reader computes itself.
+    public final OrderFeeState feeState = new OrderFeeState();
     // When the order was prepared, so a lookup on a venue that can only search by time knows where to look.
     public long submittedAtMillis;
 
@@ -86,6 +89,7 @@ public final class OrderContext {
         this.cumulativeCost = 0;
         this.cumulativeMakerCost = 0;
         this.cumulativeFees = 0;
+        this.feeState.reset();
         this.submittedAtMillis = 0;
         this.acked = false;
         this.amendFillCount = QTY_ABSENT;
@@ -115,6 +119,7 @@ public final class OrderContext {
         this.cumulativeCost = src.cumulativeCost;
         this.cumulativeMakerCost = src.cumulativeMakerCost;
         this.cumulativeFees = src.cumulativeFees;
+        this.feeState.copyFrom(src.feeState);
         this.submittedAtMillis = src.submittedAtMillis;
         this.acked = src.acked;
         this.amendFillCount = src.amendFillCount;

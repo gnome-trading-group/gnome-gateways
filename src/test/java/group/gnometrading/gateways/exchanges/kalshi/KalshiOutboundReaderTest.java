@@ -29,6 +29,12 @@ import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Exchange;
 import group.gnometrading.sm.Listing;
 import group.gnometrading.sm.Security;
+import group.gnometrading.sm.fee.FeeComponent;
+import group.gnometrading.sm.fee.FeeKind;
+import group.gnometrading.sm.fee.FeeRounding;
+import group.gnometrading.sm.fee.FeeSchedule;
+import group.gnometrading.sm.fee.FeeSide;
+import group.gnometrading.sm.fee.FeeTimeline;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -51,6 +57,18 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class KalshiOutboundReaderTest {
+
+    // Kalshi's maker-fee series schedule: 0.07 taker, a quarter of it for makers, balances rounded to $0.0001.
+    private static final FeeTimeline KALSHI_FEES =
+            new FeeTimeline(new long[] {0}, new long[] {FeeTimeline.OPEN_ENDED}, new FeeSchedule[] {
+                new FeeSchedule(
+                        "USD",
+                        new FeeComponent[] {new FeeComponent(FeeKind.PRICE_CURVE, 0.07, 0.0175, 1, FeeSide.BOTH)},
+                        new FeeRounding(
+                                FeeRounding.Mode.CEIL,
+                                Statics.PRICE_SCALING_FACTOR / 10_000,
+                                FeeRounding.Scope.ORDER_ACCUMULATOR))
+            });
 
     private static final String ORDER_ID = "kalshi-order-uuid-abc123";
     private static final long FIXED_NANO = 1_700_000_000_000_000_000L;
@@ -125,8 +143,7 @@ class KalshiOutboundReaderTest {
                 new KalshiAuthSigner("test-api-key", TEST_PRIVATE_KEY),
                 restClient,
                 "api.test",
-                0.07,
-                0.0175);
+                KALSHI_FEES);
         reader.pauseControl.release();
     }
 
@@ -194,8 +211,7 @@ class KalshiOutboundReaderTest {
                 new KalshiAuthSigner("test-api-key", key),
                 restClient,
                 "api.test",
-                0.07,
-                0.0175);
+                KALSHI_FEES);
     }
 
     // ========== Resting / NEW ==========
@@ -389,24 +405,24 @@ class KalshiOutboundReaderTest {
 
     @Test
     void takerFill_NoVenueFees_FallsBackToTakerRate() throws Exception {
-        // 5 contracts @ $0.56, all taker cost, takerFeeRate=0.07
+        // 5 contracts @ $0.56, all taker cost: 0.07 × 5 × 0.56 × 0.44 = $0.08624, the balance rounded to $0.0863.
         enqueueLiveOrder(ORDER_ID, ORIG_QTY, 0);
         process(userOrderEvent(ORDER_ID, "resting", "5.00", "5.00", "2.8000", "0.0000", EVENT_MS));
         waitForReports(1);
 
-        final long expectedFee = (long) (5.0 * 0.07 * 0.56 * 0.44 * Statics.PRICE_SCALING_FACTOR);
+        final long expectedFee = price("0.0863");
         assertEquals(expectedFee, captured.get(0).decoder.fee());
         assertEquals(Liquidity.TAKER, captured.get(0).decoder.liquidity());
     }
 
     @Test
     void makerFill_NoVenueFees_FallsBackToMakerRate() throws Exception {
-        // Same fill, but booked as maker cost: makerFeeRate=0.0175, not the taker 0.07
+        // Same fill, but booked as maker cost: 0.0175 × 5 × 0.56 × 0.44 = $0.02156, rounded to $0.0216.
         enqueueLiveOrder(ORDER_ID, ORIG_QTY, 0);
         process(userOrderEvent(ORDER_ID, "resting", "5.00", "5.00", "0.0000", "2.8000", EVENT_MS));
         waitForReports(1);
 
-        final long expectedFee = (long) (5.0 * 0.0175 * 0.56 * 0.44 * Statics.PRICE_SCALING_FACTOR);
+        final long expectedFee = price("0.0216");
         assertEquals(expectedFee, captured.get(0).decoder.fee());
         assertEquals(Liquidity.MAKER, captured.get(0).decoder.liquidity());
     }
@@ -457,8 +473,8 @@ class KalshiOutboundReaderTest {
 
         assertEquals(Liquidity.TAKER, captured.get(0).decoder.liquidity());
         assertEquals(Liquidity.MAKER, captured.get(1).decoder.liquidity());
-        final long expectedMakerFee = (long) (3.0 * 0.0175 * 0.56 * 0.44 * Statics.PRICE_SCALING_FACTOR);
-        assertEquals(expectedMakerFee, captured.get(1).decoder.fee());
+        // 0.0175 × 3 × 0.56 × 0.44 = $0.012936, rounded to $0.0130, less the $0.0001 the order's taker fill overpaid.
+        assertEquals(price("0.0129"), captured.get(1).decoder.fee());
     }
 
     @Test
