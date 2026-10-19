@@ -19,6 +19,7 @@ import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Listing;
 import group.gnometrading.strings.MutableString;
 import group.gnometrading.utils.ByteBufferUtils;
+import group.gnometrading.utils.FixedPointAscii;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -376,13 +377,13 @@ public final class PolymarketUsOutboundWriter extends OutboundSocketWriter {
         this.jsonEncoder.writeString("price").writeColon().writeObjectStart();
         this.jsonEncoder.writeString("value").writeColon();
         this.jsonBodyBuffer.put((byte) '"');
-        writeDecimal(venuePrice, Statics.PRICE_SCALING_FACTOR);
+        FixedPointAscii.put(this.jsonBodyBuffer, venuePrice, Statics.PRICE_SCALING_FACTOR);
         this.jsonBodyBuffer.put((byte) '"');
         this.jsonEncoder.writeComma();
         this.jsonEncoder.writeObjectEntry("currency", "USD");
         this.jsonEncoder.writeObjectEnd().writeComma();
         this.jsonEncoder.writeString("quantity").writeColon();
-        writeDecimal(size, Statics.SIZE_SCALING_FACTOR);
+        FixedPointAscii.put(this.jsonBodyBuffer, size, Statics.SIZE_SCALING_FACTOR);
         this.jsonEncoder.writeComma();
     }
 
@@ -426,25 +427,6 @@ public final class PolymarketUsOutboundWriter extends OutboundSocketWriter {
         this.jsonEncoder.writeObjectEntry("synchronousExecution", immediate);
         this.jsonEncoder.writeObjectEnd();
         this.jsonBodyLength = this.jsonBodyBuffer.position();
-    }
-
-    /** A fixed-point value as a plain decimal, without trailing zeros. */
-    private void writeDecimal(final long value, final long scalingFactor) {
-        ByteBufferUtils.putLongAscii(this.jsonBodyBuffer, value / scalingFactor);
-        long fraction = value % scalingFactor;
-        if (fraction == 0) {
-            return;
-        }
-        int digits = 0;
-        for (long scale = scalingFactor; scale > 1; scale /= 10) {
-            digits++;
-        }
-        while (fraction % 10 == 0) {
-            fraction /= 10;
-            digits--;
-        }
-        this.jsonBodyBuffer.put((byte) '.');
-        ByteBufferUtils.putNaturalPaddedLongAscii(this.jsonBodyBuffer, digits, fraction);
     }
 
     /** {@code ioc-{slot}-{counter}}: never sent, so only unique among this reader's orders. */
