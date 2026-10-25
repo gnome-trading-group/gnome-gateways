@@ -865,13 +865,13 @@ class InboundSocketReaderTest {
 
         public TestSocketReader(
                 SequencedRingBuffer<Mbp10Schema> outputBuffer, EpochNanoClock clock, boolean shouldOfferBuffer) {
-            super(new NullLogger(), outputBuffer, clock, null, null);
+            super(new NullLogger(), outputBuffer, clock, null, null, 77);
             this.shouldOfferBuffer = shouldOfferBuffer;
         }
 
         public TestSocketReader(
                 SequencedRingBuffer<Mbp10Schema> outputBuffer, EpochNanoClock clock, InboundSocketWriter writer) {
-            super(new NullLogger(), outputBuffer, clock, writer, null);
+            super(new NullLogger(), outputBuffer, clock, writer, null, 77);
             this.shouldOfferBuffer = false;
         }
 

@@ -18,12 +18,11 @@ import group.gnometrading.logging.NullLogger;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.networking.websockets.WebSocketResponse;
 import group.gnometrading.networking.websockets.enums.Opcode;
-import group.gnometrading.schemas.Action;
-import group.gnometrading.schemas.Mbp10Encoder;
 import group.gnometrading.schemas.Mbp10Schema;
-import group.gnometrading.schemas.SchemaType;
-import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
+import group.gnometrading.schemas.book.Action;
+import group.gnometrading.schemas.book.Mbp10Encoder;
+import group.gnometrading.schemas.book.Side;
 import group.gnometrading.sequencer.GlobalSequence;
 import group.gnometrading.sequencer.SequencedPoller;
 import group.gnometrading.sequencer.SequencedRingBuffer;
@@ -88,7 +87,7 @@ class PolymarketUsInboundReaderTest {
         // Both legs read the one long-priced stream; the suffix is stripped before subscribing.
         final Listing listing = new Listing(
                 1,
-                new Exchange(6, "POLYMARKET_US", "POLYMARKET_US", "us-east-1", SchemaType.MBP_10),
+                new Exchange(6, "POLYMARKET_US", "POLYMARKET_US", "us-east-1"),
                 new Security(3, "TEST", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
                 exchangeSecurityId,
                 "PM_US-TEST");
@@ -98,6 +97,7 @@ class PolymarketUsInboundReaderTest {
                 () -> NOW_NANOS,
                 new InboundJsonWebSocketWriter(client, new JsonEncoder()),
                 listing,
+                77,
                 client,
                 new JsonDecoder(),
                 signer);
@@ -177,8 +177,7 @@ class PolymarketUsInboundReaderTest {
         assertEquals(Action.Modify, schema.decoder.action());
         assertEquals(Side.None, schema.decoder.side());
         assertEquals(nanos("2026-10-02T14:22:56.542213551Z"), schema.decoder.timestampEvent());
-        assertEquals(6, schema.decoder.exchangeId());
-        assertEquals(3, schema.decoder.securityId());
+        assertEquals(77, schema.decoder.streamId());
     }
 
     @Test

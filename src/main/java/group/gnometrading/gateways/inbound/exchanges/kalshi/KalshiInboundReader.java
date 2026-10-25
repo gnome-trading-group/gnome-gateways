@@ -12,11 +12,11 @@ import group.gnometrading.gateways.inbound.mbp.Mbp10SchemaFactory;
 import group.gnometrading.gateways.inbound.mbp.MbpBook;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.websockets.WebSocketClient;
-import group.gnometrading.schemas.Action;
-import group.gnometrading.schemas.Mbp10Encoder;
 import group.gnometrading.schemas.Mbp10Schema;
-import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
+import group.gnometrading.schemas.book.Action;
+import group.gnometrading.schemas.book.Mbp10Encoder;
+import group.gnometrading.schemas.book.Side;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Listing;
 import group.gnometrading.strings.GnomeString;
@@ -109,11 +109,12 @@ public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10S
             EpochNanoClock clock,
             InboundSocketWriter socketWriter,
             Listing listing,
+            int streamId,
             WebSocketClient socketClient,
             JsonDecoder jsonDecoder,
             String apiKey,
             PrivateKey privateKey) {
-        super(logger, outputBuffer, clock, socketWriter, listing, socketClient, jsonDecoder);
+        super(logger, outputBuffer, clock, socketWriter, listing, streamId, socketClient, jsonDecoder);
         this.book = (Mbp10Book) this.internalBook;
         this.apiKey = apiKey;
         this.privateKey = privateKey;
@@ -447,7 +448,7 @@ public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10S
         schema.encoder.depth(Mbp10Encoder.depthNullValue());
         schema.encoder.flags().clear();
         schema.encoder.flags().marketByPrice(true);
-        schema.encoder.flags().maybeBadBook(suspect);
+        schema.encoder.flags().badData(suspect);
         writeBook();
         offer();
     }
@@ -469,8 +470,7 @@ public final class KalshiInboundReader extends InboundJsonWebSocketReader<Mbp10S
     }
 
     private void prepareEncoder() {
-        schema.encoder.exchangeId(listing.exchange().exchangeId());
-        schema.encoder.securityId(listing.security().securityId());
+        schema.encoder.streamId(this.streamId);
         schema.encoder.timestampSent(Mbp10Encoder.timestampSentNullValue());
         schema.encoder.timestampRecv(recvTimestamp);
     }

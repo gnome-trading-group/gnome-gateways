@@ -9,7 +9,6 @@ import group.gnometrading.schemas.ExecType;
 import group.gnometrading.schemas.OrderExecutionReport;
 import group.gnometrading.schemas.OrderStatus;
 import group.gnometrading.schemas.RejectReason;
-import group.gnometrading.schemas.SchemaType;
 import group.gnometrading.sequencer.GlobalSequence;
 import group.gnometrading.sequencer.SequencedPoller;
 import group.gnometrading.sequencer.SequencedRingBuffer;
@@ -35,7 +34,7 @@ class OutboundSocketReaderTest {
 
     private static final Listing LISTING = new Listing(
             1,
-            new Exchange(2, "TEST", "test", "global", SchemaType.MBP_10),
+            new Exchange(2, "TEST", "test", "global"),
             new Security(3, "TEST", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
             "test-id",
             "TEST");

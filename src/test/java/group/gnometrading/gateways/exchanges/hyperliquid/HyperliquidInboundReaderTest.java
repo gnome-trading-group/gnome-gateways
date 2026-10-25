@@ -12,12 +12,11 @@ import group.gnometrading.logging.NullLogger;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.networking.websockets.WebSocketResponse;
 import group.gnometrading.networking.websockets.enums.Opcode;
-import group.gnometrading.schemas.Action;
-import group.gnometrading.schemas.Mbp10Encoder;
 import group.gnometrading.schemas.Mbp10Schema;
-import group.gnometrading.schemas.SchemaType;
-import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
+import group.gnometrading.schemas.book.Action;
+import group.gnometrading.schemas.book.Mbp10Encoder;
+import group.gnometrading.schemas.book.Side;
 import group.gnometrading.sequencer.GlobalSequence;
 import group.gnometrading.sequencer.SequencedPoller;
 import group.gnometrading.sequencer.SequencedRingBuffer;
@@ -62,7 +61,7 @@ class HyperliquidInboundReaderTest {
 
         final Listing listing = new Listing(
                 1,
-                new Exchange(1, "HYPERLIQUID", "Hyperliquid", "global", SchemaType.MBP_10),
+                new Exchange(1, "HYPERLIQUID", "Hyperliquid", "global"),
                 new Security(3, "ETH", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
                 "ETH",
                 "ETH");
@@ -72,6 +71,7 @@ class HyperliquidInboundReaderTest {
                 () -> 1_700_000_000_123_000_000L,
                 new InboundJsonWebSocketWriter(client, new JsonEncoder()),
                 listing,
+                77,
                 client,
                 new JsonDecoder());
         reader.buffer = false;

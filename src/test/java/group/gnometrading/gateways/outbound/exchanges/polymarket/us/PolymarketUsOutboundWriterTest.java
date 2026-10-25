@@ -26,7 +26,6 @@ import group.gnometrading.schemas.ModifyOrderDecoder;
 import group.gnometrading.schemas.Order;
 import group.gnometrading.schemas.OrderType;
 import group.gnometrading.schemas.RejectReason;
-import group.gnometrading.schemas.SchemaType;
 import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
 import group.gnometrading.schemas.TimeInForce;
@@ -535,7 +534,7 @@ class PolymarketUsOutboundWriterTest {
             throws Exception {
         final Listing listing = new Listing(
                 1,
-                new Exchange(2, "POLYMARKET_US", "Polymarket US", "us", SchemaType.MBP_10),
+                new Exchange(2, "POLYMARKET_US", "Polymarket US", "us"),
                 new Security(3, "TEST", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
                 SLUG + suffix,
                 "TEST");

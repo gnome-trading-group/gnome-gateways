@@ -16,7 +16,6 @@ import group.gnometrading.networking.websockets.WebSocketResponse;
 import group.gnometrading.networking.websockets.drafts.RFC6455;
 import group.gnometrading.networking.websockets.enums.Opcode;
 import group.gnometrading.schemas.Mbp10Schema;
-import group.gnometrading.schemas.SchemaType;
 import group.gnometrading.sequencer.GlobalSequence;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Exchange;
@@ -57,10 +56,11 @@ class LighterKeepAliveTest {
             this.writer,
             new Listing(
                     1,
-                    new Exchange(1, "LIGHTER", "Lighter", "global", SchemaType.MBP_10),
+                    new Exchange(1, "LIGHTER", "Lighter", "global"),
                     new Security(3, "ETH", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
                     "0",
                     "ETH"),
+            77,
             this.socket,
             new JsonDecoder());
 

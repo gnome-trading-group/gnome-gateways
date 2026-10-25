@@ -20,7 +20,6 @@ import group.gnometrading.schemas.Liquidity;
 import group.gnometrading.schemas.OrderExecutionReport;
 import group.gnometrading.schemas.OrderStatus;
 import group.gnometrading.schemas.RejectReason;
-import group.gnometrading.schemas.SchemaType;
 import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
 import group.gnometrading.sequencer.GlobalSequence;
@@ -125,7 +124,7 @@ class KalshiOutboundReaderTest {
 
         final Listing listing = new Listing(
                 7,
-                new Exchange(2, "KALSHI", "Kalshi", "global", SchemaType.MBP_10),
+                new Exchange(2, "KALSHI", "Kalshi", "global"),
                 new Security(3, "TEST", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
                 "KALSHI-MARKET:yes",
                 "KALSHI-YES");
@@ -202,7 +201,7 @@ class KalshiOutboundReaderTest {
                 () -> FIXED_NANO,
                 new Listing(
                         8,
-                        new Exchange(2, "KALSHI", "Kalshi", "global", SchemaType.MBP_10),
+                        new Exchange(2, "KALSHI", "Kalshi", "global"),
                         new Security(3, "TEST", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
                         exchangeSecurityId,
                         exchangeSecurityId),

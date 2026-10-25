@@ -9,16 +9,15 @@ import group.gnometrading.logging.NullLogger;
 import group.gnometrading.networking.sockets.factory.NativeSSLSocketFactory;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.networking.websockets.WebSocketClientBuilder;
-import group.gnometrading.schemas.Action;
-import group.gnometrading.schemas.Mbp10Decoder;
 import group.gnometrading.schemas.Mbp10Schema;
-import group.gnometrading.schemas.Schema;
-import group.gnometrading.schemas.SchemaType;
 import group.gnometrading.schemas.Statics;
+import group.gnometrading.schemas.StreamRecord;
+import group.gnometrading.schemas.book.Action;
+import group.gnometrading.schemas.book.Mbp10Decoder;
 import group.gnometrading.sequencer.GlobalSequence;
-import group.gnometrading.sequencer.SchemaEventAdapter;
 import group.gnometrading.sequencer.SequencedPoller;
 import group.gnometrading.sequencer.SequencedRingBuffer;
+import group.gnometrading.sequencer.StreamRecordEventAdapter;
 import group.gnometrading.sm.Exchange;
 import group.gnometrading.sm.Listing;
 import group.gnometrading.sm.Security;
@@ -30,7 +29,7 @@ public class HyperliquidIntegrationTest {
     public static void main(String[] args) throws Exception {
         Listing listing = new Listing(
                 0,
-                new Exchange(1, "HYPERLIQUID", "hyperliquid", "global", SchemaType.MBP_10),
+                new Exchange(1, "HYPERLIQUID", "hyperliquid", "global"),
                 new Security(1, "ETH", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
                 "ETH",
                 "ETH");
@@ -38,7 +37,7 @@ public class HyperliquidIntegrationTest {
         SequencedRingBuffer<Mbp10Schema> outputBuffer =
                 new SequencedRingBuffer<>(Mbp10Schema::new, new GlobalSequence());
         SequencedPoller poller =
-                outputBuffer.createPoller(new SchemaEventAdapter(HyperliquidIntegrationTest::printEvent));
+                outputBuffer.createPoller(new StreamRecordEventAdapter(HyperliquidIntegrationTest::printEvent));
 
         WebSocketClient wsClient = new WebSocketClientBuilder()
                 .withURI(new URI("wss://api.hyperliquid.xyz/ws"))
@@ -54,6 +53,7 @@ public class HyperliquidIntegrationTest {
                 new SystemEpochNanoClock(),
                 socketWriter,
                 listing,
+                77,
                 wsClient,
                 new JsonDecoder());
 
@@ -90,7 +90,7 @@ public class HyperliquidIntegrationTest {
         writerRunner.close();
     }
 
-    private static void printEvent(Schema event, long sequence, boolean endOfBatch) {
+    private static void printEvent(StreamRecord event, long sequence, boolean endOfBatch) {
         Mbp10Schema schema = (Mbp10Schema) event;
         Mbp10Decoder d = schema.decoder;
 

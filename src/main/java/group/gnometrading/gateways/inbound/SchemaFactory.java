@@ -1,8 +1,8 @@
 package group.gnometrading.gateways.inbound;
 
-import group.gnometrading.schemas.Schema;
+import group.gnometrading.schemas.StreamRecord;
 
-public interface SchemaFactory<T extends Schema> {
+public interface SchemaFactory<T extends StreamRecord> {
     /**
      * Create an array of schemas.
      *

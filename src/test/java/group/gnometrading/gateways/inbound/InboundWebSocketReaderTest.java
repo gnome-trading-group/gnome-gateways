@@ -13,7 +13,6 @@ import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.networking.websockets.WebSocketResponse;
 import group.gnometrading.networking.websockets.enums.Opcode;
 import group.gnometrading.schemas.Mbp10Schema;
-import group.gnometrading.schemas.SchemaType;
 import group.gnometrading.sequencer.GlobalSequence;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Exchange;
@@ -29,7 +28,7 @@ class InboundWebSocketReaderTest {
 
     private static final Listing LISTING = new Listing(
             1,
-            new Exchange(2, "TEST", "test", "global", SchemaType.MBP_10),
+            new Exchange(2, "TEST", "test", "global"),
             new Security(3, "TEST", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
             "test-id",
             "TEST");
@@ -228,7 +227,7 @@ class InboundWebSocketReaderTest {
                 SequencedRingBuffer<Mbp10Schema> outputBuffer,
                 InboundWebSocketWriter socketWriter,
                 WebSocketClient socketClient) {
-            super(new NullLogger(), outputBuffer, System::nanoTime, socketWriter, LISTING, socketClient);
+            super(new NullLogger(), outputBuffer, System::nanoTime, socketWriter, LISTING, 77, socketClient);
         }
 
         @Override

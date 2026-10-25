@@ -11,7 +11,11 @@ import group.gnometrading.logging.NullLogger;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.networking.websockets.WebSocketResponse;
 import group.gnometrading.networking.websockets.enums.Opcode;
-import group.gnometrading.schemas.*;
+import group.gnometrading.schemas.Mbp10Schema;
+import group.gnometrading.schemas.Statics;
+import group.gnometrading.schemas.book.Action;
+import group.gnometrading.schemas.book.Mbp10Encoder;
+import group.gnometrading.schemas.book.Side;
 import group.gnometrading.sequencer.GlobalSequence;
 import group.gnometrading.sequencer.SequencedPoller;
 import group.gnometrading.sequencer.SequencedRingBuffer;
@@ -71,7 +75,7 @@ public class LighterInboundReaderTest {
         // Note: Listing constructor is (securityId, exchangeId, securityIndex, exchangeSecurityId, symbol)
         Listing listing = new Listing(
                 0, // listingId
-                new Exchange(1, "TEST-EXCHANGE", "test-exchange", "test-region", SchemaType.MBP_10), // exchangeId
+                new Exchange(1, "TEST-EXCHANGE", "test-exchange", "test-region"), // exchangeId
                 new Security(
                         1,
                         "test-security",
@@ -92,7 +96,7 @@ public class LighterInboundReaderTest {
                 );
 
         socketReader = new LighterInboundReader(
-                new NullLogger(), sequencedRingBuffer, clock, null, listing, mockClient, jsonDecoder);
+                new NullLogger(), sequencedRingBuffer, clock, null, listing, 77, mockClient, jsonDecoder);
         socketReader.buffer = false;
         socketReader.pauseControl.release();
     }
@@ -118,14 +122,12 @@ public class LighterInboundReaderTest {
 
             // Debug: print actual values for first message
             if (i == 0) {
-                System.out.println("First message - exchangeId: " + schema.decoder.exchangeId() + ", securityId: "
-                        + schema.decoder.securityId() + ", sequence: "
+                System.out.println("First message - streamId: " + schema.decoder.streamId() + ", sequence: "
                         + schema.decoder.sequence());
             }
 
             // Verify basic fields - use actual values from schema
-            assertNotEquals((short) 0, schema.decoder.exchangeId(), "Message " + i + ": exchangeId should not be 0");
-            assertNotEquals((short) 0, schema.decoder.securityId(), "Message " + i + ": securityId should not be 0");
+            assertEquals(77, schema.decoder.streamId(), "Message " + i + ": streamId");
             assertEquals(Action.Modify, schema.decoder.action(), "Message " + i + ": action should be Modify");
             assertEquals(
                     Side.None, schema.decoder.side(), "Message " + i + ": side should be None for order book updates");
@@ -248,7 +250,7 @@ public class LighterInboundReaderTest {
         processMessage(book("update/order_book", 150, 151, "4212.00", "4.0"));
 
         assertFalse(
-                capturedSchemas.get(capturedSchemas.size() - 1).decoder.flags().maybeBadBook());
+                capturedSchemas.get(capturedSchemas.size() - 1).decoder.flags().badData());
     }
 
     @Test
@@ -268,7 +270,7 @@ public class LighterInboundReaderTest {
             poller.poll();
         }
         assertEquals(before + 1, capturedSchemas.size(), "one suspect book");
-        assertTrue(capturedSchemas.get(before).decoder.flags().maybeBadBook());
+        assertTrue(capturedSchemas.get(before).decoder.flags().badData());
         assertEquals(
                 1761585003002L * 1_000_000L, capturedSchemas.get(before).decoder.timestampEvent(), "last venue time");
     }
@@ -279,7 +281,7 @@ public class LighterInboundReaderTest {
         processMessage(book("update/order_book", 100, 101, "4212.00", "3.0"));
 
         assertFalse(
-                capturedSchemas.get(capturedSchemas.size() - 1).decoder.flags().maybeBadBook());
+                capturedSchemas.get(capturedSchemas.size() - 1).decoder.flags().badData());
     }
 
     private int bookCount;

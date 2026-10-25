@@ -15,7 +15,6 @@ import group.gnometrading.networking.websockets.WebSocketResponse;
 import group.gnometrading.networking.websockets.drafts.RFC6455;
 import group.gnometrading.networking.websockets.enums.Opcode;
 import group.gnometrading.schemas.Mbp10Schema;
-import group.gnometrading.schemas.SchemaType;
 import group.gnometrading.sequencer.GlobalSequence;
 import group.gnometrading.sequencer.SequencedPoller;
 import group.gnometrading.sequencer.SequencedRingBuffer;
@@ -71,6 +70,7 @@ class GapCheckAllocationTest {
                 () -> 9_000_000_000L,
                 null,
                 listing("KALSHI", securityId),
+                77,
                 feed.client,
                 new JsonDecoder(),
                 "key",
@@ -96,6 +96,7 @@ class GapCheckAllocationTest {
                 () -> 9_000_000_000L,
                 null,
                 listing("LIGHTER", "0"),
+                77,
                 feed.client,
                 new JsonDecoder());
 
@@ -122,6 +123,7 @@ class GapCheckAllocationTest {
                 () -> 9_000_000_000L,
                 null,
                 listing("POLYMARKET_INTL", "c:token"),
+                77,
                 feed.client,
                 new JsonDecoder());
 
@@ -157,7 +159,7 @@ class GapCheckAllocationTest {
     private static Listing listing(final String exchangeCode, final String securityId) {
         return new Listing(
                 1,
-                new Exchange(2, exchangeCode, exchangeCode, "global", SchemaType.MBP_10),
+                new Exchange(2, exchangeCode, exchangeCode, "global"),
                 new Security(3, "TEST", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
                 securityId,
                 securityId);

@@ -13,12 +13,11 @@ import group.gnometrading.gateways.fix.fix50sp2.Fix50Sp2Tags;
 import group.gnometrading.gateways.inbound.exchanges.binance.BinanceFixTags;
 import group.gnometrading.gateways.inbound.exchanges.binance.BinanceInboundReader;
 import group.gnometrading.logging.NullLogger;
-import group.gnometrading.schemas.Action;
-import group.gnometrading.schemas.Mbp10Encoder;
 import group.gnometrading.schemas.Mbp10Schema;
-import group.gnometrading.schemas.SchemaType;
-import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
+import group.gnometrading.schemas.book.Action;
+import group.gnometrading.schemas.book.Mbp10Encoder;
+import group.gnometrading.schemas.book.Side;
 import group.gnometrading.sequencer.GlobalSequence;
 import group.gnometrading.sequencer.SequencedPoller;
 import group.gnometrading.sequencer.SequencedRingBuffer;
@@ -93,13 +92,13 @@ public class BinanceInboundReaderTest {
 
         Listing listing = new Listing(
                 0,
-                new Exchange(1, "BINANCE", "binance", "us-east-1", SchemaType.MBP_10),
+                new Exchange(1, "BINANCE", "binance", "us-east-1"),
                 new Security(1, "BTCUSDT", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
                 "1",
                 "BTCUSDT");
 
         reader = new BinanceInboundReader(
-                new NullLogger(), sequencedRingBuffer, clock, mockFixClient, listing, config, null, "TEST_API_KEY");
+                new NullLogger(), sequencedRingBuffer, clock, mockFixClient, listing, 77, config, null, "TEST_API_KEY");
 
         reader.buffer = false;
         reader.pauseControl.release();

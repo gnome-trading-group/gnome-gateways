@@ -11,11 +11,11 @@ import group.gnometrading.gateways.inbound.mbp.Mbp10Book;
 import group.gnometrading.gateways.inbound.mbp.Mbp10SchemaFactory;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.websockets.WebSocketClient;
-import group.gnometrading.schemas.Action;
-import group.gnometrading.schemas.Mbp10Encoder;
 import group.gnometrading.schemas.Mbp10Schema;
-import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
+import group.gnometrading.schemas.book.Action;
+import group.gnometrading.schemas.book.Mbp10Encoder;
+import group.gnometrading.schemas.book.Side;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Listing;
 import java.io.IOException;
@@ -48,9 +48,10 @@ public final class HyperliquidInboundReader extends InboundJsonWebSocketReader<M
             EpochNanoClock clock,
             InboundSocketWriter socketWriter,
             Listing listing,
+            int streamId,
             WebSocketClient socketClient,
             JsonDecoder jsonDecoder) {
-        super(logger, outputBuffer, clock, socketWriter, listing, socketClient, jsonDecoder);
+        super(logger, outputBuffer, clock, socketWriter, listing, streamId, socketClient, jsonDecoder);
         this.book = (Mbp10Book) this.internalBook;
 
         this.lastTradePrice = Mbp10Encoder.priceNullValue();
@@ -283,8 +284,7 @@ public final class HyperliquidInboundReader extends InboundJsonWebSocketReader<M
     }
 
     private void prepareEncoder() {
-        this.schema.encoder.exchangeId(listing.exchange().exchangeId());
-        this.schema.encoder.securityId(listing.security().securityId());
+        this.schema.encoder.streamId(this.streamId);
         this.schema.encoder.timestampSent(
                 Mbp10Encoder.timestampSentNullValue()); // Hyperliquid only has event timestamps
         this.schema.encoder.timestampRecv(recvTimestamp);

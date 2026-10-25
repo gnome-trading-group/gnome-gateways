@@ -17,7 +17,6 @@ import group.gnometrading.gateways.outbound.exchanges.kalshi.KalshiVenueOrderQue
 import group.gnometrading.gateways.outbound.recovery.VenueOrder;
 import group.gnometrading.networking.http.HTTPClient;
 import group.gnometrading.networking.http.HTTPResponse;
-import group.gnometrading.schemas.SchemaType;
 import group.gnometrading.sm.Exchange;
 import group.gnometrading.sm.Listing;
 import group.gnometrading.sm.Security;
@@ -35,13 +34,13 @@ class KalshiVenueOrderQueryTest {
 
     private static final Listing NO_LISTING = new Listing(
             501,
-            new Exchange(2, "KALSHI", "Kalshi", "global", SchemaType.MBP_10),
+            new Exchange(2, "KALSHI", "Kalshi", "global"),
             new Security(3, "T", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
             "KXT-26:no",
             "KXT");
     private static final Listing YES_LISTING = new Listing(
             500,
-            new Exchange(2, "KALSHI", "Kalshi", "global", SchemaType.MBP_10),
+            new Exchange(2, "KALSHI", "Kalshi", "global"),
             new Security(3, "T", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
             "KXT-26:yes",
             "KXT");

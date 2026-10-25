@@ -19,12 +19,11 @@ import group.gnometrading.logging.NullLogger;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.networking.websockets.WebSocketResponse;
 import group.gnometrading.networking.websockets.enums.Opcode;
-import group.gnometrading.schemas.Action;
-import group.gnometrading.schemas.Mbp10Encoder;
 import group.gnometrading.schemas.Mbp10Schema;
-import group.gnometrading.schemas.SchemaType;
-import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
+import group.gnometrading.schemas.book.Action;
+import group.gnometrading.schemas.book.Mbp10Encoder;
+import group.gnometrading.schemas.book.Side;
 import group.gnometrading.sequencer.GlobalSequence;
 import group.gnometrading.sequencer.SequencedPoller;
 import group.gnometrading.sequencer.SequencedRingBuffer;
@@ -86,7 +85,7 @@ class KalshiInboundReaderTest {
 
         Listing listing = new Listing(
                 1,
-                new Exchange(2, "KALSHI", "Kalshi", "global", SchemaType.MBP_10),
+                new Exchange(2, "KALSHI", "Kalshi", "global"),
                 new Security(3, "TEST", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
                 exchangeSecurityId,
                 "TEST");
@@ -96,6 +95,7 @@ class KalshiInboundReaderTest {
                 () -> 9_000_000_000L,
                 null,
                 listing,
+                77,
                 client,
                 new JsonDecoder(),
                 "test-api-key",
@@ -344,10 +344,11 @@ class KalshiInboundReaderTest {
                 new InboundJsonWebSocketWriter(client, new JsonEncoder()),
                 new Listing(
                         1,
-                        new Exchange(2, "KALSHI", "Kalshi", "global", SchemaType.MBP_10),
+                        new Exchange(2, "KALSHI", "Kalshi", "global"),
                         new Security(3, "TEST", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
                         MARKET_TICKER + ":no",
                         "TEST-NO"),
+                77,
                 client,
                 new JsonDecoder(),
                 "test-api-key",
@@ -495,7 +496,7 @@ class KalshiInboundReaderTest {
         process(delta(3, "-5.00"));
 
         assertEquals(2, captured.size());
-        assertFalse(captured.get(1).decoder.flags().maybeBadBook());
+        assertFalse(captured.get(1).decoder.flags().badData());
     }
 
     @Test
@@ -506,7 +507,7 @@ class KalshiInboundReaderTest {
         assertGap(delta(4, "10.00"));
 
         final Mbp10Schema suspect = captured.get(captured.size() - 1);
-        assertTrue(suspect.decoder.flags().maybeBadBook());
+        assertTrue(suspect.decoder.flags().badData());
         assertEquals(size("110"), suspect.decoder.bidSize0(), "the book as it stood, without the delta after the gap");
     }
 
@@ -535,7 +536,7 @@ class KalshiInboundReaderTest {
                 "price_dollars":"0.550","delta_fp":"1.00","side":"yes","ts_ms":1700000000002}}
                 """);
 
-        assertFalse(captured.get(captured.size() - 1).decoder.flags().maybeBadBook());
+        assertFalse(captured.get(captured.size() - 1).decoder.flags().badData());
     }
 
     @Test
@@ -549,7 +550,7 @@ class KalshiInboundReaderTest {
                 """);
         process(delta(2, "10.00"));
 
-        assertFalse(captured.get(captured.size() - 1).decoder.flags().maybeBadBook());
+        assertFalse(captured.get(captured.size() - 1).decoder.flags().badData());
     }
 
     /** The NO listing trades the same market priced in NO terms: its book is the YES book's complement. */
@@ -603,7 +604,7 @@ class KalshiInboundReaderTest {
         assertGap(delta(4, "10.00"));
 
         final Mbp10Schema suspect = captured.get(captured.size() - 1);
-        assertTrue(suspect.decoder.flags().maybeBadBook());
+        assertTrue(suspect.decoder.flags().badData());
         assertEquals(price("0.45"), suspect.decoder.askPrice0());
         assertEquals(size("110"), suspect.decoder.askSize0());
     }
@@ -626,7 +627,7 @@ class KalshiInboundReaderTest {
             poller.poll();
         }
         assertEquals(before + 1, captured.size(), "one suspect book, then nothing");
-        assertTrue(captured.get(before).decoder.flags().maybeBadBook());
+        assertTrue(captured.get(before).decoder.flags().badData());
         assertEquals(resyncsBefore + 1, reader.bookResyncs(), "counted for the session's heartbeat");
     }
 

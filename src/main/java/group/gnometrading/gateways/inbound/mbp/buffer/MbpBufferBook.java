@@ -1,8 +1,8 @@
 package group.gnometrading.gateways.inbound.mbp.buffer;
 
 import group.gnometrading.gateways.inbound.Book;
-import group.gnometrading.schemas.Mbp10Encoder;
 import group.gnometrading.schemas.Mbp10Schema;
+import group.gnometrading.schemas.book.Mbp10Encoder;
 
 /**
  * MbpBufferBook is used when an exchange sends incremental updates rather than entire book updates.

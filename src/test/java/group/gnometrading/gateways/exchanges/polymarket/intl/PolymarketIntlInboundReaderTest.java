@@ -14,12 +14,11 @@ import group.gnometrading.logging.NullLogger;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.networking.websockets.WebSocketResponse;
 import group.gnometrading.networking.websockets.enums.Opcode;
-import group.gnometrading.schemas.Action;
-import group.gnometrading.schemas.Mbp10Encoder;
 import group.gnometrading.schemas.Mbp10Schema;
-import group.gnometrading.schemas.SchemaType;
-import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
+import group.gnometrading.schemas.book.Action;
+import group.gnometrading.schemas.book.Mbp10Encoder;
+import group.gnometrading.schemas.book.Side;
 import group.gnometrading.sequencer.GlobalSequence;
 import group.gnometrading.sequencer.SequencedPoller;
 import group.gnometrading.sequencer.SequencedRingBuffer;
@@ -62,12 +61,12 @@ class PolymarketIntlInboundReaderTest {
 
         Listing listing = new Listing(
                 7,
-                new Exchange(2, "POLYMARKET", "Polymarket", "global", SchemaType.MBP_10),
+                new Exchange(2, "POLYMARKET", "Polymarket", "global"),
                 new Security(3, "TEST", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
                 "condition-1:" + TOKEN_ID,
                 "TEST-YES");
         reader = new PolymarketIntlInboundReader(
-                new NullLogger(), ringBuffer, () -> 9_000_000_000L, null, listing, client, new JsonDecoder());
+                new NullLogger(), ringBuffer, () -> 9_000_000_000L, null, listing, 77, client, new JsonDecoder());
         reader.buffer = false;
         reader.pauseControl.release();
     }
@@ -314,7 +313,7 @@ class PolymarketIntlInboundReaderTest {
         process(change("1782753357301", "SELL", "0.11", "2", "0.08", "0.10"));
         process(change("1782753357302", "BUY", "0.08", "0", "0.07", "0.10"));
 
-        assertFalse(captured.get(captured.size() - 1).decoder.flags().maybeBadBook());
+        assertFalse(captured.get(captured.size() - 1).decoder.flags().badData());
     }
 
     /** One match's changes can come as several messages with one timestamp, each carrying the post-match prices. */
@@ -327,7 +326,7 @@ class PolymarketIntlInboundReaderTest {
         process(change("1782753357300", "BUY", "0.06", "9", "0.06", "0.10"));
         process(change("1782753357301", "SELL", "0.11", "2", "0.06", "0.10"));
 
-        assertFalse(captured.get(captured.size() - 1).decoder.flags().maybeBadBook());
+        assertFalse(captured.get(captured.size() - 1).decoder.flags().badData());
     }
 
     @Test
@@ -348,7 +347,7 @@ class PolymarketIntlInboundReaderTest {
             poller.poll();
         }
         assertEquals(before + 1, captured.size(), "one suspect book, then nothing");
-        assertTrue(captured.get(before).decoder.flags().maybeBadBook());
+        assertTrue(captured.get(before).decoder.flags().badData());
     }
 
     @Test
@@ -361,7 +360,7 @@ class PolymarketIntlInboundReaderTest {
         process(change("1782753357300", "BUY", "0.08", "0", "0", "1"));
         process(change("1782753357301", "BUY", "0.05", "1", "0.05", "1"));
 
-        assertFalse(captured.get(captured.size() - 1).decoder.flags().maybeBadBook());
+        assertFalse(captured.get(captured.size() - 1).decoder.flags().badData());
     }
 
     @Test
@@ -372,7 +371,7 @@ class PolymarketIntlInboundReaderTest {
         process(GAP_BOOK.replace("1782753357257", "1782753357301"));
         process(change("1782753357302", "SELL", "0.11", "2", "0.08", "0.10"));
 
-        assertFalse(captured.get(captured.size() - 1).decoder.flags().maybeBadBook());
+        assertFalse(captured.get(captured.size() - 1).decoder.flags().badData());
     }
 
     private void process(String message) throws Exception {

@@ -3,14 +3,14 @@ package group.gnometrading.gateways.inbound;
 import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.websockets.WebSocketClient;
-import group.gnometrading.schemas.Schema;
+import group.gnometrading.schemas.StreamRecord;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Listing;
 import group.gnometrading.utils.ByteBufferUtils;
 import java.nio.ByteBuffer;
 import org.agrona.concurrent.EpochNanoClock;
 
-public abstract class InboundJsonWebSocketReader<T extends Schema> extends InboundWebSocketReader<T> {
+public abstract class InboundJsonWebSocketReader<T extends StreamRecord> extends InboundWebSocketReader<T> {
 
     protected final JsonDecoder jsonDecoder;
 
@@ -20,9 +20,10 @@ public abstract class InboundJsonWebSocketReader<T extends Schema> extends Inbou
             EpochNanoClock clock,
             InboundSocketWriter socketWriter,
             Listing listing,
+            int streamId,
             WebSocketClient socketClient,
             JsonDecoder jsonDecoder) {
-        super(logger, outputBuffer, clock, socketWriter, listing, socketClient);
+        super(logger, outputBuffer, clock, socketWriter, listing, streamId, socketClient);
         this.jsonDecoder = jsonDecoder;
     }
 

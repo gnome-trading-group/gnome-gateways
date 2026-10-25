@@ -2,7 +2,7 @@ package group.gnometrading.gateways.fix;
 
 import com.lmax.disruptor.RingBuffer;
 import group.gnometrading.networking.client.SocketClient;
-import group.gnometrading.schemas.Schema;
+import group.gnometrading.schemas.StreamRecord;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import org.agrona.concurrent.EpochNanoClock;
@@ -15,7 +15,7 @@ public abstract class FixInboundGateway implements FixStatusListener {
     protected final FixConfig fixConfig;
 
     public FixInboundGateway(
-            RingBuffer<Schema> ringBuffer, EpochNanoClock clock, SocketClient socketClient, FixConfig fixConfig) {
+            RingBuffer<StreamRecord> ringBuffer, EpochNanoClock clock, SocketClient socketClient, FixConfig fixConfig) {
         //        super(ringBuffer, clock, socketClient);
 
         this.message = new FixMessage(fixConfig);

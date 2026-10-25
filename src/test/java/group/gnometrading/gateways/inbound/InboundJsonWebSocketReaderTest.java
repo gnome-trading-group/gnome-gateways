@@ -7,7 +7,6 @@ import group.gnometrading.gateways.inbound.mbp.Mbp10SchemaFactory;
 import group.gnometrading.logging.NullLogger;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.schemas.Mbp10Schema;
-import group.gnometrading.schemas.SchemaType;
 import group.gnometrading.sequencer.GlobalSequence;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Exchange;
@@ -24,7 +23,7 @@ class InboundJsonWebSocketReaderTest {
 
     private static final Listing LISTING = new Listing(
             1,
-            new Exchange(2, "TEST", "test", "global", SchemaType.MBP_10),
+            new Exchange(2, "TEST", "test", "global"),
             new Security(3, "TEST", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
             "test-id",
             "TEST");
@@ -172,6 +171,7 @@ class InboundJsonWebSocketReaderTest {
                     System::nanoTime,
                     null,
                     LISTING,
+                    77,
                     Mockito.mock(WebSocketClient.class),
                     new JsonDecoder());
         }

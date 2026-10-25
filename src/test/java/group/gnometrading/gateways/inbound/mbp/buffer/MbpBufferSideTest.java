@@ -2,8 +2,8 @@ package group.gnometrading.gateways.inbound.mbp.buffer;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import group.gnometrading.schemas.Mbp10Encoder;
 import group.gnometrading.schemas.Mbp10Schema;
+import group.gnometrading.schemas.book.Mbp10Encoder;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;

@@ -15,7 +15,6 @@ import group.gnometrading.schemas.OrderExecutionReportEncoder;
 import group.gnometrading.schemas.OrderStatus;
 import group.gnometrading.schemas.OrderType;
 import group.gnometrading.schemas.RejectReason;
-import group.gnometrading.schemas.SchemaType;
 import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
 import group.gnometrading.schemas.TimeInForce;
@@ -53,7 +52,7 @@ class OutboundReconnectStressTest {
 
     private static final Listing LISTING = new Listing(
             1,
-            new Exchange(2, "TEST", "test", "global", SchemaType.MBP_10),
+            new Exchange(2, "TEST", "test", "global"),
             new Security(3, "TEST", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
             "test-id",
             "TEST");

@@ -8,7 +8,7 @@ import group.gnometrading.gateways.ReaderPauseControl;
 import group.gnometrading.gateways.SocketClosedException;
 import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.Logger;
-import group.gnometrading.schemas.Schema;
+import group.gnometrading.schemas.StreamRecord;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Listing;
 import java.io.IOException;
@@ -16,7 +16,7 @@ import java.nio.ByteBuffer;
 import java.util.concurrent.atomic.AtomicLong;
 import org.agrona.concurrent.EpochNanoClock;
 
-public abstract class InboundSocketReader<T extends Schema> implements GnomeAgent, SchemaFactory<T> {
+public abstract class InboundSocketReader<T extends StreamRecord> implements GnomeAgent, SchemaFactory<T> {
 
     private static final int DEFAULT_BOOK_BUFFER_SIZE = 1 << 7; // 128 slots
     private static final int DEFAULT_REPLAY_BUFFER_SIZE = 1 << 11; // 2048 slots
@@ -32,6 +32,8 @@ public abstract class InboundSocketReader<T extends Schema> implements GnomeAgen
     public final EpochNanoClock clock;
     protected final InboundSocketWriter socketWriter;
     protected final Listing listing;
+    // The listing's book stream: every record this reader writes is keyed by it, not by the listing.
+    protected final int streamId;
     private final OneToOneRingBuffer<T> replayBuffer;
 
     public volatile long recvTimestamp = 0L;
@@ -51,7 +53,8 @@ public abstract class InboundSocketReader<T extends Schema> implements GnomeAgen
             SequencedRingBuffer<T> outputBuffer,
             EpochNanoClock clock,
             InboundSocketWriter socketWriter,
-            Listing listing) {
+            Listing listing,
+            int streamId) {
         this.logger = logger;
         this.sequencedRingBuffer = outputBuffer;
         // It is this ring's only producer, so its own stop may end a wait on the ring.
@@ -59,6 +62,7 @@ public abstract class InboundSocketReader<T extends Schema> implements GnomeAgen
         this.clock = clock;
         this.socketWriter = socketWriter;
         this.listing = listing;
+        this.streamId = streamId;
         this.replayBuffer =
                 new OneToOneRingBuffer<>(this::createSchemaArray, this::createSchema, DEFAULT_REPLAY_BUFFER_SIZE);
         this.internalBook = createBook();
@@ -259,7 +263,7 @@ public abstract class InboundSocketReader<T extends Schema> implements GnomeAgen
 
     /**
      * The feed missed or reordered an update, so the book is wrong and stays wrong until the venue next sends that
-     * level. Publishes the book as it stands once more, flagged maybeBadBook, so whoever reads it knows from that
+     * level. Publishes the book as it stands once more, flagged badData, so whoever reads it knows from that
      * moment, then drops the connection: the gateway reconnects, the new subscription starts with a fresh snapshot,
      * and nothing is published in between. Throws, so the rest of the batch isn't read either.
      *
@@ -280,7 +284,7 @@ public abstract class InboundSocketReader<T extends Schema> implements GnomeAgen
     }
 
     /**
-     * Publishes the book as it stands, flagged maybeBadBook, for {@link #resyncBook}. Readers that detect gaps override
+     * Publishes the book as it stands, flagged badData, for {@link #resyncBook}. Readers that detect gaps override
      * this; the default publishes nothing.
      */
     protected void publishSuspectBook() {}

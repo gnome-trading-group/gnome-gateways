@@ -1,7 +1,7 @@
 package group.gnometrading.gateways.inbound.mbp.buffer;
 
-import group.gnometrading.schemas.Mbp10Encoder;
 import group.gnometrading.schemas.Mbp10Schema;
+import group.gnometrading.schemas.book.Mbp10Encoder;
 import org.agrona.concurrent.UnsafeBuffer;
 
 class MbpBufferSide {

@@ -16,11 +16,11 @@ import group.gnometrading.gateways.inbound.InboundSocketReader;
 import group.gnometrading.gateways.inbound.mbp.buffer.MbpBufferBook;
 import group.gnometrading.gateways.inbound.mbp.buffer.MbpBufferSchemaFactory;
 import group.gnometrading.logging.Logger;
-import group.gnometrading.schemas.Action;
-import group.gnometrading.schemas.Mbp10Encoder;
 import group.gnometrading.schemas.Mbp10Schema;
-import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
+import group.gnometrading.schemas.book.Action;
+import group.gnometrading.schemas.book.Mbp10Encoder;
+import group.gnometrading.schemas.book.Side;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Listing;
 import group.gnometrading.strings.GnomeString;
@@ -59,10 +59,11 @@ public final class BinanceInboundReader extends InboundSocketReader<Mbp10Schema>
             final EpochNanoClock clock,
             final FixSocketMessageClient fixClient,
             final Listing listing,
+            final int streamId,
             final FixConfig fixConfig,
             final PrivateKey privateKey,
             final String apiKey) {
-        super(logger, outputBuffer, clock, null, listing);
+        super(logger, outputBuffer, clock, null, listing, streamId);
         this.fixClient = fixClient;
         this.fixConfig = fixConfig;
         this.fixSession = new FixSession(fixConfig, fixClient, this);
@@ -389,8 +390,7 @@ public final class BinanceInboundReader extends InboundSocketReader<Mbp10Schema>
     private void emitTrade(final long price, final long size, final long eventTime, final int aggressorSide) {
         this.lastTradePrice = price;
         this.lastTradeSize = size;
-        this.schema.encoder.exchangeId(this.listing.exchange().exchangeId());
-        this.schema.encoder.securityId(this.listing.security().securityId());
+        this.schema.encoder.streamId(this.streamId);
         this.schema.encoder.timestampSent(Mbp10Encoder.timestampSentNullValue());
         this.schema.encoder.timestampRecv(this.recvTimestamp);
         this.schema.encoder.timestampEvent(eventTime);
@@ -407,8 +407,7 @@ public final class BinanceInboundReader extends InboundSocketReader<Mbp10Schema>
     }
 
     private void emitBookSchema(final long eventTime, final int depth) {
-        this.schema.encoder.exchangeId(this.listing.exchange().exchangeId());
-        this.schema.encoder.securityId(this.listing.security().securityId());
+        this.schema.encoder.streamId(this.streamId);
         this.schema.encoder.timestampSent(Mbp10Encoder.timestampSentNullValue());
         this.schema.encoder.timestampRecv(this.recvTimestamp);
         this.schema.encoder.timestampEvent(eventTime);

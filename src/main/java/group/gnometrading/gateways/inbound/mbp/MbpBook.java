@@ -1,9 +1,9 @@
 package group.gnometrading.gateways.inbound.mbp;
 
 import group.gnometrading.gateways.inbound.Book;
-import group.gnometrading.schemas.Mbp10Encoder;
 import group.gnometrading.schemas.Mbp10Schema;
 import group.gnometrading.schemas.Statics;
+import group.gnometrading.schemas.book.Mbp10Encoder;
 import group.gnometrading.utils.Copyable;
 import java.util.Objects;
 

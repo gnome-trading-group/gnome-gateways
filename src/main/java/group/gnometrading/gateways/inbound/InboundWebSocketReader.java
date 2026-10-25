@@ -4,14 +4,14 @@ import group.gnometrading.gateways.GatewayConfig;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.networking.websockets.enums.Opcode;
-import group.gnometrading.schemas.Schema;
+import group.gnometrading.schemas.StreamRecord;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Listing;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import org.agrona.concurrent.EpochNanoClock;
 
-public abstract class InboundWebSocketReader<T extends Schema> extends InboundSocketReader<T> {
+public abstract class InboundWebSocketReader<T extends StreamRecord> extends InboundSocketReader<T> {
 
     protected final WebSocketClient socketClient;
 
@@ -21,8 +21,9 @@ public abstract class InboundWebSocketReader<T extends Schema> extends InboundSo
             EpochNanoClock clock,
             InboundSocketWriter socketWriter,
             Listing listing,
+            int streamId,
             WebSocketClient socketClient) {
-        super(logger, outputBuffer, clock, socketWriter, listing);
+        super(logger, outputBuffer, clock, socketWriter, listing, streamId);
         this.socketClient = socketClient;
     }
 

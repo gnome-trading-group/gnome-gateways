@@ -11,7 +11,6 @@ import group.gnometrading.networking.websockets.WebSocketResponse;
 import group.gnometrading.networking.websockets.drafts.RFC6455;
 import group.gnometrading.networking.websockets.enums.Opcode;
 import group.gnometrading.schemas.Mbp10Schema;
-import group.gnometrading.schemas.SchemaType;
 import group.gnometrading.sequencer.GlobalSequence;
 import group.gnometrading.sequencer.SequencedPoller;
 import group.gnometrading.sequencer.SequencedRingBuffer;
@@ -83,7 +82,7 @@ public final class PolymarketIntlCaptureReplay {
             final Mbp10Schema schema = new Mbp10Schema();
             schema.buffer.putBytes(0, buffer, 0, length);
             schema.wrap(schema.buffer);
-            if (schema.decoder.flags().maybeBadBook()) {
+            if (schema.decoder.flags().badData()) {
                 suspect[0]++;
             }
         });
@@ -103,10 +102,11 @@ public final class PolymarketIntlCaptureReplay {
                 null,
                 new Listing(
                         1,
-                        new Exchange(2, "POLYMARKET_INTL", "POLYMARKET_INTL", "global", SchemaType.MBP_10),
+                        new Exchange(2, "POLYMARKET_INTL", "POLYMARKET_INTL", "global"),
                         new Security(3, "T", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
                         args[1] + ":" + token,
                         "T"),
+                77,
                 client,
                 new JsonDecoder());
         reader.buffer = false;

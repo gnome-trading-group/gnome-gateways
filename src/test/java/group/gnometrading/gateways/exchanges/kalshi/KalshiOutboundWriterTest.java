@@ -23,7 +23,6 @@ import group.gnometrading.schemas.OrderDecoder;
 import group.gnometrading.schemas.OrderStatus;
 import group.gnometrading.schemas.OrderType;
 import group.gnometrading.schemas.RejectReason;
-import group.gnometrading.schemas.SchemaType;
 import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
 import group.gnometrading.schemas.TimeInForce;
@@ -1168,7 +1167,7 @@ class KalshiOutboundWriterTest {
         final KalshiAuthSigner signer = new KalshiAuthSigner("test-api-key", TEST_PRIVATE_KEY);
         final Listing listing = new Listing(
                 (int) LISTING_ID,
-                new Exchange(2, "KALSHI", "Kalshi", "global", SchemaType.MBP_10),
+                new Exchange(2, "KALSHI", "Kalshi", "global"),
                 new Security(3, "TEST", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
                 exchangeSecurityId,
                 "KALSHI-TEST");

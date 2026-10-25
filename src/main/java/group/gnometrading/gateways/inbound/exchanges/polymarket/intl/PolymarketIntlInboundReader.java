@@ -11,11 +11,11 @@ import group.gnometrading.gateways.inbound.mbp.buffer.MbpBufferBook;
 import group.gnometrading.gateways.inbound.mbp.buffer.MbpBufferSchemaFactory;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.websockets.WebSocketClient;
-import group.gnometrading.schemas.Action;
-import group.gnometrading.schemas.Mbp10Encoder;
 import group.gnometrading.schemas.Mbp10Schema;
-import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.Statics;
+import group.gnometrading.schemas.book.Action;
+import group.gnometrading.schemas.book.Mbp10Encoder;
+import group.gnometrading.schemas.book.Side;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Listing;
 import group.gnometrading.strings.GnomeString;
@@ -88,9 +88,10 @@ public final class PolymarketIntlInboundReader extends InboundJsonWebSocketReade
             EpochNanoClock clock,
             InboundSocketWriter socketWriter,
             Listing listing,
+            int streamId,
             WebSocketClient socketClient,
             JsonDecoder jsonDecoder) {
-        super(logger, outputBuffer, clock, socketWriter, listing, socketClient, jsonDecoder);
+        super(logger, outputBuffer, clock, socketWriter, listing, streamId, socketClient, jsonDecoder);
         this.book = (MbpBufferBook) this.internalBook;
         this.parsedEvent = new ParsedEvent();
         this.pingBuffer = ByteBuffer.wrap(PING);
@@ -288,7 +289,7 @@ public final class PolymarketIntlInboundReader extends InboundJsonWebSocketReade
         this.schema.encoder.depth(Mbp10Encoder.depthNullValue());
         this.schema.encoder.flags().clear();
         this.schema.encoder.flags().marketByPrice(true);
-        this.schema.encoder.flags().maybeBadBook(true);
+        this.schema.encoder.flags().badData(true);
         this.book.writeTo(this.schema);
         offer();
     }
@@ -414,8 +415,7 @@ public final class PolymarketIntlInboundReader extends InboundJsonWebSocketReade
     }
 
     private void prepareEncoder() {
-        this.schema.encoder.exchangeId(this.listing.exchange().exchangeId());
-        this.schema.encoder.securityId(this.listing.security().securityId());
+        this.schema.encoder.streamId(this.streamId);
         this.schema.encoder.timestampSent(Mbp10Encoder.timestampSentNullValue());
         this.schema.encoder.timestampRecv(this.recvTimestamp);
     }

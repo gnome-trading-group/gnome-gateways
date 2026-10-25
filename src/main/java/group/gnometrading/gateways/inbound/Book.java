@@ -1,10 +1,10 @@
 package group.gnometrading.gateways.inbound;
 
-import group.gnometrading.schemas.Schema;
+import group.gnometrading.schemas.StreamRecord;
 import group.gnometrading.utils.Copyable;
 import group.gnometrading.utils.Resettable;
 
-public interface Book<T extends Schema> extends Comparable<Book<T>>, Copyable<Book<T>>, Resettable {
+public interface Book<T extends StreamRecord> extends Comparable<Book<T>>, Copyable<Book<T>>, Resettable {
     /**
      * Get the sequence number of the book.
      * @return the sequence number

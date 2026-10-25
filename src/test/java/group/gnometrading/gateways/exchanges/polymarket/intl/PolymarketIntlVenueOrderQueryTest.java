@@ -14,7 +14,6 @@ import group.gnometrading.gateways.outbound.exchanges.polymarket.intl.Polymarket
 import group.gnometrading.gateways.outbound.recovery.VenueOrder;
 import group.gnometrading.networking.http.HTTPClient;
 import group.gnometrading.networking.http.HTTPResponse;
-import group.gnometrading.schemas.SchemaType;
 import group.gnometrading.sm.Exchange;
 import group.gnometrading.sm.Listing;
 import group.gnometrading.sm.Security;
@@ -34,7 +33,7 @@ class PolymarketIntlVenueOrderQueryTest {
     private static final String HASH = "0x" + "ab".repeat(32);
     private static final Listing LISTING = new Listing(
             1,
-            new Exchange(2, "POLYMARKET", "Polymarket", "global", SchemaType.MBP_10),
+            new Exchange(2, "POLYMARKET", "Polymarket", "global"),
             new Security(3, "T", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
             "0xc:777",
             "T");
