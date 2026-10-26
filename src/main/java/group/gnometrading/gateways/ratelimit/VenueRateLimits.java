@@ -16,14 +16,12 @@ public final class VenueRateLimits {
     /** The share of a bucket's burst that background requests leave for orders, on top of the cancel reserve. */
     static final double BACKGROUND_HEADROOM = 0.3;
 
-    static final String RETRY_AFTER = "Retry-After";
-    static final String POLY_REMAINING = "Poly-RateLimit-Remaining";
-    static final String POLY_RESET = "Poly-RateLimit-Reset";
+    public static final String RETRY_AFTER = "Retry-After";
+    public static final String POLY_REMAINING = "Poly-RateLimit-Remaining";
+    public static final String POLY_RESET = "Poly-RateLimit-Reset";
 
     private static final String SHARE_KEY = "share";
     private static final String PER_SECOND_SUFFIX = ".per.second";
-
-    private static final String KALSHI_ORDERS = "/trade-api/v2/portfolio/events/orders";
 
     /**
      * @param cancelReserve the share of the burst kept for cancels; 0 for a bucket cancels don't draw on
@@ -58,54 +56,13 @@ public final class VenueRateLimits {
         validate();
     }
 
-    /**
-     * Kalshi's Basic tier: separate read and write token buckets per account. Orders cost 10 tokens, cancels 2,
-     * everything else 10. Its 429 carries no Retry-After.
-     */
-    public static VenueRateLimits kalshi() {
-        return new VenueRateLimits(
-                "Kalshi",
-                List.of(new Bucket("write", 100, 100, 0.2), new Bucket("read", 200, 200, 0)),
-                List.of(
-                        new Rule(HTTPMethod.POST, KALSHI_ORDERS + "/", "/amend", "write", 10, RequestClass.ORDER),
-                        new Rule(HTTPMethod.POST, KALSHI_ORDERS, null, "write", 10, RequestClass.ORDER),
-                        new Rule(HTTPMethod.DELETE, KALSHI_ORDERS + "/", null, "write", 2, RequestClass.CANCEL),
-                        new Rule(HTTPMethod.GET, "", null, "read", 10, RequestClass.BACKGROUND),
-                        new Rule(null, "", null, "write", 10, RequestClass.ORDER)),
-                List.of(RETRY_AFTER),
-                1.0);
-    }
-
-    /**
-     * Polymarket International's standard tier, per signer: an order bucket and a separate cancel bucket. Reads are
-     * left to Cloudflare, which delays rather than refuses them. Its order and cancel responses report what is
-     * left of the bucket, and a 429 says when to retry.
-     */
-    public static VenueRateLimits polymarketIntl() {
-        return new VenueRateLimits(
-                "Polymarket International",
-                List.of(new Bucket("order", 40, 60, 0), new Bucket("cancel", 80, 120, 0)),
-                List.of(
-                        new Rule(HTTPMethod.POST, "/order", null, "order", 1, RequestClass.ORDER),
-                        new Rule(HTTPMethod.DELETE, "", null, "cancel", 1, RequestClass.CANCEL),
-                        new Rule(HTTPMethod.GET, "", null, null, 0, RequestClass.BACKGROUND),
-                        new Rule(null, "", null, "order", 1, RequestClass.ORDER)),
-                List.of(RETRY_AFTER, POLY_REMAINING, POLY_RESET),
-                1.0);
-    }
-
-    /** Polymarket US: one bucket per API key for every call. Its 429 carries no Retry-After. */
-    public static VenueRateLimits polymarketUs() {
-        return new VenueRateLimits(
-                "Polymarket US",
-                List.of(new Bucket("key", 20, 20, 0.2)),
-                List.of(
-                        new Rule(HTTPMethod.POST, "/v1/order/", "/cancel", "key", 1, RequestClass.CANCEL),
-                        new Rule(HTTPMethod.POST, "/v1/order/", "/modify", "key", 1, RequestClass.ORDER),
-                        new Rule(HTTPMethod.GET, "", null, "key", 1, RequestClass.BACKGROUND),
-                        new Rule(null, "", null, "key", 1, RequestClass.ORDER)),
-                List.of(RETRY_AFTER),
-                1.0);
+    /** A venue's published limits, as its own package describes them. */
+    public static VenueRateLimits of(
+            final String venue,
+            final List<Bucket> buckets,
+            final List<Rule> rules,
+            final List<String> capturedHeaders) {
+        return new VenueRateLimits(venue, buckets, rules, capturedHeaders, 1.0);
     }
 
     /**

@@ -62,7 +62,7 @@ class SocketConnectControllerTest {
         verify(connectable, times(1)).connect();
         verify(logger).log(LogMessage.SOCKET_CONNECTING);
         verify(logger).log(LogMessage.SOCKET_CONNECTED);
-        verify(logger, never()).log(LogMessage.SOCKET_CONNECT_FAILED);
+        verify(logger, never()).logf(eq(LogMessage.SOCKET_CONNECT_FAILED), anyString(), any());
     }
 
     @Test
@@ -157,7 +157,7 @@ class SocketConnectControllerTest {
         RuntimeException exception = assertThrows(RuntimeException.class, () -> controller.connect());
 
         verify(connectable, times(1)).connect();
-        verify(logger).log(LogMessage.SOCKET_CONNECT_FAILED);
+        verify(logger).logf(eq(LogMessage.SOCKET_CONNECT_FAILED), anyString(), any());
         assertNotNull(exception.getCause());
     }
 
@@ -171,7 +171,7 @@ class SocketConnectControllerTest {
         assertThrows(RuntimeException.class, () -> controller.connect());
 
         verify(connectable, times(6)).connect(); // 1 initial + 5 retries
-        verify(logger, atLeastOnce()).log(LogMessage.SOCKET_CONNECT_FAILED);
+        verify(logger, atLeastOnce()).logf(eq(LogMessage.SOCKET_CONNECT_FAILED), anyString(), any());
     }
 
     // ========== Backoff Tests ==========
@@ -449,7 +449,7 @@ class SocketConnectControllerTest {
         // Give executor time to shut down
         Thread.sleep(100);
 
-        verify(logger).log(LogMessage.SOCKET_CONNECT_FAILED);
+        verify(logger).logf(eq(LogMessage.SOCKET_CONNECT_FAILED), anyString(), any());
     }
 
     @Test

@@ -399,7 +399,7 @@ class GatewaySupervisorTest {
                 GatewayConfig config,
                 EpochClock clock,
                 EpochNanoClock nanoClock) {
-            super(logger, connectable, config, clock, nanoClock);
+            super(logger, connectable, config, clock, nanoClock, ConnectLimiter.UNLIMITED);
             this.connectable = connectable;
         }
 

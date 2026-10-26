@@ -23,7 +23,12 @@ public abstract class GatewaySupervisor implements GnomeAgent {
     private int failedConnectCycles;
 
     protected GatewaySupervisor(
-            Logger logger, Connectable connectable, GatewayConfig config, EpochClock clock, EpochNanoClock nanoClock) {
+            Logger logger,
+            Connectable connectable,
+            GatewayConfig config,
+            EpochClock clock,
+            EpochNanoClock nanoClock,
+            ConnectLimiter connectLimiter) {
         this.logger = logger;
         this.config = config;
         this.nanoClock = nanoClock;
@@ -32,7 +37,12 @@ public abstract class GatewaySupervisor implements GnomeAgent {
         this.sanityCheckSchedule =
                 new Schedule(clock, config.sanityCheckInterval().toMillis(), this::sanityCheck);
         this.connectController = new SocketConnectController(
-                logger, connectable, config.connectTimeout(), config.maxReconnectAttempts(), config.initialBackoff());
+                logger,
+                connectable,
+                config.connectTimeout(),
+                config.maxReconnectAttempts(),
+                config.initialBackoff(),
+                connectLimiter);
     }
 
     protected abstract void doDisconnect() throws Exception;
@@ -42,6 +52,14 @@ public abstract class GatewaySupervisor implements GnomeAgent {
     protected abstract long recvTimestamp();
 
     protected void doSanityCheck() {}
+
+    /**
+     * Work the gateway does on the supervisor's thread, e.g. a feed adding or removing markets: on every pass, connected
+     * or not, so a connection that keeps failing to connect still answers what other threads wait on.
+     */
+    protected int doControl() throws Exception {
+        return 0;
+    }
 
     @Override
     public final void onStart() throws Exception {
@@ -55,11 +73,12 @@ public abstract class GatewaySupervisor implements GnomeAgent {
     public final int doWork() throws Exception {
         if (this.needsConnect) {
             connect();
-            return 1;
+            return 1 + doControl();
         }
         this.reconnectSchedule.check();
         this.keepAliveSchedule.check();
         this.sanityCheckSchedule.check();
+        final int controlled = doControl();
 
         final long recvTs = recvTimestamp();
         if (recvTs > 0) {
@@ -69,7 +88,7 @@ public abstract class GatewaySupervisor implements GnomeAgent {
                 this.reconnectSchedule.forceTrigger();
             }
         }
-        return 0;
+        return controlled;
     }
 
     @Override

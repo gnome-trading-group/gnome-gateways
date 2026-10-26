@@ -2,6 +2,7 @@ package group.gnometrading.gateways;
 
 import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.Logger;
+import group.gnometrading.utils.CauseChain;
 import java.time.Duration;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -23,6 +24,7 @@ public final class SocketConnectController {
     private final Duration connectTimeout;
     private final Duration initialBackoff;
     private final int maxReconnectAttempts;
+    private final ConnectLimiter limiter;
 
     private Duration backoff;
 
@@ -32,7 +34,18 @@ public final class SocketConnectController {
             Duration connectTimeout,
             int maxReconnectAttempts,
             Duration initialBackoff) {
+        this(logger, connectable, connectTimeout, maxReconnectAttempts, initialBackoff, ConnectLimiter.UNLIMITED);
+    }
+
+    public SocketConnectController(
+            Logger logger,
+            Connectable connectable,
+            Duration connectTimeout,
+            int maxReconnectAttempts,
+            Duration initialBackoff,
+            ConnectLimiter limiter) {
         this.logger = logger;
+        this.limiter = limiter;
         this.connectable = connectable;
         this.maxReconnectAttempts = maxReconnectAttempts;
         this.connectTimeout = connectTimeout;
@@ -52,6 +65,13 @@ public final class SocketConnectController {
 
         try {
             for (int i = 0; i < 1 + this.maxReconnectAttempts; i++) {
+                // Before the timeout starts: waiting for a slot isn't the venue being slow.
+                try {
+                    this.limiter.acquire();
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException(ex);
+                }
                 final ConnectTimeout timeout = new ConnectTimeout(Thread.currentThread());
                 final Future<?> timeoutTask =
                         timeoutExecutor.schedule(timeout, this.connectTimeout.toMillis(), TimeUnit.MILLISECONDS);
@@ -76,7 +96,8 @@ public final class SocketConnectController {
                     if (timedOut) {
                         this.logger.log(LogMessage.SOCKET_CONNECT_TIMED_OUT);
                     } else {
-                        this.logger.log(LogMessage.SOCKET_CONNECT_FAILED);
+                        // A rejected upgrade's status and body are in the chain, e.g. a 401 for a revoked key.
+                        this.logger.logf(LogMessage.SOCKET_CONNECT_FAILED, "%s", CauseChain.of(e));
                     }
                     lastException = e;
                 }

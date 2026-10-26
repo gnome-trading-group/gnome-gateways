@@ -1,0 +1,142 @@
+package group.gnometrading.gateways.orders;
+
+import group.gnometrading.schemas.ExecType;
+import group.gnometrading.schemas.OrderStatus;
+import group.gnometrading.schemas.RejectReason;
+import group.gnometrading.schemas.Side;
+import group.gnometrading.sm.fee.OrderFeeState;
+
+public final class OrderContext {
+
+    public static final int EXCHANGE_ORDER_ID_MAX_LENGTH = 70;
+
+    /**
+     * Orders a gateway may have live at once. Both the writer and the reader hold a copy of every
+     * live order, so both pools must be sized from this one bound.
+     */
+    public static final int MAX_IN_FLIGHT_ORDERS = 256;
+
+    /**
+     * Capacity of each writer/reader handoff queue. One writer poll handles at most one outbound
+     * buffer's worth of messages, so twice the in-flight bound leaves headroom for every live order
+     * to complete plus that poll's own submissions before the writer drains again.
+     */
+    public static final int HANDOFF_QUEUE_CAPACITY = 2 * MAX_IN_FLIGHT_ORDERS;
+
+    /**
+     * The reader's pool. The writer frees an order only once the reader has, so the reader holds at most the
+     * writer's live orders, plus refused submits whose rejection it hasn't reached yet: it takes in a pass's new
+     * orders before that pass's reports, and those can be at most a handoff queue's worth.
+     */
+    public static final int READER_POOL_SIZE = MAX_IN_FLIGHT_ORDERS + HANDOFF_QUEUE_CAPACITY;
+
+    /** Marks a quantity the venue did not report. */
+    public static final long QTY_ABSENT = -1L;
+
+    public long clientOidCounter;
+    public int clientOidStrategyId;
+    public int exchangeId;
+    public long securityId;
+    public long originalQty;
+    public long cumulativeFilledQty;
+    public long leavesQty;
+    public long cumulativeCost;
+    public long cumulativeMakerCost;
+    public long cumulativeFees;
+    // The order's fee rounding carried from fill to fill, for fees the reader computes itself.
+    public final OrderFeeState feeState = new OrderFeeState();
+    // When the order was prepared, so a lookup on a venue that can only search by time knows where to look.
+    public long submittedAtMillis;
+
+    // Reader-side: the order has been acknowledged to the OMS with an ExecType.NEW.
+    public boolean acked;
+    // Venue fill count at the most recent accepted amend; fills at or below it predate the amend.
+    public long amendFillCount = QTY_ABSENT;
+    // Writer-to-reader marker: this context reports an accepted amend rather than a report to replay.
+    public boolean amendAccepted;
+    // An order that ends on the venue's word, not at its own size: an IOC or FOK where the venue may fill less, or
+    // (a dollar-sized BUY) more. The reader keeps it open until its fills reach finalFillQty.
+    public boolean awaitsFinalFill;
+    // Writer-to-reader marker: this context carries the venue's total for an awaitsFinalFill order.
+    public boolean finalFillNotice;
+    // All the order will ever fill, once the venue has said; QTY_ABSENT until then.
+    public long finalFillQty = QTY_ABSENT;
+    // Writer-to-reader marker: this context carries the venue's id for an order, learned from the submit's answer.
+    public boolean venueOrderIdNotice;
+    // The limit price as the venue was sent it, for venues whose events can only be matched by the order's terms.
+    public long limitPrice;
+    public Side side;
+    public short flags;
+    public ExecType execType;
+    public OrderStatus orderStatus;
+    public RejectReason rejectReason;
+    public final byte[] exchangeOrderIdBytes = new byte[EXCHANGE_ORDER_ID_MAX_LENGTH];
+    public int exchangeOrderIdLength;
+    // An id we choose before sending the order, which the venue echoes on every event for it, so the
+    // reader can match events even if the submit's response never arrives. It is also the id every
+    // execution report carries as exchangeOrderId: the one a later process can find the order by.
+    public final byte[] correlationIdBytes = new byte[EXCHANGE_ORDER_ID_MAX_LENGTH];
+    public int correlationIdLength;
+
+    public void reset() {
+        this.clientOidCounter = 0;
+        this.clientOidStrategyId = 0;
+        this.exchangeId = 0;
+        this.securityId = 0;
+        this.originalQty = 0;
+        this.cumulativeFilledQty = 0;
+        this.leavesQty = 0;
+        this.cumulativeCost = 0;
+        this.cumulativeMakerCost = 0;
+        this.cumulativeFees = 0;
+        this.feeState.reset();
+        this.submittedAtMillis = 0;
+        this.acked = false;
+        this.amendFillCount = QTY_ABSENT;
+        this.amendAccepted = false;
+        this.awaitsFinalFill = false;
+        this.finalFillNotice = false;
+        this.finalFillQty = QTY_ABSENT;
+        this.venueOrderIdNotice = false;
+        this.limitPrice = 0;
+        this.side = null;
+        this.flags = 0;
+        this.execType = null;
+        this.orderStatus = null;
+        this.rejectReason = null;
+        this.exchangeOrderIdLength = 0;
+        this.correlationIdLength = 0;
+    }
+
+    public void copyFrom(final OrderContext src) {
+        this.clientOidCounter = src.clientOidCounter;
+        this.clientOidStrategyId = src.clientOidStrategyId;
+        this.exchangeId = src.exchangeId;
+        this.securityId = src.securityId;
+        this.originalQty = src.originalQty;
+        this.cumulativeFilledQty = src.cumulativeFilledQty;
+        this.leavesQty = src.leavesQty;
+        this.cumulativeCost = src.cumulativeCost;
+        this.cumulativeMakerCost = src.cumulativeMakerCost;
+        this.cumulativeFees = src.cumulativeFees;
+        this.feeState.copyFrom(src.feeState);
+        this.submittedAtMillis = src.submittedAtMillis;
+        this.acked = src.acked;
+        this.amendFillCount = src.amendFillCount;
+        this.amendAccepted = src.amendAccepted;
+        this.awaitsFinalFill = src.awaitsFinalFill;
+        this.finalFillNotice = src.finalFillNotice;
+        this.finalFillQty = src.finalFillQty;
+        this.venueOrderIdNotice = src.venueOrderIdNotice;
+        this.limitPrice = src.limitPrice;
+        this.side = src.side;
+        this.flags = src.flags;
+        this.execType = src.execType;
+        this.orderStatus = src.orderStatus;
+        this.rejectReason = src.rejectReason;
+        this.exchangeOrderIdLength = src.exchangeOrderIdLength;
+        System.arraycopy(src.exchangeOrderIdBytes, 0, this.exchangeOrderIdBytes, 0, src.exchangeOrderIdLength);
+        this.correlationIdLength = src.correlationIdLength;
+        System.arraycopy(src.correlationIdBytes, 0, this.correlationIdBytes, 0, src.correlationIdLength);
+    }
+}

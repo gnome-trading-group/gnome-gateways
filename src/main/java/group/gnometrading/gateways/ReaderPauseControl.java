@@ -12,6 +12,8 @@ public final class ReaderPauseControl {
 
     private volatile boolean pause = true;
     private volatile boolean paused;
+    // Set by the reader on a socket it found broken; cleared only by the resume that follows a reconnect.
+    private volatile boolean pausedItself;
     // Requested by shutdown; the reader acts on it at its next pass.
     private volatile boolean stopped;
     // Set by the reader once it will never touch its socket again: only then may the supervisor treat it as gone.
@@ -62,7 +64,13 @@ public final class ReaderPauseControl {
 
     /** Reader thread: stops itself until the supervisor next resumes it. */
     public void pauseSelf() {
+        this.pausedItself = true;
         this.pause = true;
+    }
+
+    /** Whether the reader stopped itself on a broken socket; it should stay stopped until the socket is reopened. */
+    public boolean pausedItself() {
+        return this.pausedItself;
     }
 
     /** Supervisor: returns once the reader has stopped and will not touch its socket until resumed. */
@@ -81,6 +89,7 @@ public final class ReaderPauseControl {
     public void resume() {
         final long generation = this.resumeGeneration + 1;
         this.resumeGeneration = generation;
+        this.pausedItself = false;
         this.pause = false;
         while (this.resumedGeneration < generation && !this.exited) {
             idle();

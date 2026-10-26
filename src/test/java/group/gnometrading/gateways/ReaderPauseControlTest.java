@@ -222,4 +222,15 @@ class ReaderPauseControlTest {
             Thread.currentThread().interrupt();
         }
     }
+
+    @Test
+    void aReaderThatStoppedItselfStaysMarkedUntilTheNextResume() {
+        final ReaderPauseControl control = new ReaderPauseControl();
+        control.release();
+        assertFalse(control.pausedItself());
+
+        control.pauseSelf();
+        assertTrue(control.pausedItself(), "a handover finding this leaves the reader held");
+        assertTrue(control.isPauseRequested());
+    }
 }

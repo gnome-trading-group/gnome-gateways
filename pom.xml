@@ -37,7 +37,7 @@
         <dependency>
             <groupId>group.gnometrading</groupId>
             <artifactId>gnome-sequencer</artifactId>
-            <version>2.2.0</version>
+            <version>2.3.0</version>
         </dependency>
         <dependency>
             <groupId>group.gnometrading</groupId>
@@ -47,13 +47,13 @@
         <dependency>
             <groupId>group.gnometrading</groupId>
             <artifactId>gnome-networking</artifactId>
-            <version>2.2.0</version>
+            <version>2.3.0</version>
             <classifier>${os.classifier}</classifier>
         </dependency>
         <dependency>
             <groupId>group.gnometrading</groupId>
             <artifactId>gnome-core</artifactId>
-            <version>1.17.0</version>
+            <version>1.20.0</version>
         </dependency>
         <dependency>
             <groupId>group.gnometrading</groupId>
@@ -95,7 +95,7 @@
                     <execution>
                         <id>default-test</id>
                         <configuration>
-                            <excludedGroups>allocation</excludedGroups>
+                            <excludedGroups>allocation,benchmark</excludedGroups>
                         </configuration>
                     </execution>
                     <!-- Mockito's inline mock maker rewrites a mocked class for the whole JVM, so once any test mocks
@@ -109,6 +109,22 @@
                         </goals>
                         <configuration>
                             <groups>allocation</groups>
+                            <reuseForks>false</reuseForks>
+                        </configuration>
+                    </execution>
+                    <!-- Timings, printed rather than asserted; run on demand:
+                         mvn test-compile surefire:test@benchmark -->
+                    <execution>
+                        <id>benchmark</id>
+                        <phase>none</phase>
+                        <goals>
+                            <goal>test</goal>
+                        </goals>
+                        <configuration>
+                            <includes>
+                                <include>**/*Benchmark.java</include>
+                            </includes>
+                            <groups>benchmark</groups>
                             <reuseForks>false</reuseForks>
                         </configuration>
                     </execution>
