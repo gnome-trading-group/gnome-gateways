@@ -77,6 +77,7 @@ class ConnectionGroupTest {
         group.add(b, 0);
         await(() -> a.state() == SubjectState.LIVE && b.state() == SubjectState.LIVE);
         FeedConnection<FakeVenue> first = opened.get(0);
+        assertTrue(first.carriesMarkets(), "opened for its markets");
 
         venues.get(0).bid = 41;
         group.tick(13 * HOUR);
@@ -84,6 +85,7 @@ class ConnectionGroupTest {
         assertEquals(1, group.connections().size());
         FeedConnection<FakeVenue> second = group.connections().get(0);
         assertNotSame(first, second);
+        assertTrue(second.carriesMarkets(), "streams depend on it once it holds their markets");
         assertSame(second, a.host());
         assertSame(second, b.host());
         assertTrue(venues.get(0).closed, "the old connection is closed");
@@ -124,6 +126,7 @@ class ConnectionGroupTest {
         assertSame(first, a.host());
         assertEquals(SubjectState.LIVE, a.state());
         assertTrue(venues.get(1).closed, "the replacement is closed");
+        assertFalse(opened.get(1).carriesMarkets(), "a replacement that fails costs its streams nothing");
         assertFalse(
                 streams.get(0).drain().stream().anyMatch(r -> r.decoder.flags().badData()));
         venues.get(0).frames.add("U A 45");

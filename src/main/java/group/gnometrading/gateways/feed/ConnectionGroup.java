@@ -156,6 +156,7 @@ public final class ConnectionGroup<C> {
 
     private Slot<C> openSlot(final long now) throws Exception {
         final Open<C> open = opener.open(source + "-" + opened++, new SubjectTable(), listener);
+        open.connection().carryMarkets();
         final Slot<C> slot = new Slot<>(open, now + ROLL_INTERVAL_NANOS + jitter());
         slots.add(slot);
         return slot;
@@ -265,6 +266,7 @@ public final class ConnectionGroup<C> {
             return false;
         }
         // From here the markets are off the old connection and must land on the new one, however long it takes.
+        next.carryMarkets();
         final List<Subject> handed = released.handed();
         final List<Subject> standIns = new ArrayList<>(handed.size());
         for (Subject market : handed) {

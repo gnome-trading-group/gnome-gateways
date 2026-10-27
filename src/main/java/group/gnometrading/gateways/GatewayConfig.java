@@ -87,6 +87,26 @@ public record GatewayConfig(
                 spin);
     }
 
+    /** A copy that reconnects on its own at {@code interval}, besides when silent or failing. */
+    public GatewayConfig withReconnectInterval(final Duration interval) {
+        return new GatewayConfig(
+                interval,
+                keepAliveInterval,
+                sanityCheckInterval,
+                maxReconnectAttempts,
+                maxConnectCycles,
+                maxSilentInterval,
+                initialBackoff,
+                connectTimeout,
+                socketConnectTimeout,
+                handshakeTimeout,
+                readTimeout,
+                tcpKeepAliveIdle,
+                tcpKeepAliveInterval,
+                tcpKeepAliveProbes,
+                spinReads);
+    }
+
     /** Applies these socket settings to a WebSocket client, which keeps them for every connection it makes. */
     public void configure(final WebSocketClient client, final boolean blocking) throws IOException {
         client.setConnectTimeout((int) this.socketConnectTimeout.toMillis());

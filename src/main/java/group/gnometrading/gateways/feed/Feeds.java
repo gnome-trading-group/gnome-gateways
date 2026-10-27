@@ -119,9 +119,11 @@ public final class Feeds {
         Market market = ofSource.get(ref.key());
         if (market == null) {
             market = new Market(feed, groups.get(source), new Subject(ref.key(), feed.levelsPerSide(), output));
+            // Placed before it is recorded: if opening its connection fails, nothing is left half added, and a
+            // later try starts afresh rather than finding a market that is on no connection.
+            market.group.add(market.subject, now);
             ofSource.put(ref.key(), market);
             bySubject.put(market.subject, market);
-            market.group.add(market.subject, now);
             if (prober != null && feed.probe() != null && market.group.sendsChanges()) {
                 prober.add(market.subject, feed.probe(), feed.probeBudget());
             }

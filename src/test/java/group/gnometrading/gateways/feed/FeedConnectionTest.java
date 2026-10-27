@@ -18,10 +18,10 @@ import group.gnometrading.schemas.book.Side;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
@@ -35,7 +35,8 @@ class FeedConnectionTest {
     /** Frames to hand the reader, one per read. */
     static final class ScriptedTransport implements Transport<Sent> {
         final Sent sent = new Sent();
-        final Deque<String> frames = new ArrayDeque<>();
+        // Concurrent: some tests feed a reader running on its own thread.
+        final Deque<String> frames = new ConcurrentLinkedDeque<>();
         int opens;
         int closes;
         private boolean traffic;
@@ -222,6 +223,32 @@ class FeedConnectionTest {
 
     private void control() throws Exception {
         connection.control(now);
+    }
+
+    @Test
+    void itIsNeverReconnectedOnATimerAsItsGroupRollsItInstead() throws Exception {
+        GnomeAgentRunner reader = new GnomeAgentRunner(connection.reader(), error -> {});
+        GnomeAgentRunner.startOnThread(reader);
+        try {
+            connection.supervisor().onStart();
+            assertEquals(1, transport.opens);
+
+            now += TimeUnit.HOURS.toNanos(13);
+            // Traffic just now, so silence doesn't reconnect it either.
+            transport.frames.add("S A 40 50");
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (!transport.frames.isEmpty()) {
+                assertTrue(System.nanoTime() < deadline, "the reader never read the frame");
+                Thread.sleep(1);
+            }
+            Thread.sleep(50);
+            connection.supervisor().doWork();
+
+            assertEquals(1, transport.opens, "a scheduled reconnect would drop every book before the roll");
+        } finally {
+            connection.pauseControl().stop();
+            reader.close();
+        }
     }
 
     @Test

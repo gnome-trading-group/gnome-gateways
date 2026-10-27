@@ -14,6 +14,7 @@ import group.gnometrading.logging.Logger;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
@@ -47,6 +48,8 @@ public final class FeedConnection<C> implements SubjectHost {
     static final long RESYNC_WINDOW_NANOS = TimeUnit.MINUTES.toNanos(10);
     // Writer slots commands leave free, for keep-alives the supervisor may send before the writer drains.
     static final int KEEP_ALIVE_SLOTS = 8;
+    // Far enough off never to come: a feed connection is replaced by its group's roll instead.
+    static final Duration NO_SCHEDULED_RECONNECT = Duration.ofDays(36_500);
 
     private sealed interface Command {}
 
@@ -276,6 +279,7 @@ public final class FeedConnection<C> implements SubjectHost {
 
     private volatile RawDataSink raw = RawDataSink.NO_OP;
     private volatile long lastTrafficNanos;
+    private volatile boolean carriesMarkets;
     // Supervisor thread: whether the socket is open; timeouts and commands wait for it.
     private boolean connected;
 
@@ -299,7 +303,10 @@ public final class FeedConnection<C> implements SubjectHost {
         this.nanoClock = nanoClock;
         this.messages = messages;
         this.listener = listener;
-        this.supervisor = new Supervisor(logger, config, clock, nanoClock, connects);
+        // Its group replaces it every 12 h, make before break; the supervisor's own scheduled reconnect would drop
+        // every book first. It still reconnects when the socket fails or goes silent.
+        this.supervisor = new Supervisor(
+                logger, config.withReconnectInterval(NO_SCHEDULED_RECONNECT), clock, nanoClock, connects);
         try {
             transport.configure(config);
         } catch (IOException e) {
@@ -309,6 +316,19 @@ public final class FeedConnection<C> implements SubjectHost {
 
     public String name() {
         return name;
+    }
+
+    /**
+     * Whether streams depend on it: from the start for a connection its group opens for markets, but a roll's
+     * replacement only once the old connection lets its markets go. Until then, a replacement that fails costs
+     * nothing, as the old connection still carries them.
+     */
+    public boolean carriesMarkets() {
+        return carriesMarkets;
+    }
+
+    void carryMarkets() {
+        carriesMarkets = true;
     }
 
     public GnomeAgent reader() {

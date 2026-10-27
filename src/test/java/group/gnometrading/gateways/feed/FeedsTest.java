@@ -82,6 +82,18 @@ class FeedsTest {
     }
 
     @Test
+    void aStreamWhoseConnectionFailedToOpenIsPlacedWhenTriedAgain() throws Exception {
+        opener.failNext = true;
+        assertThrows(IllegalStateException.class, () -> feeds.addStream(1, "TEST", "T:yes", yes.ring, 0));
+
+        feeds.addStream(1, "TEST", "T:yes", yes.ring, MINUTE);
+        Subject market = feeds.subject(1);
+        await(() -> market.state() == SubjectState.LIVE);
+        assertEquals(List.of("T"), opener.venues.get(0).subscribed);
+        await(() -> !records(yes).isEmpty());
+    }
+
+    @Test
     void aStreamJoiningALiveMarketGetsItsBook() throws Exception {
         feeds.addStream(1, "TEST", "T:yes", yes.ring, 0);
         Subject market = feeds.subject(1);
