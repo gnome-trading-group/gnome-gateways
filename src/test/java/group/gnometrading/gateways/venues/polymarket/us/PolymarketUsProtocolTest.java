@@ -3,12 +3,15 @@ package group.gnometrading.gateways.venues.polymarket.us;
 import static group.gnometrading.gateways.feed.VenueTestKit.price;
 import static group.gnometrading.gateways.feed.VenueTestKit.size;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 
+import group.gnometrading.gateways.feed.Subject;
 import group.gnometrading.gateways.feed.VenueTestKit;
 import group.gnometrading.gateways.feed.book.Projection;
+import group.gnometrading.logging.NullLogger;
 import group.gnometrading.schemas.Mbp10Schema;
 import group.gnometrading.schemas.book.Action;
 import group.gnometrading.schemas.book.Mbp10Encoder;
@@ -17,7 +20,9 @@ import java.security.KeyPairGenerator;
 import java.security.interfaces.EdECPrivateKey;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class PolymarketUsProtocolTest {
@@ -39,6 +44,7 @@ class PolymarketUsProtocolTest {
                 .getBytes()
                 .orElseThrow();
         protocol = new PolymarketUsProtocol(
+                new NullLogger(),
                 kit.table,
                 new PolymarketUsAuthSigner(
                         "test-key",
@@ -60,7 +66,7 @@ class PolymarketUsProtocolTest {
     }
 
     private static String book(final String slug, final String bids, final String offers) {
-        return "{\"requestId\":\"m." + slug + "\",\"subscriptionType\":\"SUBSCRIPTION_TYPE_MARKET_DATA\","
+        return "{\"requestId\":\"m0.1\",\"subscriptionType\":\"SUBSCRIPTION_TYPE_MARKET_DATA\","
                 + "\"marketData\":{\"marketSlug\":\"" + slug + "\"" + bids + offers
                 + ",\"state\":\"MARKET_STATE_OPEN\",\"transactTime\":\"2026-10-26T15:00:00.123Z\"}}";
     }
@@ -91,7 +97,7 @@ class PolymarketUsProtocolTest {
     }
 
     @Test
-    void marketsAreToldApartByTheirRequestId() throws Exception {
+    void marketsAreToldApartByTheMarketEachMessageNames() throws Exception {
         frame(book("other-market", ",\"bids\":[" + level("0.10", "1") + "]", ""));
         frame(book(SLUG, ",\"bids\":[" + level("0.55", "1") + "]", ""));
 
@@ -113,7 +119,7 @@ class PolymarketUsProtocolTest {
     @Test
     void theTakersIntentDecidesTheAggressor() throws Exception {
         frame(book(SLUG, ",\"bids\":[" + level("0.55", "100") + "]", ""));
-        frame("{\"requestId\":\"t." + SLUG + "\",\"trade\":{\"marketSlug\":\"" + SLUG + "\",\"price\":"
+        frame("{\"requestId\":\"t0.1\",\"trade\":{\"marketSlug\":\"" + SLUG + "\",\"price\":"
                 + amount("0.555") + ",\"quantity\":" + amount("3") + ",\"tradeTime\":\"2026-10-26T15:00:01Z\","
                 + "\"taker\":{\"side\":\"ORDER_SIDE_BUY\",\"intent\":\"ORDER_INTENT_BUY_SHORT\"}}}");
 
@@ -126,22 +132,110 @@ class PolymarketUsProtocolTest {
         assertEquals(price("0.445"), legs[1].last().decoder.price());
     }
 
+    private static String subscribe(final String id, final String type, final String... slugs) {
+        return "{\"subscribe\":{\"requestId\":\"" + id + "\",\"subscriptionType\":\"SUBSCRIPTION_TYPE_" + type
+                + "\",\"marketSlugs\":[\"" + String.join("\",\"", slugs) + "\"]}}";
+    }
+
+    private static String unsubscribe(final String id) {
+        return "{\"unsubscribe\":{\"requestId\":\"" + id + "\"}}";
+    }
+
     @Test
-    void eachMarketHasItsOwnPairOfSubscriptions() {
-        protocol.subscribe(kit.channel, List.of(kit.table.get(SLUG)));
-        protocol.unsubscribe(kit.channel, List.of(kit.table.get(SLUG)));
+    void marketsShareTheirGroupsBookAndTradeSubscriptions() {
+        protocol.subscribe(kit.channel, List.of(kit.table.get(SLUG), kit.table.get("other-market")));
         protocol.keepAlive(kit.channel);
 
         assertEquals(
                 List.of(
-                        "{\"subscribe\":{\"requestId\":\"m." + SLUG + "\",\"subscriptionType\":"
-                                + "\"SUBSCRIPTION_TYPE_MARKET_DATA\",\"marketSlugs\":[\"" + SLUG + "\"]}}",
-                        "{\"subscribe\":{\"requestId\":\"t." + SLUG + "\",\"subscriptionType\":"
-                                + "\"SUBSCRIPTION_TYPE_TRADE\",\"marketSlugs\":[\"" + SLUG + "\"]}}",
-                        "{\"unsubscribe\":{\"requestId\":\"m." + SLUG + "\"}}",
-                        "{\"unsubscribe\":{\"requestId\":\"t." + SLUG + "\"}}"),
+                        subscribe("m0.1", "MARKET_DATA", SLUG, "other-market"),
+                        subscribe("t0.1", "TRADE", SLUG, "other-market")),
                 kit.sent);
         assertEquals(List.of("ping"), kit.pings);
+    }
+
+    @Test
+    void aGroupWhoseMarketsChangeIsReplacedUnderNewIds() {
+        protocol.subscribe(kit.channel, List.of(kit.table.get(SLUG)));
+        protocol.subscribe(kit.channel, List.of(kit.table.get("other-market")));
+        protocol.unsubscribe(kit.channel, List.of(kit.table.get(SLUG)));
+        protocol.unsubscribe(kit.channel, List.of(kit.table.get("other-market")));
+
+        assertEquals(
+                List.of(
+                        subscribe("m0.1", "MARKET_DATA", SLUG),
+                        subscribe("t0.1", "TRADE", SLUG),
+                        // Dropped before the new ones: a market may be in only one subscription at a time.
+                        unsubscribe("m0.1"),
+                        unsubscribe("t0.1"),
+                        subscribe("m0.2", "MARKET_DATA", SLUG, "other-market"),
+                        subscribe("t0.2", "TRADE", SLUG, "other-market"),
+                        unsubscribe("m0.2"),
+                        unsubscribe("t0.2"),
+                        subscribe("m0.3", "MARKET_DATA", "other-market"),
+                        subscribe("t0.3", "TRADE", "other-market"),
+                        unsubscribe("m0.3"),
+                        unsubscribe("t0.3")),
+                kit.sent);
+    }
+
+    @Test
+    void aFullConnectionNeverHoldsMoreThanTenSubscriptions() {
+        List<Subject> markets = new ArrayList<>();
+        int total = PolymarketUsProtocol.GROUPS * PolymarketUsProtocol.MARKETS_PER_GROUP;
+        for (int i = 0; i < total + 1; i++) {
+            kit.market("m-" + i);
+            markets.add(kit.table.get("m-" + i));
+        }
+        for (int from = 0; from < total; from += PolymarketUsProtocol.MARKETS_PER_GROUP) {
+            protocol.subscribe(kit.channel, markets.subList(from, from + PolymarketUsProtocol.MARKETS_PER_GROUP));
+        }
+
+        Set<String> open = new HashSet<>();
+        Set<String> subscribedMarkets = new HashSet<>();
+        int peak = 0;
+        for (String sent : kit.sent) {
+            String id = sent.replaceAll(".*\"requestId\":\"([^\"]+)\".*", "$1");
+            if (sent.startsWith("{\"subscribe\"")) {
+                open.add(id);
+            } else {
+                open.remove(id);
+            }
+            peak = Math.max(peak, open.size());
+        }
+        for (String sent : kit.sent) {
+            if (sent.contains("MARKET_DATA")
+                    && open.contains(sent.replaceAll(".*\"requestId\":\"([^\"]+)\".*", "$1"))) {
+                for (String slug : sent.replaceAll(".*\\[\"(.*)\"\\].*", "$1").split("\",\"")) {
+                    assertTrue(subscribedMarkets.add(slug), slug + " is in one subscription");
+                }
+            }
+        }
+        assertEquals(10, peak);
+        assertEquals(total, subscribedMarkets.size());
+        assertEquals(PolymarketUsProtocol.GROUPS * 2, kit.sent.size(), "each group subscribed once, full");
+        assertThrows(
+                IllegalStateException.class, () -> protocol.subscribe(kit.channel, markets.subList(total, total + 1)));
+    }
+
+    @Test
+    void aNewConnectionHasNoSubscriptionsToDrop() {
+        protocol.subscribe(kit.channel, List.of(kit.table.get(SLUG)));
+        protocol.onConnected();
+        kit.sent.clear();
+        protocol.subscribe(kit.channel, List.of(kit.table.get(SLUG)));
+
+        assertEquals(List.of(subscribe("m0.2", "MARKET_DATA", SLUG), subscribe("t0.2", "TRADE", SLUG)), kit.sent);
+    }
+
+    @Test
+    void aVenueErrorIsLoggedNotMistakenForABook() throws Exception {
+        frame("{\"requestId\":\"m0.1\",\"error\":\"max subscriptions per connection reached\","
+                + "\"subscriptionType\":\"SUBSCRIPTION_TYPE_MARKET_DATA\"}");
+        frame("{\"requestId\":\"t0.1\",\"trade\":{\"marketSlug\":\"not-ours\",\"price\":" + amount("0.5")
+                + ",\"quantity\":" + amount("1") + "}}");
+        assertTrue(legs[0].drain().isEmpty());
+        assertTrue(other.drain().isEmpty());
     }
 
     @Test

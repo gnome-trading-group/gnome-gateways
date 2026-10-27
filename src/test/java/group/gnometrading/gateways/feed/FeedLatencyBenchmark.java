@@ -272,7 +272,7 @@ class FeedLatencyBenchmark {
                 100,
                 m -> "s" + m,
                 100,
-                table -> new PolymarketUsProtocol(table, signer, () -> 0),
+                table -> new PolymarketUsProtocol(new NullLogger(), table, signer, () -> 0),
                 Projection.IDENTITY,
                 Projection.COMPLEMENT);
     }

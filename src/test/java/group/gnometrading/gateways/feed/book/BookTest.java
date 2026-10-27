@@ -76,18 +76,45 @@ class BookTest {
     }
 
     @Test
-    void aFullSideKeepsTheBestLevelsAndSaysItOverflowed() {
+    void aSideGrowsPastTheDepthItStartedWith() {
         Book book = new Book(3);
         for (int cents = 10; cents <= 50; cents += 10) {
             book.set(Side.Bid, px(cents / 100.0), cents, 1);
         }
 
-        assertEquals(3, book.bids().depth());
+        assertEquals(5, book.bids().depth());
         assertEquals(px(0.50), book.bids().price(0));
-        assertEquals(px(0.30), book.bids().price(2));
+        assertEquals(px(0.10), book.bids().price(4));
+        assertFalse(book.overflowed());
+    }
+
+    @Test
+    void aSideAtTheMostItHoldsKeepsTheBestLevelsAndSaysItOverflowed() {
+        Book book = new Book(4);
+        int levels = PriceLevels.MAX_LEVELS + 2;
+        for (int i = 1; i <= levels; i++) {
+            book.set(Side.Ask, i * 1_000L, 1, 1);
+        }
+
+        assertEquals(PriceLevels.MAX_LEVELS, book.asks().depth());
+        assertEquals(1_000L, book.asks().price(0), "the best levels are the ones kept");
         assertTrue(book.overflowed());
         book.clear();
         assertFalse(book.overflowed());
+    }
+
+    @Test
+    void aShallowBookCopiesADeepOneWhole() {
+        Book deep = new Book(4);
+        for (int i = 1; i <= 1_000; i++) {
+            deep.set(Side.Bid, i * 1_000L, 1, 1);
+        }
+        Book shallow = new Book(4);
+        shallow.copyFrom(deep);
+
+        assertEquals(1_000, shallow.bids().depth());
+        assertEquals(1_000_000L, shallow.bids().price(0));
+        assertFalse(shallow.overflowed());
     }
 
     @Test

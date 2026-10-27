@@ -191,8 +191,8 @@ public final class Subject {
     }
 
     /**
-     * More levels than are kept: what was dropped could surface as the top changes, so the book goes out flagged and is
-     * fetched again. A market that keeps overflowing is quarantined, which says its depth needs raising.
+     * More levels than a side can hold even at its largest: what was dropped could surface as the top changes, so the
+     * book goes out flagged and is fetched again. A market that keeps overflowing is quarantined.
      */
     private void overflowed(final long receiveNanos) {
         resyncs++;

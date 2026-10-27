@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import group.gnometrading.gateways.feed.book.PriceLevels;
 import group.gnometrading.gateways.feed.book.Projection;
 import group.gnometrading.schemas.Mbp10Schema;
 import group.gnometrading.schemas.Statics;
@@ -197,7 +198,7 @@ class SubjectTest {
     }
 
     @Test
-    void aBookDeeperThanItsLevelsIsFlaggedAndFetchedAgain() throws Exception {
+    void aBookDeeperThanItStartedWithIsKeptWhole() throws Exception {
         Captured deep = new Captured();
         Subject shallow = new Subject("SHALLOW", 2, new StreamOutput(21, Projection.IDENTITY, deep.ring));
         shallow.attach(new RecordingHost(resyncs));
@@ -206,27 +207,29 @@ class SubjectTest {
         shallow.level(Side.Bid, px(0.39), 10, 1);
         shallow.level(Side.Bid, px(0.38), 10, 1);
         shallow.endSnapshot(1_000, 2_000, 7);
+        shallow.set(Side.Bid, px(0.37), 10, 1);
+        shallow.endUpdate(1_001, 2_001, 8);
 
-        assertEquals(SubjectState.STALE, shallow.state());
-        assertTrue(deep.drain().get(0).decoder.flags().badData());
-        assertEquals(List.of("SHALLOW:BOOK_OVERFLOW"), resyncs);
+        assertEquals(SubjectState.LIVE, shallow.state());
+        assertEquals(4, shallow.book().bids().depth());
+        assertTrue(resyncs.isEmpty());
+        assertFalse(deep.drain().stream().anyMatch(r -> r.decoder.flags().badData()));
     }
 
     @Test
-    void anUpdateThatOverflowsTheBookMakesItStale() throws Exception {
+    void aBookDeeperThanTheMostASideHoldsIsFlaggedAndFetchedAgain() throws Exception {
         Captured deep = new Captured();
-        Subject shallow = new Subject("SHALLOW", 2, new StreamOutput(21, Projection.IDENTITY, deep.ring));
-        shallow.attach(new RecordingHost(resyncs));
-        shallow.beginSnapshot();
-        shallow.level(Side.Bid, px(0.40), 10, 1);
-        shallow.endSnapshot(1_000, 2_000, 7);
-        shallow.set(Side.Bid, px(0.39), 10, 1);
-        shallow.set(Side.Bid, px(0.38), 10, 1);
-        shallow.endUpdate(1_001, 2_001, 8);
+        Subject huge = new Subject("HUGE", 2, new StreamOutput(21, Projection.IDENTITY, deep.ring));
+        huge.attach(new RecordingHost(resyncs));
+        huge.beginSnapshot();
+        for (int level = 0; level <= PriceLevels.MAX_LEVELS; level++) {
+            huge.level(Side.Bid, px(0.90) - level, 10, 1);
+        }
+        huge.endSnapshot(1_000, 2_000, 7);
 
-        assertEquals(SubjectState.STALE, shallow.state());
-        List<Mbp10Schema> records = deep.drain();
-        assertTrue(records.get(records.size() - 1).decoder.flags().badData());
+        assertEquals(SubjectState.STALE, huge.state());
+        assertTrue(deep.drain().get(0).decoder.flags().badData());
+        assertEquals(List.of("HUGE:BOOK_OVERFLOW"), resyncs);
     }
 
     @Test

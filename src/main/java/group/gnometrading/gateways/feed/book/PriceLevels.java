@@ -3,23 +3,26 @@ package group.gnometrading.gateways.feed.book;
 import org.agrona.concurrent.UnsafeBuffer;
 
 /**
- * One side of a book: every price level, best first, in a fixed buffer so updating it allocates nothing. A level
- * beyond {@code capacity} is not kept; {@link #overflowed} says whether that happened since the last clear, since a
- * book that dropped levels can't be trusted once the levels above them go.
+ * One side of a book: every price level, best first, in a buffer reused so updating it allocates nothing. A venue that
+ * sends its whole book can go far deeper than usual (Lighter: 3,000+ levels), so the buffer doubles when a level
+ * doesn't fit, allocating only when a book is deeper than it has ever been. Past {@link #MAX_LEVELS} a level is not
+ * kept; {@link #overflowed} says whether that happened since the last clear, since a book that dropped levels can't be
+ * trusted once the levels above them go.
  */
 public final class PriceLevels {
 
+    public static final int MAX_LEVELS = 1 << 16;
     private static final int ENTRY = 24; // price, size, count
 
-    private final UnsafeBuffer levels;
-    private final int capacity;
+    private UnsafeBuffer levels;
+    private int capacity;
     private final boolean descending;
     private int depth;
     private boolean overflowed;
 
     PriceLevels(final int capacity, final boolean descending) {
-        if (capacity < 1) {
-            throw new IllegalArgumentException("A side needs room for at least one level");
+        if (capacity < 1 || capacity > MAX_LEVELS) {
+            throw new IllegalArgumentException("A side starts with room for 1 to " + MAX_LEVELS + " levels");
         }
         this.capacity = capacity;
         this.descending = descending;
@@ -109,12 +112,12 @@ public final class PriceLevels {
     }
 
     private void insertAt(final int index, final long price, final long size, final long count) {
-        if (index >= capacity) {
+        if (depth == capacity && !grow(capacity * 2)) {
+            // Full at the largest size kept: the worst level falls off, or this one if it would be the worst.
             overflowed = true;
-            return;
-        }
-        if (depth == capacity) {
-            overflowed = true;
+            if (index >= capacity) {
+                return;
+            }
         } else {
             depth++;
         }
@@ -134,7 +137,23 @@ public final class PriceLevels {
         levels.putLong(offset + 16, count);
     }
 
+    /** Room for {@code wanted} levels, or as many as allowed; false if it was already at the most. */
+    private boolean grow(final int wanted) {
+        if (capacity >= MAX_LEVELS) {
+            return false;
+        }
+        final int grown = Math.min(Math.max(wanted, capacity), MAX_LEVELS);
+        final UnsafeBuffer larger = new UnsafeBuffer(new byte[grown * ENTRY]);
+        larger.putBytes(0, levels, 0, depth * ENTRY);
+        levels = larger;
+        capacity = grown;
+        return true;
+    }
+
     void copyFrom(final PriceLevels other) {
+        if (other.depth > capacity) {
+            grow(other.depth);
+        }
         depth = Math.min(other.depth, capacity);
         overflowed = other.overflowed || other.depth > capacity;
         levels.putBytes(0, other.levels, 0, depth * ENTRY);

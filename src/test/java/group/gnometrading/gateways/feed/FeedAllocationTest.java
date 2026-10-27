@@ -17,6 +17,8 @@ import group.gnometrading.gateways.venues.hyperliquid.HyperliquidProtocol;
 import group.gnometrading.gateways.venues.kalshi.KalshiProtocol;
 import group.gnometrading.gateways.venues.lighter.LighterProtocol;
 import group.gnometrading.gateways.venues.polymarket.intl.PolymarketIntlProtocol;
+import group.gnometrading.gateways.venues.polymarket.us.PolymarketUsAuthSigner;
+import group.gnometrading.gateways.venues.polymarket.us.PolymarketUsProtocol;
 import group.gnometrading.logging.NullLogger;
 import group.gnometrading.networking.sockets.factory.NativeSocketFactory;
 import group.gnometrading.networking.websockets.WebSocketClient;
@@ -35,6 +37,8 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPairGenerator;
 import java.security.PrivateKey;
+import java.security.interfaces.EdECPrivateKey;
+import java.util.Base64;
 import java.util.List;
 import java.util.function.Function;
 import org.junit.jupiter.api.Tag;
@@ -114,6 +118,37 @@ class FeedAllocationTest {
                     + "[{\"px\":\"2301\",\"sz\":\"0.25\",\"n\":1}]]}}");
         }
         assertNoAllocation(messages, "ETH", table -> new HyperliquidProtocol(table, () -> 0), Projection.IDENTITY);
+    }
+
+    @Test
+    void polymarketUsBooksAndTradesWithLongAndShortStreamsDoNotAllocate() throws Exception {
+        final ByteBuffer[] messages = new ByteBuffer[MESSAGES];
+        for (int i = 0; i < messages.length; i++) {
+            messages[i] = i % 4 == 3
+                    ? ascii("{\"requestId\":\"t0.1\",\"subscriptionType\":\"SUBSCRIPTION_TYPE_TRADE\",\"trade\":{"
+                            + "\"marketSlug\":\"slug\",\"price\":{\"value\":\"0.555\",\"currency\":\"USD\"},"
+                            + "\"quantity\":{\"value\":\"3\",\"currency\":\"USD\"},"
+                            + "\"tradeTime\":\"2026-10-26T15:00:01Z\",\"taker\":{\"side\":\"ORDER_SIDE_BUY\","
+                            + "\"intent\":\"ORDER_INTENT_BUY_LONG\"}}}")
+                    : ascii("{\"requestId\":\"m0.1\",\"subscriptionType\":\"SUBSCRIPTION_TYPE_MARKET_DATA\","
+                            + "\"marketData\":{\"marketSlug\":\"slug\",\"bids\":[{\"px\":{\"value\":\"0.5500\","
+                            + "\"currency\":\"USD\"},\"qty\":\"" + (i % 2 == 0 ? "100" : "120") + ".0000\"}],"
+                            + "\"offers\":[{\"px\":{\"value\":\"0.5600\",\"currency\":\"USD\"},\"qty\":\"30.0000\"}],"
+                            + "\"state\":\"MARKET_STATE_OPEN\",\"transactTime\":\"2026-10-26T15:00:00.123Z\"}}");
+        }
+        final byte[] seed = ((EdECPrivateKey) KeyPairGenerator.getInstance("Ed25519")
+                        .generateKeyPair()
+                        .getPrivate())
+                .getBytes()
+                .orElseThrow();
+        final PolymarketUsAuthSigner signer = new PolymarketUsAuthSigner(
+                "key", PolymarketUsAuthSigner.parseSecretKey(Base64.getEncoder().encodeToString(seed)));
+        assertNoAllocation(
+                messages,
+                "slug",
+                table -> new PolymarketUsProtocol(new NullLogger(), table, signer, () -> 0),
+                Projection.IDENTITY,
+                Projection.COMPLEMENT);
     }
 
     @Test
