@@ -1,12 +1,21 @@
 package group.gnometrading.gateways;
 
 import group.gnometrading.annotations.VisibleForTesting;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
 
 /**
  * Hands a reader's socket between its own thread and the supervisor, which stops the reader while it connects or
  * disconnects. The reader starts paused, and pauses itself when it sees its socket close.
  */
 public final class ReaderPauseControl {
+
+    // A pause lasts as long as a reconnect: seconds, or minutes while a venue keeps refusing. Yielding all that time
+    // spins a core (a shard with a refused venue sat at 100% CPU), so after a short spin the reader parks, backing off
+    // to a millisecond at a time: a resume then reaches it within a millisecond.
+    private static final int YIELDS_BEFORE_PARKING = 100;
+    private static final int MAX_PARK_SHIFT = 20;
+    private static final long MAX_PARK_NANOS = TimeUnit.MILLISECONDS.toNanos(1);
 
     private final Runnable supervisorIdle;
 
@@ -42,8 +51,9 @@ public final class ReaderPauseControl {
     public boolean awaitIfPaused() {
         if (this.pause) {
             this.paused = true;
+            int idles = 0;
             while (this.pause && !this.stopped) {
-                Thread.yield();
+                idles = readerIdle(idles);
             }
             if (!this.stopped) {
                 this.paused = false;
@@ -111,6 +121,16 @@ public final class ReaderPauseControl {
      */
     public void onStop(final Runnable action) {
         this.onStop = action;
+    }
+
+    private static int readerIdle(final int idles) {
+        if (idles < YIELDS_BEFORE_PARKING) {
+            Thread.yield();
+            return idles + 1;
+        }
+        final int shift = Math.min(idles - YIELDS_BEFORE_PARKING, MAX_PARK_SHIFT);
+        LockSupport.parkNanos(Math.min(1L << shift, MAX_PARK_NANOS));
+        return Math.min(idles + 1, YIELDS_BEFORE_PARKING + MAX_PARK_SHIFT);
     }
 
     /** Leaves the interrupt set, so a shutdown still sees it; a connect timeout clears its own. */

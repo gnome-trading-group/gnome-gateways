@@ -1,7 +1,10 @@
 package group.gnometrading.gateways;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadMXBean;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -45,6 +48,24 @@ class ReaderPauseControlTest {
         control.pause();
 
         assertTrue(control.isPaused());
+    }
+
+    @Test
+    void awaitIfPaused_LongPause_ReaderBarelyUsesTheCpu() throws Exception {
+        // A connection a venue keeps refusing stays paused for minutes; its reader must not spin a core meanwhile.
+        final ThreadMXBean threads = ManagementFactory.getThreadMXBean();
+        assumeTrue(threads.isThreadCpuTimeSupported());
+        final ReaderPauseControl control = new ReaderPauseControl();
+        startReader(control);
+        control.pause();
+        final long before = threads.getThreadCpuTime(readerThread.getId());
+
+        sleepQuietly(500);
+
+        final long usedMillis = TimeUnit.NANOSECONDS.toMillis(threads.getThreadCpuTime(readerThread.getId()) - before);
+        assertTrue(usedMillis < 100, "a paused reader used " + usedMillis + " ms of CPU in 500 ms");
+        control.resume();
+        assertFalse(control.isPaused(), "and still resumes");
     }
 
     @Test
