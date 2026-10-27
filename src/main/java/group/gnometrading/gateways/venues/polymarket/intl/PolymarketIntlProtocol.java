@@ -46,6 +46,8 @@ public final class PolymarketIntlProtocol implements VenueProtocol<WebSocketChan
     /** A token's pending check: the venue's best prices after a match, and the book's then. */
     private static final class Check {
         boolean pending;
+        // The last completed match disagreed; one more that does too means the book missed a change.
+        boolean doubtful;
         long timestamp;
         long venueBid;
         long venueAsk;
@@ -89,7 +91,9 @@ public final class PolymarketIntlProtocol implements VenueProtocol<WebSocketChan
     @Override
     public void subscribe(final WebSocketChannel channel, final List<Subject> subjects) {
         for (Subject subject : subjects) {
-            checks.computeIfAbsent(subject.key(), k -> new Check()).pending = false;
+            final Check check = checks.computeIfAbsent(subject.key(), k -> new Check());
+            check.pending = false;
+            check.doubtful = false;
         }
         if (opened) {
             operation(channel.writer(), "subscribe", subjects);
@@ -334,6 +338,7 @@ public final class PolymarketIntlProtocol implements VenueProtocol<WebSocketChan
         final Check check = checks.get(eventSubject.key());
         if (check != null) {
             check.pending = false;
+            check.doubtful = false;
         }
         eventSubject.endSnapshot(timestamp, receiveNanos, NO_SEQUENCE);
     }
@@ -440,8 +445,11 @@ public final class PolymarketIntlProtocol implements VenueProtocol<WebSocketChan
     /**
      * The venue sends, with every change, its best bid and ask once the match that caused it has fully applied. One
      * match's changes can come as several messages with one timestamp, so mid-match the book and those prices can
-     * disagree for a moment; once the timestamp moves on they must agree, or the book missed a change. (Measured over
-     * 19,624 matches on two busy markets: they always agreed.) Returns whether the book is still trusted.
+     * disagree for a moment; once the timestamp moves on they should agree. But a match can also straddle two
+     * timestamps a millisecond apart, the first message's prices not yet showing the change it carries (2026-10-27: 4
+     * of 5 disagreements over 1.9 million checks, the book right each time). So a book is only doubted after one
+     * completed match disagrees, and found wrong when the next does too: a change the book missed stays missed until a
+     * resync. Returns whether the book is still trusted.
      */
     private boolean checkBestPrices(final Subject subject, final long venueBid, final long venueAsk) {
         final Check check = checks.get(subject.key());
@@ -450,9 +458,14 @@ public final class PolymarketIntlProtocol implements VenueProtocol<WebSocketChan
         }
         if (check.pending && timestamp != check.timestamp) {
             check.pending = false;
-            if (check.bookBid != check.venueBid || check.bookAsk != check.venueAsk) {
+            if (check.bookBid == check.venueBid && check.bookAsk == check.venueAsk) {
+                check.doubtful = false;
+            } else if (check.doubtful) {
+                check.doubtful = false;
                 subject.stale(GapReason.BEST_PRICE, receiveNanos);
                 return false;
+            } else {
+                check.doubtful = true;
             }
         }
         if (venueBid != UNREADABLE && venueAsk != UNREADABLE) {

@@ -604,7 +604,7 @@ public final class FeedConnection<C> implements SubjectHost {
         final long now = nanoClock.nanoTime();
         if (reason == GapReason.CONNECTION_SEQUENCE) {
             countConnectionGap(atNanos, now);
-        } else if (countResync(note, now)) {
+        } else if (reason != GapReason.PROBE_MISMATCH && countResync(note, now)) {
             logger.logf(
                     LogMessage.UNKNOWN_ERROR,
                     "%s: quarantined %s after %d resyncs (%s)",
@@ -622,7 +622,12 @@ public final class FeedConnection<C> implements SubjectHost {
         toResync.add(subject);
     }
 
-    /** Whether this is the market's third resync within the window. */
+    /**
+     * Whether this is the market's third resync within the window. A probe's resync isn't counted: it finds the venue's
+     * change stream silently skipped an update (Polymarket Intl, 2026-10-27), which a fresh snapshot fixes each time,
+     * and quarantining would only take a working market off. Failures of the feed itself (gaps, overflow, unreadable
+     * messages) are counted.
+     */
     private static boolean countResync(final Notes note, final long now) {
         note.resyncs[note.resyncCount++ % MAX_RESYNCS] = now;
         final long oldest = note.resyncs[note.resyncCount % MAX_RESYNCS];

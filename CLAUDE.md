@@ -28,12 +28,14 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
 - `GatewaySupervisor`, `SocketConnectController`, `ConnectLimiter`, `GatewayConfig`, `ReaderPauseControl`: connect,
   reconnect, keep-alive and silence detection shared by feeds and outbound.
 - `feed/`: the market data layer, generic over transport and venue.
-  - `Subject`: one venue market, its full-depth `book/Book`, state machine (`SUBSCRIBING -> LIVE <-> SUSPECT ->
-    STALE`, plus `EMPTY`, `QUARANTINED`, `REMOVING`) and liveness; publishes to each `StreamOutput` through its
-    `book/Projection` (IDENTITY, or COMPLEMENT for a binary market's NO / short listing).
+  - `Subject`: one venue market, its full-depth `book/Book` (sides grow to 65,536 levels), state machine
+    (`SUBSCRIBING -> LIVE <-> SUSPECT -> STALE`, plus `EMPTY`, `QUARANTINED`, `REMOVING`) and liveness; publishes to
+    each `StreamOutput` through its `book/Projection` (IDENTITY, or COMPLEMENT for a binary market's NO / short
+    listing).
   - `FeedConnection`: one connection's reader (hot path), supervisor and command queue: subscribes in batches paced by
     `RateBudget` (frames a minute) and the writer's room, resyncs, snapshot timeouts (then `EMPTY`), quarantine after
-    3 resyncs in 10 minutes; a roll's release and adopt run on its supervisor. Each `VenueProtocol` declares
+    3 resyncs in 10 minutes (the probe's don't count: those are updates the venue skipped, which a snapshot fixes); a
+    roll's release and adopt run on its supervisor. Each `VenueProtocol` declares
     `books()`: CHANGES (Kalshi, Lighter, Polymarket Intl; probed) or WHOLE (Hyperliquid, Polymarket US; not probed).
   - `ConnectionGroup`: a source's connections in a process, packed up to `max_per_connection`, closed when empty for
     5 minutes, rolled make-before-break every 12 h. `Feeds`: streams to markets (shared subjects), groups, the prober,
@@ -70,19 +72,22 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
   roll moves a market to a new connection's reader, so stream rings are built with
   `SequencedRingBuffer.Producers.TAKING_TURNS`.
 - Connect: one attempt plus `maxReconnectAttempts` (5) per cycle, backoff 1s doubling to 10s; after `maxConnectCycles`
-  (3) failed cycles it throws `GatewayConnectFailedException` to the error handler. Forced reconnect every 12h and when
-  nothing arrives for `maxSilentInterval` (30s). `GatewayConfig` validates timeout relationships; keep them valid.
+  (3) failed cycles it throws `GatewayConnectFailedException` to the error handler. Forced reconnect when nothing
+  arrives for `maxSilentInterval` (30s), and every 12h for order entry; a feed connection is rolled instead.
+  `GatewayConfig` validates timeout relationships; keep them valid.
 - `ConnectLimiter.forSource` spaces connects per source across the process: Kalshi 2/s, others 5/s. Outbound uses
   `UNLIMITED` (one connect per venue).
 - Every venue snapshots over its socket. Gap detection: a bad book goes `STALE`, is published once flagged badData, and
   only that market is resynced on its connection. Kalshi checks `seq` over every frame of the connection (a gap
   resyncs all its markets, hence 250 per connection), Lighter each market's nonce chain, Polymarket Intl the venue's
-  best bid/ask against the book. Hyperliquid and Polymarket US send whole books. The REST probe catches the rest.
+  best bid/ask against the book (wrong only when two completed matches in a row disagree). Hyperliquid and Polymarket
+  US send whole books. The REST probe catches the rest.
 - Kalshi: `:yes`/`:no` listings share one subject (the ticker); a `:no` listing's book and trades are its complement
   (price `1 - p`, sides flipped), as are its orders. Market orders are refused (Kalshi needs a price; the OMS sends
   priced IOCs).
-- Polymarket US: `:long`/`:short` listings share one subject; `:short` is the complement. No client order id and no
-  dedup, so a submit is never resent; events are matched by GTD stamp or (IOC) side+price. FOK refused.
+- Polymarket US: `:long`/`:short` listings share one subject; `:short` is the complement. Feeds hold at most 10
+  subscriptions a connection, so markets go in up to 5 groups of 20, a changed group replaced under new ids. No client
+  order id and no dedup, so a submit is never resent; events are matched by GTD stamp or (IOC) side+price. FOK refused.
 - Polymarket Intl: `exchangeSecurityId` is `{condition_id}:{token_id}`. Orders are EIP-712 signed (signature types
   0-3, incl. 3 = deposit wallet) and immutable, so no modify; market orders refused.
 - Submits with no clear answer: resent only where the venue dedups (`resendsAreSafe`), else looked up. Every OMS

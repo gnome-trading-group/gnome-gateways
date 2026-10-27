@@ -303,6 +303,29 @@ class FeedConnectionTest {
     }
 
     @Test
+    void theProbeFindingTheBookWrongAgainAndAgainNeverQuarantinesIt() throws Exception {
+        Subject a = market("A");
+        connection.add(a);
+        control();
+        for (int i = 0; i < 4; i++) {
+            read("S A 40 50");
+            connection.requestStale(a, GapReason.PROBE_MISMATCH);
+            connection.reader().doWork();
+            now += TimeUnit.MINUTES.toNanos(1);
+            control();
+        }
+
+        assertTrue(quarantined.isEmpty(), "the venue skipped updates; a fresh snapshot fixes each");
+        assertEquals(
+                4,
+                transport.sent.commands.stream()
+                        .filter(c -> c.startsWith("resync"))
+                        .count());
+        read("S A 40 50");
+        assertEquals(SubjectState.LIVE, a.state());
+    }
+
+    @Test
     void resyncsSpreadOverMoreThanTenMinutesDontQuarantine() throws Exception {
         Subject a = market("A");
         connection.add(a);

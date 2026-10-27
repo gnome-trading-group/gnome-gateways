@@ -166,13 +166,29 @@ class PolymarketIntlProtocolTest {
         assertEquals(SubjectState.LIVE, kit.table.get("token-yes").state());
         assertFalse(yes.last().decoder.flags().badData());
 
-        // A bid the book was never told about.
+        // A bid the book was never told about: doubted after one match, found wrong after the next.
         frame(changes("1782753357400", change("token-yes", "BUY", "0.07", "6", "0.095", "0.10")));
         frame(changes("1782753357401", change("token-yes", "SELL", "0.11", "3", "0.095", "0.10")));
+        assertEquals(SubjectState.LIVE, kit.table.get("token-yes").state(), "one disagreement is only a doubt");
+        frame(changes("1782753357402", change("token-yes", "SELL", "0.11", "4", "0.095", "0.10")));
         Subject subject = kit.table.get("token-yes");
         assertEquals(SubjectState.STALE, subject.state());
         assertTrue(yes.last().decoder.flags().badData());
         assertEquals(List.of("token-yes:BEST_PRICE"), kit.resyncs, "the other token is untouched");
+    }
+
+    @Test
+    void aMatchThatStraddlesTwoTimestampsIsNotAGap() throws Exception {
+        bookYes();
+        // As Polymarket sent it 2026-10-27: the 0.08 bid removed at one millisecond with the old best still quoted,
+        // then removed again at the next with the new one.
+        frame(changes("1782753357300", change("token-yes", "BUY", "0.08", "0", "0.08", "0.10")));
+        frame(changes("1782753357301", change("token-yes", "BUY", "0.08", "0", "0.07", "0.10")));
+        frame(changes("1782753357302", change("token-yes", "SELL", "0.11", "2", "0.07", "0.10")));
+
+        assertEquals(SubjectState.LIVE, kit.table.get("token-yes").state());
+        assertTrue(kit.resyncs.isEmpty());
+        assertFalse(yes.last().decoder.flags().badData());
     }
 
     @Test
