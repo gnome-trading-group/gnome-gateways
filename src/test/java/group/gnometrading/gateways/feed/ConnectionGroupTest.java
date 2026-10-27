@@ -101,6 +101,40 @@ class ConnectionGroupTest {
     }
 
     @Test
+    void aMarketThatClosedSinceStillLetsItsConnectionRoll() throws Exception {
+        // Long enough for the stand-in to go EMPTY: a snapshot timeout (10 s), one retry, and another.
+        ConnectionGroup<FakeVenue> patient = new ConnectionGroup<>(
+                "TEST",
+                2,
+                opener,
+                FeedListener.NONE,
+                new NullLogger(),
+                TimeUnit.SECONDS.toNanos(30),
+                ConnectionGroup.HANDOVER_TIMEOUT_NANOS);
+        try {
+            Subject open = market("OPEN");
+            Subject closed = market("CLOSED");
+            patient.add(open, 0);
+            patient.add(closed, 0);
+            await(() -> open.state() == SubjectState.LIVE && closed.state() == SubjectState.LIVE);
+            FeedConnection<FakeVenue> first = opened.get(0);
+
+            // The venue closed CLOSED overnight: the old connection still holds its last book, a new one gets none.
+            opener.bookless.add("CLOSED");
+            patient.tick(13 * HOUR);
+
+            assertEquals(1, patient.connections().size());
+            assertNotSame(first, patient.connections().get(0), "rolled rather than kept");
+            assertEquals(SubjectState.LIVE, open.state());
+            assertEquals(SubjectState.EMPTY, closed.state(), "the venue has no book for it now");
+            List<Mbp10Schema> records = streams.get(1).drain();
+            assertTrue(records.get(records.size() - 1).decoder.flags().badData(), "its old book went out flagged");
+        } finally {
+            patient.closeAll();
+        }
+    }
+
+    @Test
     void aConnectionLeftEmptyClosesAfterFiveMinutes() throws Exception {
         Subject a = market("A");
         group.add(a, 0);

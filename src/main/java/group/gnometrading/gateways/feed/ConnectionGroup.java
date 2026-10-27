@@ -29,6 +29,7 @@ public final class ConnectionGroup<C> {
     static final long ROLL_SYNC_TIMEOUT_NANOS = TimeUnit.SECONDS.toNanos(60);
     static final long HANDOVER_TIMEOUT_NANOS = TimeUnit.SECONDS.toNanos(10);
     static final long ROLL_RETRY_NANOS = TimeUnit.MINUTES.toNanos(10);
+    private static final int UNSYNCED_NAMED = 5;
 
     /** Opens a connection to the source: its transport, protocol and threads. */
     public interface Opener<C> {
@@ -251,9 +252,10 @@ public final class ConnectionGroup<C> {
         if (!synced(shadows)) {
             logger.logf(
                     LogMessage.UNKNOWN_ERROR,
-                    "%s: replacement for %s didn't sync; keeping it",
+                    "%s: replacement for %s didn't sync; keeping it. Still waiting: %s",
                     source,
-                    old.connection().name());
+                    old.connection().name(),
+                    unsynced(shadows));
             return false;
         }
         final FeedConnection.Handover released = old.connection().release(markets);
@@ -322,11 +324,8 @@ public final class ConnectionGroup<C> {
         final long deadline = System.nanoTime() + syncTimeoutNanos;
         while (System.nanoTime() < deadline) {
             boolean all = true;
-            for (Map.Entry<Subject, Subject> entry : shadows.entrySet()) {
-                final SubjectState state = entry.getValue().state();
-                all &= state.trusted()
-                        || (state == SubjectState.EMPTY
-                                && !entry.getKey().state().trusted());
+            for (Subject shadow : shadows.values()) {
+                all &= settled(shadow);
             }
             if (all) {
                 return true;
@@ -334,6 +333,30 @@ public final class ConnectionGroup<C> {
             Thread.sleep(50);
         }
         return false;
+    }
+
+    /**
+     * Has its answer from the venue: a book, or none at all. A market that closed since the old connection last heard
+     * from it still looks live there, but the venue now sends no book; waiting for one would keep the connection from
+     * ever rolling (2026-10-27). The market goes EMPTY on the new connection, rechecked as any empty market is.
+     */
+    private static boolean settled(final Subject shadow) {
+        final SubjectState state = shadow.state();
+        return state.trusted() || state == SubjectState.EMPTY;
+    }
+
+    /** The markets a roll is still waiting on, a few by name, for the log. */
+    private static String unsynced(final Map<Subject, Subject> shadows) {
+        final List<String> waiting = new ArrayList<>();
+        int count = 0;
+        for (Subject shadow : shadows.values()) {
+            if (!settled(shadow)) {
+                if (count++ < UNSYNCED_NAMED) {
+                    waiting.add(shadow.key() + " (" + shadow.state() + ")");
+                }
+            }
+        }
+        return count + " markets" + (waiting.isEmpty() ? "" : ", e.g. " + String.join(", ", waiting));
     }
 
     private void closeQuietly(final Open<C> open) {

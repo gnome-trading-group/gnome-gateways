@@ -10,6 +10,8 @@ import group.gnometrading.schemas.book.Side;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -23,6 +25,8 @@ public final class FakeVenue implements Transport<FakeVenue>, VenueProtocol<Fake
     volatile long bid = 40;
     // Off: subscribes go unanswered, as for a market the venue has no book for.
     volatile boolean answers = true;
+    // Markets the venue has no book for any more, e.g. closed since they were subscribed elsewhere.
+    Set<String> bookless = Set.of();
     volatile boolean closed;
     private boolean traffic;
     private final FrameWriter writer = new FrameWriter(64) {
@@ -94,7 +98,7 @@ public final class FakeVenue implements Transport<FakeVenue>, VenueProtocol<Fake
     public void subscribe(final FakeVenue channel, final List<Subject> subjects) {
         for (Subject subject : subjects) {
             subscribed.add(subject.key());
-            if (!answers) {
+            if (!answers || bookless.contains(subject.key())) {
                 continue;
             }
             frames.add("S " + subject.key() + " " + bid);
@@ -138,6 +142,8 @@ public final class FakeVenue implements Transport<FakeVenue>, VenueProtocol<Fake
         public volatile boolean silent;
         // The next open throws, as when the venue refuses the connection.
         public volatile boolean failNext;
+        // Venues opened from now on have no book for these markets.
+        public final Set<String> bookless = ConcurrentHashMap.newKeySet();
         public int attempts;
 
         @Override
@@ -150,6 +156,7 @@ public final class FakeVenue implements Transport<FakeVenue>, VenueProtocol<Fake
             }
             FakeVenue venue = new FakeVenue(table);
             venue.answers = !silent;
+            venue.bookless = Set.copyOf(bookless);
             FeedConnection<FakeVenue> connection = new FeedConnection<>(
                     name,
                     new NullLogger(),
