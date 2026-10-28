@@ -196,7 +196,7 @@ public final class Subject {
      */
     private void overflowed(final long receiveNanos) {
         resyncs++;
-        publishBook(lastEventTimestamp, receiveNanos, NO_SEQUENCE, false, true);
+        publishBad(receiveNanos);
         if (host != null) {
             host.requestResync(this, GapReason.BOOK_OVERFLOW, receiveNanos);
         }
@@ -240,7 +240,7 @@ public final class Subject {
         }
         moveTo(SubjectState.STALE);
         resyncs++;
-        publishBook(lastEventTimestamp, receiveNanos, NO_SEQUENCE, false, true);
+        publishBad(receiveNanos);
         if (host != null) {
             host.requestResync(this, reason, receiveNanos);
         }
@@ -257,7 +257,7 @@ public final class Subject {
         final SubjectState shadowState = shadow.state();
         if (!shadowState.trusted()) {
             if (state().trusted()) {
-                publishBook(lastEventTimestamp, receiveNanos, NO_SEQUENCE, false, true);
+                publishBad(receiveNanos);
             }
             moveTo(shadowState);
             return;
@@ -278,9 +278,17 @@ public final class Subject {
             return;
         }
         if (current.trusted()) {
-            publishBook(lastEventTimestamp, receiveNanos, NO_SEQUENCE, false, true);
+            publishBad(receiveNanos);
         }
         moveTo(SubjectState.SUBSCRIBING);
+    }
+
+    /**
+     * The book once more, flagged badData, stamped when it stopped being trusted: its last update can be minutes old on
+     * a quiet market, and a replay would show the book bad from then.
+     */
+    private void publishBad(final long receiveNanos) {
+        publishBook(Math.max(lastEventTimestamp, receiveNanos), receiveNanos, NO_SEQUENCE, false, true);
     }
 
     private void publishBook(

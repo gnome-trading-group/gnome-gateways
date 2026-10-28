@@ -115,10 +115,24 @@ class SubjectTest {
         List<Mbp10Schema> records = yes.drain();
         assertEquals(2, records.size(), "the snapshot and one flagged book; nothing while stale");
         assertTrue(records.get(1).decoder.flags().badData());
+        assertEquals(
+                3_000, records.get(1).decoder.timestampEvent(), "flagged when it went stale, not at its last update");
 
         snapshot();
         assertEquals(SubjectState.LIVE, subject.state());
         assertFalse(yes.drain().get(2).decoder.flags().badData());
+    }
+
+    @Test
+    void aDisconnectedBookGoesOutFlaggedAtTheDisconnectNotItsLastUpdate() throws Exception {
+        snapshot();
+        subject.disconnected(90_000);
+
+        Mbp10Schema flagged = yes.drain().get(1);
+        assertTrue(flagged.decoder.flags().badData());
+        assertEquals(90_000, flagged.decoder.timestampEvent());
+        assertEquals(90_000, flagged.decoder.timestampRecv());
+        assertEquals(SubjectState.SUBSCRIBING, subject.state());
     }
 
     @Test
