@@ -3,6 +3,7 @@ package group.gnometrading.gateways;
 import group.gnometrading.concurrent.GnomeAgent;
 import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.Logger;
+import group.gnometrading.utils.CauseChain;
 import group.gnometrading.utils.Schedule;
 import java.util.concurrent.atomic.AtomicLong;
 import org.agrona.concurrent.EpochClock;
@@ -125,8 +126,13 @@ public abstract class GatewaySupervisor implements GnomeAgent {
         this.logger.log(LogMessage.SOCKET_RECONNECTING);
         try {
             doDisconnect();
-        } catch (Exception e) {
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
             throw new RuntimeException(e);
+        } catch (final Exception e) {
+            // A socket that fails to close is usually already dead; thrown from here, the request would stay unanswered
+            // and every pass would fail the same way without ever connecting again.
+            this.logger.logf(LogMessage.UNKNOWN_ERROR, "Disconnect failed, connecting anyway: %s", CauseChain.of(e));
         }
         connect();
     }
@@ -156,6 +162,9 @@ public abstract class GatewaySupervisor implements GnomeAgent {
         this.needsConnect = false;
         this.failedConnectCycles = 0;
         this.reconnectsAnswered = requested;
+        // The periodic reconnect counts from the newest socket, however it was opened; otherwise one forced near the
+        // end of the interval is torn down again as soon as it connects.
+        this.reconnectSchedule.start();
     }
 
     private void keepAlive() {

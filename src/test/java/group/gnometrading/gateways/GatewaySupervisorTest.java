@@ -269,9 +269,8 @@ class GatewaySupervisorTest {
     }
 
     // ========== outage: silence while reconnects fail ==========
-    // The 2026-10-29 Hyperliquid blackhole: silence started a reconnect, its cycle failed, and the silence check in
-    // that
-    // same pass fired again, queueing a reconnect that only ran once the retry had connected.
+    // A venue stops answering mid-session: silence starts a reconnect and its cycle fails. The silence check in that
+    // same pass must not queue another reconnect that would tear down the retry's socket once it connects.
 
     private void connectedThenSilent() throws Exception {
         supervisor.onStart();
@@ -389,6 +388,42 @@ class GatewaySupervisorTest {
         order.verifyNoMoreInteractions();
     }
 
+    // ========== reconnect schedule after a forced reconnect ==========
+
+    @Test
+    void forcedReconnectJustBeforeTheInterval_RestartsTheReconnectSchedule() throws Exception {
+        supervisor.onStart();
+        clock.advance(990);
+        supervisor.forceReconnect();
+        supervisor.doWork();
+
+        clock.advance(20);
+        supervisor.doWork();
+
+        assertEquals(1, supervisor.disconnectCallCount, "the new socket isn't torn down by the old interval");
+        assertEquals(2, connectable.connectCallCount);
+
+        clock.advance(1000);
+        supervisor.doWork();
+        assertEquals(2, supervisor.disconnectCallCount, "a full interval after the reconnect, the schedule fires");
+    }
+
+    @Test
+    void forcedReconnectWhoseRetryConnectsPastTheInterval_RestartsTheScheduleFromTheRetry() throws Exception {
+        supervisor.onStart();
+        clock.advance(990);
+        connectable.failNextConnects = 1;
+        supervisor.forceReconnect();
+        supervisor.doWork();
+
+        clock.advance(20);
+        supervisor.doWork();
+        supervisor.doWork();
+
+        assertEquals(1, supervisor.disconnectCallCount, "the retry's socket isn't torn down by the old interval");
+        assertEquals(3, connectable.connectCallCount);
+    }
+
     // ========== forceReconnect / forceKeepAlive ==========
 
     @Test
@@ -428,6 +463,22 @@ class GatewaySupervisorTest {
     }
 
     // ========== reconnect flow ==========
+
+    @Test
+    void reconnect_DisconnectThrows_StillConnects() throws Exception {
+        supervisor.onStart();
+        supervisor.disconnectException = new IOException("socket already closed");
+        supervisor.forceReconnect();
+
+        assertDoesNotThrow(() -> supervisor.doWork());
+
+        assertEquals(1, supervisor.disconnectCallCount);
+        assertEquals(2, connectable.connectCallCount);
+        verify(logger).logf(eq(LogMessage.UNKNOWN_ERROR), anyString(), any());
+
+        supervisor.doWork();
+        assertEquals(1, supervisor.disconnectCallCount, "the reconnect was answered, so it isn't retried");
+    }
 
     @Test
     void reconnect_CallsDisconnectBeforeConnect() throws Exception {

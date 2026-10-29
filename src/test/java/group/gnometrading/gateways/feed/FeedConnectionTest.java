@@ -621,7 +621,7 @@ class FeedConnectionTest {
 
     @Test
     void aSilentOutageReconnectsOnlyOnceTheVenueIsBack() throws Exception {
-        // One attempt a cycle, so each supervisor pass is one cycle, as in the 2026-10-29 Hyperliquid blackhole.
+        // One attempt a cycle, so each supervisor pass is one cycle while the venue accepts no connections.
         FeedConnection<Sent> outage = connection(
                 RateBudget.UNLIMITED,
                 new GatewayConfig.Builder()
