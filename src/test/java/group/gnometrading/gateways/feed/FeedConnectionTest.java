@@ -1,5 +1,6 @@
 package group.gnometrading.gateways.feed;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -18,6 +19,7 @@ import group.gnometrading.schemas.book.Side;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
@@ -186,13 +188,17 @@ class FeedConnectionTest {
     private final FeedConnection<Sent> connection = connection(RateBudget.UNLIMITED);
 
     private FeedConnection<Sent> connection(final RateBudget limiter) {
+        return connection(limiter, new GatewayConfig.Builder().build());
+    }
+
+    private FeedConnection<Sent> connection(final RateBudget limiter, final GatewayConfig config) {
         FeedConnection<Sent> made = new FeedConnection<>(
                 "test",
                 logger,
                 transport,
                 protocol,
                 table,
-                new GatewayConfig.Builder().build(),
+                config,
                 () -> now / 1_000_000,
                 () -> now,
                 ConnectLimiter.UNLIMITED,
@@ -611,5 +617,62 @@ class FeedConnectionTest {
         now += FeedConnection.SNAPSHOT_TIMEOUT_NANOS * 10;
         control();
         assertEquals(SubjectState.SUBSCRIBING, a.state(), "no socket, so nothing times out");
+    }
+
+    @Test
+    void aSilentOutageReconnectsOnlyOnceTheVenueIsBack() throws Exception {
+        // One attempt a cycle, so each supervisor pass is one cycle, as in the 2026-10-29 Hyperliquid blackhole.
+        FeedConnection<Sent> outage = connection(
+                RateBudget.UNLIMITED,
+                new GatewayConfig.Builder()
+                        .withMaxReconnectAttempts(0)
+                        .withInitialBackoff(Duration.ofMillis(1))
+                        .build());
+        // The reader publishes the snapshots and the supervisor the bad marks, as at runtime.
+        VenueTestKit.Stream stream = new VenueTestKit.Stream();
+        Subject a = new Subject("A", 16, new StreamOutput(1, Projection.IDENTITY, stream.ring));
+        GnomeAgentRunner reader = new GnomeAgentRunner(outage.reader(), error -> {});
+        GnomeAgentRunner.startOnThread(reader);
+        try {
+            outage.supervisor().onStart();
+            outage.add(a);
+            outage.supervisor().doWork();
+            transport.frames.add("S A 40 50");
+            awaitState(a, SubjectState.LIVE);
+            stream.drain().clear();
+
+            transport.refuse = true;
+            now += TimeUnit.SECONDS.toNanos(31);
+            outage.supervisor().doWork();
+            outage.supervisor().doWork();
+            transport.refuse = false;
+            outage.supervisor().doWork();
+            transport.frames.add("S A 40 50");
+            awaitState(a, SubjectState.LIVE);
+            final int opens = transport.opens;
+            final long subscribes = subscribes("A");
+            final int published = stream.drain().size();
+
+            for (int i = 0; i < 5; i++) {
+                outage.supervisor().doWork();
+            }
+
+            final List<Mbp10Schema> after = stream.drain();
+            final long badMarks = after.subList(published, after.size()).stream()
+                    .filter(record -> record.decoder.flags().badData())
+                    .count();
+            assertAll(
+                    () -> assertEquals(opens, transport.opens, "the retry's socket already answered the silence"),
+                    () -> assertEquals(subscribes, subscribes("A"), "no second subscribe for the same market"),
+                    () -> assertEquals(SubjectState.LIVE, a.state(), "the book just snapshotted stays trusted"),
+                    () -> assertEquals(0, badMarks, "a second bad mark for one outage"));
+        } finally {
+            outage.pauseControl().stop();
+            reader.close();
+        }
+    }
+
+    private long subscribes(final String key) {
+        return transport.sent.commands.stream().filter(("sub " + key)::equals).count();
     }
 }

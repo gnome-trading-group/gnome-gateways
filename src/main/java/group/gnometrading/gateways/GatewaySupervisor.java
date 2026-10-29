@@ -4,6 +4,7 @@ import group.gnometrading.concurrent.GnomeAgent;
 import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.utils.Schedule;
+import java.util.concurrent.atomic.AtomicLong;
 import org.agrona.concurrent.EpochClock;
 import org.agrona.concurrent.EpochNanoClock;
 
@@ -21,6 +22,11 @@ public abstract class GatewaySupervisor implements GnomeAgent {
     // would overwrite a trigger set from inside its own task.
     private boolean needsConnect;
     private int failedConnectCycles;
+    // Reconnects asked for (silence, or another thread via forceReconnect) are counted rather than queued on a
+    // schedule: a connect answers every request made before it started, so one asked for during an outage doesn't
+    // tear down the socket the retry just opened.
+    private final AtomicLong reconnectsRequested = new AtomicLong();
+    private long reconnectsAnswered;
 
     protected GatewaySupervisor(
             Logger logger,
@@ -75,7 +81,14 @@ public abstract class GatewaySupervisor implements GnomeAgent {
             connect();
             return 1 + doControl();
         }
-        this.reconnectSchedule.check();
+        if (this.reconnectsRequested.get() != this.reconnectsAnswered) {
+            reconnect();
+        } else {
+            this.reconnectSchedule.check();
+        }
+        if (this.needsConnect) {
+            return 1 + doControl();
+        }
         this.keepAliveSchedule.check();
         this.sanityCheckSchedule.check();
         final int controlled = doControl();
@@ -85,7 +98,7 @@ public abstract class GatewaySupervisor implements GnomeAgent {
             final long nanosSinceLastRecv = this.nanoClock.nanoTime() - recvTs;
             if (nanosSinceLastRecv > this.config.maxSilentInterval().toNanos()) {
                 this.logger.log(LogMessage.SOCKET_SILENCE_TIMED_OUT);
-                this.reconnectSchedule.forceTrigger();
+                this.reconnectsRequested.incrementAndGet();
             }
         }
         return controlled;
@@ -101,7 +114,7 @@ public abstract class GatewaySupervisor implements GnomeAgent {
     }
 
     public final void forceReconnect() {
-        this.reconnectSchedule.forceTrigger();
+        this.reconnectsRequested.incrementAndGet();
     }
 
     public final void forceKeepAlive() {
@@ -124,6 +137,7 @@ public abstract class GatewaySupervisor implements GnomeAgent {
      * happens next is the error handler's call, and if it carries on, the retries start over.
      */
     private void connect() {
+        final long requested = this.reconnectsRequested.get();
         try {
             this.connectController.connect();
         } catch (final RuntimeException e) {
@@ -141,6 +155,7 @@ public abstract class GatewaySupervisor implements GnomeAgent {
         }
         this.needsConnect = false;
         this.failedConnectCycles = 0;
+        this.reconnectsAnswered = requested;
     }
 
     private void keepAlive() {

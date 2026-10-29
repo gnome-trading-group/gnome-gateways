@@ -11,6 +11,7 @@ import org.agrona.concurrent.EpochClock;
 import org.agrona.concurrent.EpochNanoClock;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.InOrder;
 
 class GatewaySupervisorTest {
 
@@ -146,12 +147,14 @@ class GatewaySupervisorTest {
     @Test
     void whileDisconnected_SilenceDoesNotTriggerAReconnect() throws Exception {
         supervisor.onStart();
+        // A zero receive time reads as "nothing received yet" and skips the silence check.
+        nanoClock.advance(1);
         supervisor.testRecvTimestamp = nanoClock.nanoTime();
         connectable.failNextConnects = 1;
         supervisor.forceReconnect();
         supervisor.doWork();
 
-        nanoClock.advance(Duration.ofSeconds(10).toNanos());
+        nanoClock.advance(config.maxSilentInterval().toNanos() + 1);
         supervisor.doWork();
 
         assertEquals(1, supervisor.disconnectCallCount, "the retry connects, it doesn't tear down again");
@@ -263,6 +266,127 @@ class GatewaySupervisorTest {
 
         assertEquals(1, supervisor.disconnectCallCount);
         verify(logger, times(1)).log(LogMessage.SOCKET_SILENCE_TIMED_OUT);
+    }
+
+    // ========== outage: silence while reconnects fail ==========
+    // The 2026-10-29 Hyperliquid blackhole: silence started a reconnect, its cycle failed, and the silence check in
+    // that
+    // same pass fired again, queueing a reconnect that only ran once the retry had connected.
+
+    private void connectedThenSilent() throws Exception {
+        supervisor.onStart();
+        nanoClock.advance(1);
+        supervisor.testRecvTimestamp = nanoClock.nanoTime();
+        connectable.onConnect = () -> supervisor.testRecvTimestamp = nanoClock.nanoTime();
+        nanoClock.advance(config.maxSilentInterval().toNanos() + 1);
+    }
+
+    @Test
+    void outage_AFailedReconnectIsNotReportedAsSilentAgain() throws Exception {
+        connectedThenSilent();
+        connectable.failNextConnects = 2;
+
+        supervisor.doWork();
+        supervisor.doWork();
+        supervisor.doWork();
+
+        verify(logger, times(1)).log(LogMessage.SOCKET_SILENCE_TIMED_OUT);
+    }
+
+    @Test
+    void outage_OnceTheRetryConnectsTheSilenceDoesNotReconnectAgain() throws Exception {
+        connectedThenSilent();
+        connectable.failNextConnects = 1;
+
+        supervisor.doWork();
+        supervisor.doWork();
+        supervisor.doWork();
+        assertEquals(3, connectable.connectCallCount, "start, the failed reconnect, the retry that connects");
+        assertEquals(1, supervisor.disconnectCallCount);
+
+        for (int i = 0; i < 10; i++) {
+            supervisor.doWork();
+        }
+
+        assertEquals(3, connectable.connectCallCount, "the retry's new socket already answered the silence");
+        assertEquals(1, supervisor.disconnectCallCount);
+        verify(logger, times(2)).log(LogMessage.SOCKET_RECONNECTING);
+    }
+
+    @Test
+    void outage_AReconnectAskedForBeforeTheRetryIsAnsweredByIt() throws Exception {
+        supervisor.onStart();
+        connectable.failNextConnects = 1;
+        supervisor.forceReconnect();
+        supervisor.doWork();
+        // The error handler asks again while the retry is still pending, e.g. for a writer that failed on the dead
+        // socket.
+        supervisor.forceReconnect();
+
+        supervisor.doWork();
+        assertEquals(3, connectable.connectCallCount);
+        for (int i = 0; i < 10; i++) {
+            supervisor.doWork();
+        }
+
+        assertEquals(3, connectable.connectCallCount, "the retry's new socket answers every request made before it");
+        assertEquals(1, supervisor.disconnectCallCount);
+    }
+
+    @Test
+    void outage_AReconnectAskedForAfterTheRetryConnectsStillRuns() throws Exception {
+        connectedThenSilent();
+        connectable.failNextConnects = 1;
+        supervisor.doWork();
+        supervisor.doWork();
+        supervisor.doWork();
+        for (int i = 0; i < 10; i++) {
+            supervisor.doWork();
+        }
+        final int connects = connectable.connectCallCount;
+        final int disconnects = supervisor.disconnectCallCount;
+
+        supervisor.forceReconnect();
+        supervisor.doWork();
+
+        assertEquals(connects + 1, connectable.connectCallCount);
+        assertEquals(disconnects + 1, supervisor.disconnectCallCount);
+    }
+
+    @Test
+    void outage_SilenceDoesNotCountTowardTheFailedConnectCycles() throws Exception {
+        connectedThenSilent();
+        connectable.failNextConnects = Integer.MAX_VALUE;
+
+        assertDoesNotThrow(() -> supervisor.doWork(), "silence: queues the reconnect");
+        assertDoesNotThrow(() -> supervisor.doWork(), "cycle 1 fails");
+        assertDoesNotThrow(() -> supervisor.doWork(), "cycle 2 fails");
+        assertThrows(GatewayConnectFailedException.class, () -> supervisor.doWork(), "cycle 3 fails: give up");
+
+        assertEquals(4, connectable.connectCallCount);
+        assertEquals(1, supervisor.disconnectCallCount);
+    }
+
+    @Test
+    void outage_LogsOneSilenceAndConnectsOnceAfterTheRetry() throws Exception {
+        connectedThenSilent();
+        connectable.failNextConnects = 1;
+        for (int i = 0; i < 10; i++) {
+            supervisor.doWork();
+        }
+
+        final InOrder order = inOrder(logger);
+        order.verify(logger).log(LogMessage.SOCKET_CONNECTING);
+        order.verify(logger).log(LogMessage.SOCKET_CONNECTED);
+        order.verify(logger).log(LogMessage.SOCKET_SILENCE_TIMED_OUT);
+        order.verify(logger).log(LogMessage.SOCKET_RECONNECTING);
+        order.verify(logger).log(LogMessage.SOCKET_CONNECTING);
+        order.verify(logger).logf(eq(LogMessage.SOCKET_CONNECT_FAILED), anyString(), any());
+        // End of the failed cycle, then the retry, which connects.
+        order.verify(logger).log(LogMessage.SOCKET_RECONNECTING);
+        order.verify(logger).log(LogMessage.SOCKET_CONNECTING);
+        order.verify(logger).log(LogMessage.SOCKET_CONNECTED);
+        order.verifyNoMoreInteractions();
     }
 
     // ========== forceReconnect / forceKeepAlive ==========
