@@ -12,7 +12,7 @@ public final class OutboundGateway extends GatewaySupervisor {
 
     private final OutboundSocketReader reader;
 
-    protected OutboundGateway(Logger logger, OutboundSocketReader reader, GatewayConfig config, EpochClock clock) {
+    public OutboundGateway(Logger logger, OutboundSocketReader reader, GatewayConfig config, EpochClock clock) {
         // A session's order gateway connects once per venue, on the trading key, so it needs no spacing.
         super(logger, reader::connect, config, clock, reader.clock, ConnectLimiter.UNLIMITED);
         this.reader = reader;
