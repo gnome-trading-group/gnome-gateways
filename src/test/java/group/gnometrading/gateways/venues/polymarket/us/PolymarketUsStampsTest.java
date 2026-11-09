@@ -61,4 +61,22 @@ class PolymarketUsStampsTest {
         assertEquals(slot, PolymarketUsStamps.slot("8f2c1d9e-session"));
         assertTrue(slot >= 0 && slot < PolymarketUsStamps.SLOTS);
     }
+
+    @Test
+    void aGatewaySessionsSlotComesFromItsSessionSeq() {
+        assertEquals(41, PolymarketUsStamps.slot(41L));
+        assertEquals(41, PolymarketUsStamps.slot(41L + PolymarketUsStamps.SLOTS), "repeats only after every slot");
+        assertTrue(
+                PolymarketUsStamps.stampMillis(PolymarketUsStamps.slot(41L), 1)
+                        != PolymarketUsStamps.stampMillis(PolymarketUsStamps.slot(42L), 1),
+                "consecutive sessions never share");
+    }
+
+    @Test
+    void aCounterPastTheRangeHasNoStampOfItsOwn() {
+        assertTrue(PolymarketUsStamps.counterFits(1));
+        assertTrue(PolymarketUsStamps.counterFits(PolymarketUsStamps.COUNTER_RANGE - 1));
+        assertFalse(PolymarketUsStamps.counterFits(PolymarketUsStamps.COUNTER_RANGE));
+        assertFalse(PolymarketUsStamps.counterFits(0));
+    }
 }

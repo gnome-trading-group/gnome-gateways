@@ -36,7 +36,8 @@ public final class PolymarketIntlVenue {
     }
 
     /**
-     * The standard tier, per signer: an order bucket and a separate cancel bucket. Reads are left to Cloudflare, which
+     * The standard tier, per signer: an order bucket and a separate cancel bucket, orders held to 90% of the venue's 40
+     * a second, as at the full rate the two clocks' drift alone draws a 429. Reads are left to Cloudflare, which
      * delays rather than refuses them. Its order and cancel responses report what is left of the bucket, and a 429
      * says when to retry.
      */
@@ -44,13 +45,13 @@ public final class PolymarketIntlVenue {
         return VenueRateLimits.of(
                 "Polymarket International",
                 List.of(
-                        new VenueRateLimits.Bucket("order", 40, 60, 0),
+                        new VenueRateLimits.Bucket("order", 36, 60, 0),
                         new VenueRateLimits.Bucket("cancel", 80, 120, 0)),
                 List.of(
-                        new VenueRateLimits.Rule(HTTPMethod.POST, "/order", null, "order", 1, RequestClass.ORDER),
+                        new VenueRateLimits.Rule(HTTPMethod.POST, "/order", null, "order", 1, RequestClass.NEW),
                         new VenueRateLimits.Rule(HTTPMethod.DELETE, "", null, "cancel", 1, RequestClass.CANCEL),
                         new VenueRateLimits.Rule(HTTPMethod.GET, "", null, null, 0, RequestClass.BACKGROUND),
-                        new VenueRateLimits.Rule(null, "", null, "order", 1, RequestClass.ORDER)),
+                        new VenueRateLimits.Rule(null, "", null, "order", 1, RequestClass.NEW)),
                 List.of(VenueRateLimits.RETRY_AFTER, VenueRateLimits.POLY_REMAINING, VenueRateLimits.POLY_RESET));
     }
 }

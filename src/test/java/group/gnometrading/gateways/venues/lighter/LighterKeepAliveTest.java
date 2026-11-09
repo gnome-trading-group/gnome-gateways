@@ -5,8 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 
 import group.gnometrading.gateways.feed.RecordingClient;
 import group.gnometrading.gateways.feed.SubjectTable;
-import group.gnometrading.gateways.feed.transport.WebSocketChannel;
-import group.gnometrading.gateways.feed.transport.WebSocketWriter;
+import group.gnometrading.gateways.transport.WebSocketChannel;
+import group.gnometrading.gateways.transport.WebSocketWriter;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;

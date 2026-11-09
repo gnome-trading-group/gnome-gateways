@@ -23,6 +23,8 @@ public final class KalshiVenue {
             300);
 
     private static final String ORDERS = "/trade-api/v2/portfolio/events/orders";
+    private static final String PORTFOLIO_ORDERS = "/trade-api/v2/portfolio/orders";
+    private static final String BALANCE = "/trade-api/v2/portfolio/balance";
 
     private KalshiVenue() {}
 
@@ -40,23 +42,31 @@ public final class KalshiVenue {
     }
 
     /**
-     * The Basic tier: separate read and write token buckets per account. Orders cost 10 tokens, cancels 2, everything
-     * else 10. Its 429 carries no Retry-After.
+     * The Advanced tier: separate read and write token buckets per account, shared by every key on it. Creating or
+     * amending an order costs 10 write tokens; cancelling one, a batch of them, or every order on the account (one
+     * charge for all of them) costs 2. Looking up one order by its id costs 2 read tokens, everything else 10. The
+     * balance has its own limit of about one a second. A 429 carries no Retry-After.
      */
     public static VenueRateLimits rateLimits() {
         return VenueRateLimits.of(
                 "Kalshi",
                 List.of(
-                        new VenueRateLimits.Bucket("write", 100, 100, 0.2),
-                        new VenueRateLimits.Bucket("read", 200, 200, 0)),
+                        new VenueRateLimits.Bucket("write", 300, 900, 0.2),
+                        new VenueRateLimits.Bucket("read", 300, 900, 0),
+                        new VenueRateLimits.Bucket("balance", 1, 1, 0)),
                 List.of(
                         new VenueRateLimits.Rule(
-                                HTTPMethod.POST, ORDERS + "/", "/amend", "write", 10, RequestClass.ORDER),
-                        new VenueRateLimits.Rule(HTTPMethod.POST, ORDERS, null, "write", 10, RequestClass.ORDER),
+                                HTTPMethod.POST, ORDERS + "/", "/amend", "write", 10, RequestClass.AMEND),
+                        new VenueRateLimits.Rule(HTTPMethod.POST, ORDERS, null, "write", 10, RequestClass.NEW),
+                        new VenueRateLimits.Rule(HTTPMethod.DELETE, ORDERS, null, "write", 2, RequestClass.CANCEL),
                         new VenueRateLimits.Rule(
-                                HTTPMethod.DELETE, ORDERS + "/", null, "write", 2, RequestClass.CANCEL),
+                                HTTPMethod.GET, PORTFOLIO_ORDERS + "/", null, "read", 2, RequestClass.CATCH_UP),
+                        // The account's orders by ticker and time: how a submit with no clear answer is looked for.
+                        new VenueRateLimits.Rule(
+                                HTTPMethod.GET, PORTFOLIO_ORDERS, null, "read", 10, RequestClass.CATCH_UP),
+                        new VenueRateLimits.Rule(HTTPMethod.GET, BALANCE, null, "balance", 1, RequestClass.BACKGROUND),
                         new VenueRateLimits.Rule(HTTPMethod.GET, "", null, "read", 10, RequestClass.BACKGROUND),
-                        new VenueRateLimits.Rule(null, "", null, "write", 10, RequestClass.ORDER)),
+                        new VenueRateLimits.Rule(null, "", null, "write", 10, RequestClass.NEW)),
                 List.of(VenueRateLimits.RETRY_AFTER));
     }
 }

@@ -38,18 +38,34 @@ public final class PolymarketUsVenue {
                 exchangeSecurityId.substring(0, colon), isShort ? Projection.COMPLEMENT : Projection.IDENTITY);
     }
 
-    /** One bucket per API key for every call. Its 429 carries no Retry-After. */
+    /**
+     * The documented 25 requests a second is counted per source IP by Cloudflare over windows short enough that a full
+     * burst on top of the rate draws 429s (error code 1015), so every bucket's rate and burst together stay within 25.
+     * Looking up one order by id is refused at 15 a second with nothing else sent, and at 5 beside 15 cancels, so
+     * lookups have a bucket of their own at 2; every other call shares the other. A 429 carries no Retry-After.
+     */
     public static VenueRateLimits rateLimits() {
         return VenueRateLimits.of(
                 "Polymarket US",
-                List.of(new VenueRateLimits.Bucket("key", 20, 20, 0.2)),
+                List.of(new VenueRateLimits.Bucket("key", 15, 6, 0.2), new VenueRateLimits.Bucket("lookup", 2, 2, 0)),
                 List.of(
                         new VenueRateLimits.Rule(
                                 HTTPMethod.POST, "/v1/order/", "/cancel", "key", 1, RequestClass.CANCEL),
+                        // Up to 20 to a request, counted once.
                         new VenueRateLimits.Rule(
-                                HTTPMethod.POST, "/v1/order/", "/modify", "key", 1, RequestClass.ORDER),
+                                HTTPMethod.POST, "/v1/orders/batched/cancel", null, "key", 1, RequestClass.CANCEL),
+                        new VenueRateLimits.Rule(
+                                HTTPMethod.POST, "/v1/orders/batched", null, "key", 1, RequestClass.NEW),
+                        new VenueRateLimits.Rule(
+                                HTTPMethod.POST, "/v1/order/", "/modify", "key", 1, RequestClass.AMEND),
+                        new VenueRateLimits.Rule(
+                                HTTPMethod.GET, "/v1/orders/open", null, "key", 1, RequestClass.CATCH_UP),
+                        new VenueRateLimits.Rule(
+                                HTTPMethod.GET, "/v1/order/", null, "lookup", 1, RequestClass.CATCH_UP),
+                        new VenueRateLimits.Rule(
+                                HTTPMethod.GET, "/v1/portfolio/activities", null, "key", 1, RequestClass.CATCH_UP),
                         new VenueRateLimits.Rule(HTTPMethod.GET, "", null, "key", 1, RequestClass.BACKGROUND),
-                        new VenueRateLimits.Rule(null, "", null, "key", 1, RequestClass.ORDER)),
+                        new VenueRateLimits.Rule(null, "", null, "key", 1, RequestClass.NEW)),
                 List.of(VenueRateLimits.RETRY_AFTER));
     }
 }

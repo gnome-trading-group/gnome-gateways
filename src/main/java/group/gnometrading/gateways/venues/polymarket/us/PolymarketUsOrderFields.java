@@ -32,6 +32,7 @@ final class PolymarketUsOrderFields {
     static final int EXEC_REPLACE = 6;
 
     static final int TEXT_MAX_LENGTH = 200;
+    static final int MARKET_SLUG_MAX_LENGTH = 160;
     static final int REJECT_REASON_MAX_LENGTH = 64;
 
     static final int INTENT_UNKNOWN = 0;
@@ -53,6 +54,9 @@ final class PolymarketUsOrderFields {
     long commissionTotal;
     boolean sawCommissionTotal;
     long createTimeNanos;
+    // The order's market; longer slugs are cut, and no slug of ours is that long.
+    final byte[] marketSlug = new byte[MARKET_SLUG_MAX_LENGTH];
+    int marketSlugLength;
 
     // Execution-level; unset when a bare order was read.
     int execType;
@@ -83,6 +87,7 @@ final class PolymarketUsOrderFields {
         this.commissionTotal = 0;
         this.sawCommissionTotal = false;
         this.createTimeNanos = Rfc3339.INVALID;
+        this.marketSlugLength = 0;
         this.execType = EXEC_OTHER;
         this.textLength = 0;
         this.orderRejectReasonLength = 0;
@@ -90,6 +95,22 @@ final class PolymarketUsOrderFields {
         this.lastPx = 0;
         this.aggressor = false;
         this.transactTimeNanos = Rfc3339.INVALID;
+    }
+
+    /** Whether the order is in the market {@code slug}; one whose event doesn't name its market is taken to be. */
+    boolean inMarket(final byte[] slug) {
+        if (this.marketSlugLength == 0) {
+            return true;
+        }
+        if (this.marketSlugLength != slug.length) {
+            return false;
+        }
+        for (int i = 0; i < slug.length; i++) {
+            if (this.marketSlug[i] != slug[i]) {
+                return false;
+            }
+        }
+        return true;
     }
 
     boolean terminal() {
@@ -188,6 +209,8 @@ final class PolymarketUsOrderFields {
             this.goodTillMillis = PolymarketUsStamps.parseMillis(field.asString());
         } else if (name.equals("createTime")) {
             this.createTimeNanos = Rfc3339.toEpochNanos(field.asString());
+        } else if (name.equals("marketSlug")) {
+            this.marketSlugLength = copy(field.asString(), this.marketSlug);
         }
     }
 

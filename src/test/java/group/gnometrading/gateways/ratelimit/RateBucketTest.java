@@ -61,7 +61,9 @@ class RateBucketTest {
         final RateBucket bucket = new RateBucket("b", 10, 10, 2, 3, START);
 
         assertEquals(0, bucket.headroomFor(RequestClass.CANCEL));
-        assertEquals(2, bucket.headroomFor(RequestClass.ORDER));
+        assertEquals(1, bucket.headroomFor(RequestClass.CATCH_UP));
+        assertEquals(2, bucket.headroomFor(RequestClass.AMEND));
+        assertEquals(2, bucket.headroomFor(RequestClass.NEW));
         assertEquals(5, bucket.headroomFor(RequestClass.BACKGROUND));
 
         int background = 0;
@@ -69,7 +71,7 @@ class RateBucketTest {
             background++;
         }
         int orders = 0;
-        while (bucket.tryAcquire(START, 1, bucket.headroomFor(RequestClass.ORDER))) {
+        while (bucket.tryAcquire(START, 1, bucket.headroomFor(RequestClass.NEW))) {
             orders++;
         }
         int cancels = 0;

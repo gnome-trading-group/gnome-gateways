@@ -6,8 +6,8 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 
 import group.gnometrading.gateways.feed.book.Projection;
-import group.gnometrading.gateways.feed.transport.WebSocketChannel;
-import group.gnometrading.gateways.feed.transport.WebSocketWriter;
+import group.gnometrading.gateways.transport.WebSocketChannel;
+import group.gnometrading.gateways.transport.WebSocketWriter;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.networking.websockets.enums.Opcode;
 import group.gnometrading.schemas.Mbp10Schema;

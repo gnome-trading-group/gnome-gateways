@@ -6,7 +6,7 @@ import static org.mockito.Mockito.*;
 import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
 import group.gnometrading.gateways.orders.OrderContext;
-import group.gnometrading.gateways.orders.OutboundSocketReader;
+import group.gnometrading.gateways.outbound.OutboundSocketReader;
 import group.gnometrading.logging.NullLogger;
 import group.gnometrading.networking.http.HTTPClient;
 import group.gnometrading.networking.http.HTTPResponse;

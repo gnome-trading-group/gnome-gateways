@@ -5,7 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import group.gnometrading.gateways.ConnectLimiter;
 import group.gnometrading.gateways.GatewayConfig;
 import group.gnometrading.gateways.feed.book.Projection;
-import group.gnometrading.gateways.feed.transport.WebSocketTransport;
+import group.gnometrading.gateways.transport.WebSocketTransport;
 import group.gnometrading.gateways.venues.lighter.LighterProtocol;
 import group.gnometrading.logging.NullLogger;
 import java.util.ArrayList;

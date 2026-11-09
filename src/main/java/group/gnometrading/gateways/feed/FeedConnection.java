@@ -2,13 +2,13 @@ package group.gnometrading.gateways.feed;
 
 import group.gnometrading.annotations.VisibleForTesting;
 import group.gnometrading.concurrent.GnomeAgent;
-import group.gnometrading.concurrent.ThreadProfile;
 import group.gnometrading.gateways.ConnectLimiter;
 import group.gnometrading.gateways.GatewayConfig;
 import group.gnometrading.gateways.GatewaySupervisor;
 import group.gnometrading.gateways.ReaderPauseControl;
-import group.gnometrading.gateways.SocketClosedException;
-import group.gnometrading.gateways.feed.transport.Transport;
+import group.gnometrading.gateways.transport.FrameReader;
+import group.gnometrading.gateways.transport.RawDataSink;
+import group.gnometrading.gateways.transport.Transport;
 import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.Logger;
 import java.io.IOException;
@@ -137,41 +137,18 @@ public final class FeedConnection<C> implements SubjectHost {
 
     // ----- the reader -----
 
-    private final class Reader implements GnomeAgent {
+    private final class ReaderWork implements FrameReader.Handler {
         @Override
-        public int doWork() {
-            if (!pause.awaitIfPaused()) {
-                return 0;
-            }
+        public void beforeRead() {
             ReaderRequest request;
             while ((request = readerRequests.poll()) != null) {
                 serve(request);
             }
-            final ByteBuffer frame;
-            try {
-                frame = transport.read();
-            } catch (Exception e) {
-                pause.pauseSelf();
-                logger.logf(LogMessage.SOCKET_DISCONNECTED, "%s: %s", name, e);
-                throw new SocketClosedException(e);
-            }
-            if (transport.sawTraffic()) {
-                lastTrafficNanos = nanoClock.nanoTime();
-            }
-            if (frame == null) {
-                return 0;
-            }
-            final long receiveNanos = nanoClock.nanoTime();
-            raw.capture(receiveNanos, frame);
-            try {
-                protocol.onFrame(frame, receiveNanos);
-            } catch (RuntimeException e) {
-                // A frame that can't be read at all leaves every market on the connection in doubt.
-                pause.pauseSelf();
-                logger.logf(LogMessage.UNKNOWN_ERROR, "%s: unreadable frame: %s", name, e);
-                throw new SocketClosedException(e);
-            }
-            return 1;
+        }
+
+        @Override
+        public void onFrame(final ByteBuffer frame, final long receiveNanos) {
+            protocol.onFrame(frame, receiveNanos);
         }
 
         /** A request for a market a roll has moved on is passed to the connection carrying it now. */
@@ -191,21 +168,6 @@ public final class FeedConnection<C> implements SubjectHost {
                     subject.host().requestRepublish(subject);
                 }
             }
-        }
-
-        @Override
-        public void onClose() {
-            pause.readerExited();
-        }
-
-        @Override
-        public ThreadProfile threadProfile() {
-            return ThreadProfile.HOT_PATH;
-        }
-
-        @Override
-        public String roleName() {
-            return "feed-reader";
         }
     }
 
@@ -238,7 +200,7 @@ public final class FeedConnection<C> implements SubjectHost {
 
         @Override
         protected long recvTimestamp() {
-            return lastTrafficNanos;
+            return reader.lastTrafficNanos();
         }
 
         @Override
@@ -263,7 +225,7 @@ public final class FeedConnection<C> implements SubjectHost {
     private final ReaderPauseControl pause = new ReaderPauseControl();
     private final ConcurrentLinkedQueue<Command> queue = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<ReaderRequest> readerRequests = new ConcurrentLinkedQueue<>();
-    private final Reader reader = new Reader();
+    private final FrameReader reader;
     private final Supervisor supervisor;
 
     // Supervisor thread only. The notes are kept in a list as well, so the timeout pass walks them without allocating.
@@ -277,8 +239,6 @@ public final class FeedConnection<C> implements SubjectHost {
     private int connectionGapCount;
     private long lastConnectionGapNanos;
 
-    private volatile RawDataSink raw = RawDataSink.NO_OP;
-    private volatile long lastTrafficNanos;
     private volatile boolean carriesMarkets;
     // Supervisor thread: whether the socket is open; timeouts and commands wait for it.
     private boolean connected;
@@ -303,6 +263,7 @@ public final class FeedConnection<C> implements SubjectHost {
         this.nanoClock = nanoClock;
         this.messages = messages;
         this.listener = listener;
+        this.reader = new FrameReader(name, "feed-reader", logger, transport, this.pause, nanoClock, new ReaderWork());
         // Its group replaces it every 12 h, make before break; the supervisor's own scheduled reconnect would drop
         // every book first. It still reconnects when the socket fails or goes silent.
         this.supervisor = new Supervisor(
@@ -353,7 +314,7 @@ public final class FeedConnection<C> implements SubjectHost {
 
     /** Every frame as received, for re-parsing later (decision 9). */
     public void setRawSink(final RawDataSink sink) {
-        this.raw = sink;
+        this.reader.setRawSink(sink);
     }
 
     public int size() {
@@ -441,7 +402,7 @@ public final class FeedConnection<C> implements SubjectHost {
         }
         protocol.onConnected();
         final long now = nanoClock.nanoTime();
-        lastTrafficNanos = now;
+        reader.trafficAt(now);
         drainQueue();
         toResync.clear();
         // The new socket carries none of the old subscriptions.

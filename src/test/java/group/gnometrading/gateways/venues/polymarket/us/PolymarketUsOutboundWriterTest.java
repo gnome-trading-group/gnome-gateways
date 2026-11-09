@@ -524,6 +524,22 @@ class PolymarketUsOutboundWriterTest {
         verifyPosts(2);
     }
 
+    @Test
+    void cancelAndModifyOfAnOrderTheWriterDoesntHold_AreRefusedWithoutTouchingTheVenue() throws Exception {
+        publishCancel(999L);
+        publishModify(999L, price("0.41"), qty("4"), false);
+        writer.doWork();
+
+        verifyNoInteractions(httpClient);
+        final List<OrderContext> reports = drainQueue(writerReportQueue);
+        assertEquals(2, reports.size(), "each is answered, so the OMS never waits on it");
+        for (final OrderContext report : reports) {
+            assertEquals(ExecType.CANCEL_REJECT, report.execType);
+            assertEquals(RejectReason.UNKNOWN_ORDER, report.rejectReason);
+            assertEquals(999L, report.clientOidCounter);
+        }
+    }
+
     // ========== helpers ==========
 
     private PolymarketUsOutboundWriter buildWriter(final String suffix) throws Exception {

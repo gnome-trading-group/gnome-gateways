@@ -55,6 +55,22 @@ class PolymarketIntlAuthHeadersTest {
     }
 
     @Test
+    void rekeySignsWithTheNewCredentialsFromThenOn() {
+        headers.rekey("rotated-key", URL_SAFE_SECRET, "rotated-pass", "0xCafe");
+
+        final byte[] post = "{\"order\":{\"salt\":1},\"owner\":\"k\"}".getBytes(StandardCharsets.UTF_8);
+        headers.sign(TIMESTAMP, "POST", "/order", post, 0, post.length);
+
+        assertEquals(
+                "K94i9MiUG9ivsBpQO3cIgspu4ckIk175Qt7DBg9jBno=",
+                headers.signature(),
+                "the reference client's, new secret");
+        assertEquals("rotated-key", headers.apiKey());
+        assertEquals("rotated-pass", headers.passphrase());
+        assertEquals("0xCafe", headers.address());
+    }
+
+    @Test
     void signWithNullBodyTreatsAsEmpty() throws Exception {
         headers.sign("GET", "/data", null, 0, 0);
         final String nullSig = headers.signature();

@@ -22,6 +22,7 @@ public final class VenueRateLimits {
 
     private static final String SHARE_KEY = "share";
     private static final String PER_SECOND_SUFFIX = ".per.second";
+    private static final String BURST_SUFFIX = ".burst";
 
     /**
      * @param cancelReserve the share of the burst kept for cancels; 0 for a bucket cancels don't draw on
@@ -66,8 +67,9 @@ public final class VenueRateLimits {
     }
 
     /**
-     * These limits adjusted by configuration: {@code share} for {@link #withShare}, and {@code <bucket>.per.second}
-     * for {@link #withRate}. Any other key is refused, so a misspelt one can't silently leave the defaults in place.
+     * These limits adjusted by configuration: {@code share} for {@link #withShare}, {@code <bucket>.per.second} for
+     * {@link #withRate} and {@code <bucket>.burst} for {@link #withBurst}, as for an account on another tier. Any other
+     * key is refused, so a misspelt one can't silently leave the defaults in place.
      */
     public VenueRateLimits withOverrides(final Map<String, String> overrides) {
         VenueRateLimits limits = this;
@@ -78,6 +80,8 @@ public final class VenueRateLimits {
                 limits = limits.withShare(value);
             } else if (key.endsWith(PER_SECOND_SUFFIX)) {
                 limits = limits.withRate(key.substring(0, key.length() - PER_SECOND_SUFFIX.length()), value);
+            } else if (key.endsWith(BURST_SUFFIX)) {
+                limits = limits.withBurst(key.substring(0, key.length() - BURST_SUFFIX.length()), (long) value);
             } else {
                 throw new IllegalArgumentException(this.venue + " has no rate-limit setting " + key);
             }
@@ -92,6 +96,24 @@ public final class VenueRateLimits {
         for (final Bucket b : this.buckets) {
             if (b.name().equals(bucket)) {
                 changed.add(new Bucket(b.name(), tokensPerSecond, b.burst(), b.cancelReserve()));
+                found = true;
+            } else {
+                changed.add(b);
+            }
+        }
+        if (!found) {
+            throw new IllegalArgumentException(this.venue + " has no rate-limit bucket " + bucket);
+        }
+        return new VenueRateLimits(this.venue, changed, this.rules, this.capturedHeaders, this.share);
+    }
+
+    /** These limits with {@code bucket} holding at most {@code burst} tokens at once. */
+    public VenueRateLimits withBurst(final String bucket, final long burst) {
+        final List<Bucket> changed = new ArrayList<>();
+        boolean found = false;
+        for (final Bucket b : this.buckets) {
+            if (b.name().equals(bucket)) {
+                changed.add(new Bucket(b.name(), b.tokensPerSecond(), burst, b.cancelReserve()));
                 found = true;
             } else {
                 changed.add(b);

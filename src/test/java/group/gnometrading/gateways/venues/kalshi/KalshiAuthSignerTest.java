@@ -98,6 +98,21 @@ class KalshiAuthSignerTest {
         assertEquals("1700000000999", signer.timestamp());
     }
 
+    @Test
+    void rekey_SignsWithTheNewKeyAndApiKeyFromThenOn() throws Exception {
+        final KeyPairGenerator gen = KeyPairGenerator.getInstance("RSA");
+        gen.initialize(2048);
+        keyPair = gen.generateKeyPair();
+
+        signer.rekey("rotated-key", keyPair.getPrivate());
+        signer.sign(1700000000002L, "GET", "/trade-api/v2/portfolio/orders");
+
+        assertEquals("rotated-key", signer.apiKey());
+        assertTrue(verify(
+                "1700000000002GET/trade-api/v2/portfolio/orders".getBytes(StandardCharsets.US_ASCII),
+                signer.signature()));
+    }
+
     private boolean verify(final byte[] message, final String base64Sig) throws Exception {
         final Signature verifier = Signature.getInstance("RSASSA-PSS");
         verifier.setParameter(new PSSParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256, 32, 1));

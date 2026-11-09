@@ -16,6 +16,9 @@ its own; gnome-orchestrator wires it up, both in a strategy session's JVM and in
   `FeedConnection.connect()` without a running reader would wait on its pause forever.
 - Feed latency benchmark (prints per-venue reader latency, supervisor/tick/prober pass times and allocation; not part of
   `mvn test`): `mvn test-compile surefire:test@benchmark`. Compare runs on the same machine before and after a change.
+  `OrderPathBenchmark` does the same for each venue's order path (build, sign, answers, events):
+  `mvn test-compile surefire:test@benchmark -Dtest=OrderPathBenchmark`. `AccountLatencyBenchmark` times the account
+  path per venue: a lane pass from NEW to request on the wire, and a reader's frame to report.
 - Format: `mvn spotless:apply`. Spotless (palantir) and checkstyle both run `check` in `validate`, so unformatted code
   fails the build.
 - Maven only, never Gradle. Java 17 (set by `gnome-parent`).
@@ -40,27 +43,57 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
   - `ConnectionGroup`: a source's connections in a process, packed up to `max_per_connection`, closed when empty for
     5 minutes, rolled make-before-break every 12 h. `Feeds`: streams to markets (shared subjects), groups, the prober,
     quarantine retries.
-  - `transport/`: `Transport` (`WebSocketTransport` now; FIX later), `FrameWriter`/`WebSocketWriter` (MPSC queues).
   - `probe/`: `BookProber` (REST check of the top 5 levels, silence -> `SUSPECT`), `BookProbeClient`, `JsonLevels`.
   - `VenueFeed`: what a venue tells the feed about itself (market mapping, depth, URL property, probe budget).
-- `orders/`: generic order entry: `OutboundGateway`, `OutboundSocketWriter` (HTTP), `OutboundSocketReader` (private
-  socket for order events), `OrderContext`, `IdleConnections`, `VenueRejectText`, `recovery/` (venue order lookup).
-- `ratelimit/`: per-account REST limiter (`VenueRateLimiter`, `VenueRateLimits`) shared by every listing on an account.
+- `transport/`: `Transport` (`WebSocketTransport` now; FIX later), `FrameReader`, `FrameWriter`/`WebSocketWriter` (MPSC
+  queues), shared by feeds and the account reader.
+- `orders/`: order state and rules both order paths share: `OrderContext`, `OrderReports`, `ReaderNotices`,
+  `SubmitPolicy`, `OrderEventSink`, `VenueRejectText`, the result types, `recovery/` (venue order lookup).
+- `outbound/`: the per-listing order path a session runs in its own process: `OutboundGateway`,
+  `OutboundSocketWriter` (HTTP), `OutboundSocketReader` (private socket for order events), `IdleConnections`.
+- `ratelimit/`: per-account REST limiter (`VenueRateLimiter`, `VenueRateLimits`) shared by every listing on an account;
+  `AccountBudget`, the thread-safe budget the account lane draws on without waiting, and `BudgetGate`, a blocking
+  `RequestGate` over it at a fixed `RequestClass` for clients reading the account beside the lane (catch-up,
+  listings, market loads).
+- `account/`: the order gateway's per-account path, in two halves that talk only through `orders/ReaderNotices` (one
+  ordered queue) and the released queue back.
+  - `account/lane/`: `AccountLane`, one thread sending every session's orders over `AsyncHTTPConnections`, settled
+    by `SubmitPolicy`, unknown outcomes swept and in the end given up on; cancels, resends and lookups first, then
+    each session's amends and new orders as `FairQueue` decides; each queued request refused after its session's
+    wait; a cancel the venue failed to answer sent again up to 3 times in 2 s; every decision told to its
+    `Admissions`. `FairQueue` is start-time fair queuing over `LaneSession`s (the queued session charged least, cost
+    over weight, goes next; one back after over a second idle starts level; one back sooner, as when its queued
+    orders all expired between two of the venue's slots, keeps its place, but never more than a second of the budget
+    behind the level), at most `AccountLane.MAX_SESSIONS` per account. A session's `CANCEL_SESSION` fences it: its new
+    orders are refused until its next `SESSION`, so none queued behind the cancel reaches the venue. `LaneVenue` per venue; `FairShareTrace` records the fair share for a post-mortem.
+  - `account/reader/`: `AccountReader` + `AccountConnection` (one account-wide event socket, catch-up over REST
+    fetched beside the reader and repeated once the venue's reads settle) with an `AccountProtocol` per venue.
+  - `orders/OrderReports` holds the order state and builds every report, for this reader and the in-session
+    `outbound/OutboundSocketReader` alike.
 - `venues/<venue>/`: everything specific to one venue, on top of the generic layers above, which never depend on it.
   `<Venue>Venue` holds its facts (`FEED`, `subjectOf`, and `rateLimits()` where it has order entry); `<Venue>Protocol`
   its market data (auth, subscribe/unsubscribe/resync, keep-alive, frame decoding); `<Venue>BookProbe` its REST probe
   if it sends book changes; `<Venue>Outbound*`, signers, requests and order queries its order entry. Venues:
   `kalshi`, `polymarket/intl`, `polymarket/us` (market data and orders), `hyperliquid`, `lighter` (market data only).
 - `fix/`: generic FIX transport; nothing in this repo or gnome-orchestrator uses it now that Binance is gone.
-- Tests mirror the code: generic feed and outbound tests under `feed/` and `orders/`, each venue's under
-  `venues/<venue>/`. `venues/polymarket/intl/PolymarketIntlCaptureReplay` is a `main()` tool, not a test.
+- The test jar is published: gnome-orchestrator's order gateway tests use the account path's fakes
+  (`account/lane/FakeVenueServer`, `account/lane/TestLaneVenue`, `account/reader/FakeAccountTransport`,
+  `account/reader/TextAccountProtocol`), so keep them public and stable.
+- Tests mirror the code: generic tests under `feed/`, `orders/`, `outbound/` and `account/{lane,reader}/` (whole
+  account path tests, which use both halves, in `account/`), each venue's under `venues/<venue>/`.
+- `LayoutTest` (ArchUnit) keeps the layers apart: lane and reader use neither each other, `account/` and `outbound/`
+  use neither each other, `orders/` and `ratelimit/` use neither order path, nothing outside `venues/` uses it, and
+  `feed/` uses no order code.
+- `venues/polymarket/intl/PolymarketIntlCaptureReplay` is a `main()` tool, not a test.
 
 ## Conventions and invariants
 
 - Hot path is zero-allocation: feed readers and protocols' `onFrame`, writers' `doWork`, the prober's pass, `Feeds.tick`
   (a session runs it in its JVM), signers, `VenueRejectText`. No boxing, lambdas or string building per message; hold
   method references in fields. Allocation only on connect, error, log, subscribe and roll paths
-  (`SocketConnectController` allocates on every connect by design). `FeedAllocationTest` proves each.
+  (`SocketConnectController` allocates on every connect by design). `FeedAllocationTest` proves the feed's;
+  `<Venue>OrderPathAllocationTest` the order path's codecs, signers, event parsers and `SubmitPolicy`, driven through
+  the `<Venue>OrderPath` fixtures the benchmark shares.
 - Allocation tests are `@Tag("allocation")` and run in their own surefire execution, one JVM per class, because a
   Mockito inline mock of `WebSocketClient`/`WebSocketResponse` makes real instances allocate. Never mock those in an
   allocation test's JVM.
@@ -88,13 +121,24 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
 - Polymarket US: `:long`/`:short` listings share one subject; `:short` is the complement. Feeds hold at most 10
   subscriptions a connection, so markets go in up to 5 groups of 20, a changed group replaced under new ids. No client
   order id and no dedup, so a submit is never resent; events are matched by GTD stamp or (IOC) side+price. FOK refused.
+  The account lane batches PM US creates and cancels (`LaneVenue.maxBatch`, 20) whenever two or more wait:
+  `POST /v1/orders/batched` answers only ids in request order and `/v1/orders/batched/cancel` only echoes the ids, so
+  outcomes come from the order stream as for singles; a 400 naming `order[i]` created nothing, so that entry is
+  refused and the rest go again. One alone goes as a single request, whose answer says more.
 - Polymarket Intl: `exchangeSecurityId` is `{condition_id}:{token_id}`. Orders are EIP-712 signed (signature types
   0-3, incl. 3 = deposit wallet) and immutable, so no modify; market orders refused.
 - Submits with no clear answer: resent only where the venue dedups (`resendsAreSafe`), else looked up. Every OMS
   message must get exactly one report; do not add a path that drops or doubles one.
-- Rate limits (`VenueRateLimits`): Kalshi Basic tier read/write buckets, Polymarket Intl order + cancel buckets,
-  Polymarket US one bucket per key. Budgets start below the venue rate, halve on 429, recover slowly. Cancels may use a
-  reserve; new orders are refused rather than delayed.
+- Rate limits (`VenueRateLimits`): Kalshi Advanced tier read/write buckets (300/s, burst 900; a by-id lookup costs 2)
+  plus a balance bucket, Polymarket Intl per-signer order (held to 36/s of the documented 40) + cancel buckets,
+  Polymarket US one bucket at 15/s, burst 6, and order lookups by id on their own at 2/s, burst 2 (its 25/s is counted
+  per source IP by Cloudflare over short windows, so every bucket's rate plus burst stay within 25; a breach is a 429
+  "error code: 1015"); lookups are on their own because they are refused at 15/s alone, and at 5/s beside 15 cancels.
+  Each request falls in a `RequestClass`
+  (CANCEL, CATCH_UP, AMEND, NEW, BACKGROUND), which sets the tokens it must leave: cancels none, catch-up half the
+  cancel reserve, orders the reserve, background more. The shared limiter (`VenueRateLimiter`) starts below the venue
+  rate, halves on 429 and recovers slowly, refuses orders rather than delaying them, and treats catch-up as
+  background; `AccountBudget` is the gateway's exact, non-blocking one.
 - Credentials are passed in, never read here. The orchestrator loads them from Secrets Manager: market data from
   `gnome/market-data/kalshi` and `gnome/market-data/polymarket-us`, trading from the venue account's
   `tradingSecretName`. Signatures are recomputed on every connect so timestamps are never stale.

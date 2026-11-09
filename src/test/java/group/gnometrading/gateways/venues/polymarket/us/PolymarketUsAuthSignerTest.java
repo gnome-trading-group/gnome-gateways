@@ -76,6 +76,22 @@ class PolymarketUsAuthSignerTest {
         assertThrows(IllegalArgumentException.class, () -> PolymarketUsAuthSigner.parseSecretKey(secret));
     }
 
+    @Test
+    void rekeySignsWithTheNewKeyAndApiKeyFromThenOn() throws Exception {
+        final PolymarketUsAuthSigner signer = new PolymarketUsAuthSigner(
+                "old-key",
+                PolymarketUsAuthSigner.parseSecretKey(Base64.getEncoder().encodeToString(new byte[32])));
+        signer.sign(1L, "GET", "/v1/orders/open");
+
+        signer.rekey(
+                "new-key",
+                PolymarketUsAuthSigner.parseSecretKey(Base64.getEncoder().encodeToString(this.seed)));
+        signer.sign(2L, "GET", "/v1/orders/open");
+
+        assertEquals("new-key", signer.apiKey());
+        assertTrue(verify("2GET/v1/orders/open", signer.signature()));
+    }
+
     private boolean verify(final String message, final String signatureB64) throws Exception {
         final Signature verifier = Signature.getInstance("Ed25519");
         verifier.initVerify(this.publicKey);

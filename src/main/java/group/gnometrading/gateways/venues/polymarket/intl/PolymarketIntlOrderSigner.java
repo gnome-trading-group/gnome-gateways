@@ -1,18 +1,14 @@
 package group.gnometrading.gateways.venues.polymarket.intl;
 
+import group.gnometrading.networking.crypto.Secp256k1Signer;
 import java.math.BigInteger;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.concurrent.ThreadLocalRandom;
+import org.bouncycastle.asn1.x9.X9ECParameters;
 import org.bouncycastle.crypto.digests.KeccakDigest;
-import org.bouncycastle.crypto.digests.SHA256Digest;
-import org.bouncycastle.crypto.params.ECDomainParameters;
-import org.bouncycastle.crypto.params.ECPrivateKeyParameters;
-import org.bouncycastle.crypto.signers.ECDSASigner;
-import org.bouncycastle.crypto.signers.HMacDSAKCalculator;
-import org.bouncycastle.jce.ECNamedCurveTable;
-import org.bouncycastle.jce.spec.ECNamedCurveParameterSpec;
-import org.bouncycastle.math.ec.ECCurve;
+import org.bouncycastle.crypto.ec.CustomNamedCurves;
 import org.bouncycastle.math.ec.ECPoint;
 
 /**
@@ -25,8 +21,11 @@ import org.bouncycastle.math.ec.ECPoint;
  * <p>A deposit wallet (signature type 3, which newer accounts get) is both the order's maker and its signer, and
  * verifies signatures itself (ERC-1271). Its key signs a {@code TypedDataSign} wrapper of the order under the
  * wallet's own domain, and the signature carries what the wallet needs to rebuild that wrapper.
+ *
+ * <p>Signing allocates nothing: the ECDSA signature is native (libsecp256k1, RFC 6979 nonces, low s, with the recovery
+ * id Ethereum's {@code v} needs), and each order is written into one reused {@link SignedOrder}. One owner thread.
  */
-public final class PolymarketIntlOrderSigner {
+public final class PolymarketIntlOrderSigner implements AutoCloseable {
 
     public static final String STANDARD_EXCHANGE = "0xE111180000d2663C0091e4f400237545B87B996B";
     public static final String NEG_RISK_EXCHANGE = "0xe2222d279d744050d28e00520010520000310F59";
@@ -58,6 +57,7 @@ public final class PolymarketIntlOrderSigner {
     private static final byte[] DEPOSIT_WALLET_VERSION_HASH = keccak256("1".getBytes(StandardCharsets.UTF_8));
     // The wallet rebuilds the wrapper from the order type it's given, so the signature carries it and its length.
     private static final byte[] ORDER_TYPE_BYTES = ORDER_TYPE.getBytes(StandardCharsets.UTF_8);
+    private static final int DEPOSIT_WALLET_SUFFIX_LENGTH = 32 + 32 + ORDER_TYPE_BYTES.length + 2;
 
     private static final byte[] DOMAIN_TYPE_HASH = keccak256(DOMAIN_TYPE.getBytes(StandardCharsets.UTF_8));
     private static final byte[] ORDER_TYPE_HASH = keccak256(ORDER_TYPE.getBytes(StandardCharsets.UTF_8));
@@ -65,33 +65,23 @@ public final class PolymarketIntlOrderSigner {
     private static final byte[] STANDARD_DOMAIN_SEPARATOR = domainSeparator(STANDARD_EXCHANGE);
     private static final byte[] NEG_RISK_DOMAIN_SEPARATOR = domainSeparator(NEG_RISK_EXCHANGE);
 
-    private final ECDSASigner signer;
-    private final ECPrivateKeyParameters privateKeyParams;
-    private final String makerAddress;
+    private static final byte[] HEX_CHARS = "0123456789abcdef".getBytes(StandardCharsets.US_ASCII);
+
+    private final Secp256k1Signer ecdsa;
     // The order's signer field: the key's own address, or for a deposit wallet the wallet.
-    private final String orderSignerAddress;
     private final byte[] makerAddrBytes;
     private final byte[] orderSignerAddrBytes;
-    // The address the key signs as, which recovering the signature must give back.
-    private final String keyAddress;
-    private final byte[] keyAddrBytes;
     private final int signatureType;
-    private final BigInteger halfN; // N/2, pre-computed for low-s canonicalization
     private long saltCounter;
 
-    // Reusable scratch buffers — single-threaded writer agent, safe to reuse
+    // Reusable scratch: one owner thread.
     private final KeccakDigest keccakDigest = new KeccakDigest(256);
     private final byte[] structEncoded = new byte[ORDER_STRUCT_SLOTS * 32];
     private final byte[] messageBuf = new byte[2 + 32 + 32]; // \x19\x01 || domainSep || structHash
     private final byte[] structHashBuf = new byte[32];
-    private final byte[] msgHashBuf = new byte[32];
     private final byte[] wrapperEncoded = new byte[TYPED_DATA_SIGN_SLOTS * 32];
     private final byte[] digestBuf = new byte[32];
-    // recoverV / decompressPoint scratch
-    private final byte[] pubKeyBuf = new byte[64];
-    private final byte[] addrHashBuf = new byte[32];
-    private final byte[] fixedXBuf = new byte[32];
-    private final byte[] compressedPointBuf = new byte[33];
+    private final SignedOrder signed;
 
     /**
      * @param signerAddress the EOA that owns {@code privateKeyBytes}
@@ -121,27 +111,27 @@ public final class PolymarketIntlOrderSigner {
         if (signatureType < SIGNATURE_TYPE_EOA || signatureType > SIGNATURE_TYPE_POLY_1271) {
             throw new IllegalArgumentException("Unsupported Polymarket signature type: " + signatureType);
         }
-        this.keyAddress = signerAddress;
-        this.makerAddress = makerAddress;
-        this.orderSignerAddress = signatureType == SIGNATURE_TYPE_POLY_1271 ? makerAddress : signerAddress;
+        final String orderSignerAddress = signatureType == SIGNATURE_TYPE_POLY_1271 ? makerAddress : signerAddress;
         this.signatureType = signatureType;
         this.saltCounter = initialSalt;
-
-        final ECNamedCurveParameterSpec spec = ECNamedCurveTable.getParameterSpec("secp256k1");
-        final ECDomainParameters domainParams =
-                new ECDomainParameters(spec.getCurve(), spec.getG(), spec.getN(), spec.getH());
-        this.privateKeyParams = new ECPrivateKeyParameters(new BigInteger(1, privateKeyBytes), domainParams);
-        // Deterministic nonces (RFC 6979), as Ethereum signers use, so a signature is reproducible.
-        this.signer = new ECDSASigner(new HMacDSAKCalculator(new SHA256Digest()));
-        this.halfN = domainParams.getN().shiftRight(1);
-
-        this.keyAddrBytes = addressBytes(signerAddress);
         this.makerAddrBytes = addressBytes(makerAddress);
-        this.orderSignerAddrBytes = addressBytes(this.orderSignerAddress);
+        this.orderSignerAddrBytes = addressBytes(orderSignerAddress);
+        this.ecdsa = new Secp256k1Signer(uint256(new BigInteger(1, privateKeyBytes)));
+        this.signed = new SignedOrder(
+                makerAddress,
+                orderSignerAddress,
+                signatureType,
+                signatureType == SIGNATURE_TYPE_POLY_1271 ? DEPOSIT_WALLET_SUFFIX_LENGTH : 0);
+        requireKeySignsFor(privateKeyBytes, signerAddress);
     }
 
+    /**
+     * Signs an order. The result is reused by the next call: write out what's needed before signing another.
+     *
+     * @param tokenId the outcome token's id as a 32-byte big-endian uint256, see {@link #tokenIdBytes}
+     */
     public SignedOrder signOrder(
-            final BigInteger tokenId,
+            final byte[] tokenId,
             final long makerAmount,
             final long takerAmount,
             final int side,
@@ -161,7 +151,7 @@ public final class PolymarketIntlOrderSigner {
         offset += 32;
         copyAddressToSlot(this.orderSignerAddrBytes, this.structEncoded, offset);
         offset += 32;
-        toUint256Bytes(tokenId, this.structEncoded, offset);
+        System.arraycopy(tokenId, 0, this.structEncoded, offset, 32);
         offset += 32;
         toUint256Bytes(makerAmount, this.structEncoded, offset);
         offset += 32;
@@ -176,45 +166,37 @@ public final class PolymarketIntlOrderSigner {
         hashKeccak256(this.structEncoded, this.structEncoded.length, this.structHashBuf);
 
         final byte[] domainSeparator = negRisk ? NEG_RISK_DOMAIN_SEPARATOR : STANDARD_DOMAIN_SEPARATOR;
-        typedDataHash(domainSeparator, this.structHashBuf, this.msgHashBuf);
+        final SignedOrder order = this.signed;
+        typedDataHash(domainSeparator, this.structHashBuf, order.orderHash);
 
-        final boolean depositWallet = this.signatureType == SIGNATURE_TYPE_POLY_1271;
         final byte[] digest;
-        if (depositWallet) {
+        if (this.signatureType == SIGNATURE_TYPE_POLY_1271) {
             wrapForDepositWallet();
             typedDataHash(domainSeparator, this.structHashBuf, this.digestBuf);
+            writeDepositWalletSuffix(domainSeparator, order.signatureSuffix);
             digest = this.digestBuf;
         } else {
-            digest = this.msgHashBuf;
+            digest = order.orderHash;
         }
 
-        this.signer.init(true, this.privateKeyParams);
-        final BigInteger[] sig = this.signer.generateSignature(digest);
-        final BigInteger r = sig[0];
-        BigInteger sigS = sig[1];
+        final int recoveryId = this.ecdsa.sign(digest, 0, order.signature, 0);
+        order.signature[Secp256k1Signer.SIGNATURE_LENGTH] = (byte) (27 + recoveryId);
+        order.salt = salt;
+        order.makerAmount = makerAmount;
+        order.takerAmount = takerAmount;
+        order.side = side;
+        order.timestampMillis = timestampMillis;
+        return order;
+    }
 
-        // Enforce low-s per EIP-2 / BIP-62 — required by Polygon validators
-        if (sigS.compareTo(this.halfN) > 0) {
-            sigS = this.privateKeyParams.getParameters().getN().subtract(sigS);
-        }
+    /** A token id, given in decimal as Polymarket lists it, as the 32-byte uint256 {@link #signOrder} takes. */
+    public static byte[] tokenIdBytes(final String decimalTokenId) {
+        return uint256(new BigInteger(decimalTokenId));
+    }
 
-        final byte v = recoverV(r, sigS, digest);
-
-        return new SignedOrder(
-                salt,
-                this.makerAddress,
-                this.orderSignerAddress,
-                tokenId,
-                makerAmount,
-                takerAmount,
-                side,
-                this.signatureType,
-                timestampMillis,
-                r,
-                sigS,
-                v,
-                this.msgHashBuf.clone(),
-                depositWallet ? depositWalletSuffix(domainSeparator) : null);
+    @Override
+    public void close() {
+        this.ecdsa.close();
     }
 
     private void typedDataHash(final byte[] domainSeparator, final byte[] structHash, final byte[] output) {
@@ -242,67 +224,27 @@ public final class PolymarketIntlOrderSigner {
     }
 
     /** What follows the 65-byte signature: the app's domain separator, the order's hash, its type and its length. */
-    private byte[] depositWalletSuffix(final byte[] domainSeparator) {
-        final byte[] suffix = new byte[32 + 32 + ORDER_TYPE_BYTES.length + 2];
+    private void writeDepositWalletSuffix(final byte[] domainSeparator, final byte[] suffix) {
         System.arraycopy(domainSeparator, 0, suffix, 0, 32);
         System.arraycopy(this.wrapperEncoded, 32, suffix, 32, 32);
         System.arraycopy(ORDER_TYPE_BYTES, 0, suffix, 64, ORDER_TYPE_BYTES.length);
         suffix[suffix.length - 2] = (byte) (ORDER_TYPE_BYTES.length >>> 8);
         suffix[suffix.length - 1] = (byte) ORDER_TYPE_BYTES.length;
-        return suffix;
     }
 
-    private byte recoverV(final BigInteger sigR, final BigInteger sigS, final byte[] digest) {
-        final ECDomainParameters params = this.privateKeyParams.getParameters();
-        final BigInteger n = params.getN();
-        final ECCurve curve = params.getCurve();
-        final BigInteger e = new BigInteger(1, digest);
-        final BigInteger rInv = sigR.modInverse(n);
-
-        for (int recId = 0; recId < 2; recId++) {
-            final ECPoint pointR = decompressPoint(curve, sigR, recId);
-            if (pointR == null || !pointR.multiply(n).isInfinity()) {
-                continue;
-            }
-
-            // Q = r^{-1} * (s*R - e*G)
-            final ECPoint sR = pointR.multiply(sigS).normalize();
-            final ECPoint eG = params.getG().multiply(e).normalize();
-            final ECPoint candidate = sR.subtract(eG).multiply(rInv).normalize();
-
-            final byte[] pubEncoded = candidate.getEncoded(false); // 0x04 || x(32) || y(32)
-            System.arraycopy(pubEncoded, 1, this.pubKeyBuf, 0, 64);
-            hashKeccak256(this.pubKeyBuf, this.pubKeyBuf.length, this.addrHashBuf);
-
-            // Compare raw address bytes directly against pre-computed signer bytes
-            boolean match = true;
-            for (int i = 0; i < 20; i++) {
-                if (this.addrHashBuf[12 + i] != this.keyAddrBytes[i]) {
-                    match = false;
-                    break;
-                }
-            }
-            if (match) {
-                return (byte) (27 + recId);
-            }
-        }
-        throw new IllegalStateException("recoverV: no recId matched signer address " + this.keyAddress);
-    }
-
-    private ECPoint decompressPoint(final ECCurve curve, final BigInteger xCoord, final int recId) {
-        final byte[] xBytes = xCoord.toByteArray();
-        Arrays.fill(this.fixedXBuf, (byte) 0);
-        if (xBytes.length <= 32) {
-            System.arraycopy(xBytes, 0, this.fixedXBuf, 32 - xBytes.length, xBytes.length);
-        } else {
-            System.arraycopy(xBytes, xBytes.length - 32, this.fixedXBuf, 0, 32);
-        }
-        this.compressedPointBuf[0] = (byte) (0x02 | (recId & 1));
-        System.arraycopy(this.fixedXBuf, 0, this.compressedPointBuf, 1, 32);
-        try {
-            return curve.decodePoint(this.compressedPointBuf);
-        } catch (final Exception ex) {
-            return null;
+    /**
+     * Checks once, at construction, that the key signs as the address the venue will check signatures against, so a
+     * mismatched secret fails here instead of on every order at the venue.
+     */
+    private void requireKeySignsFor(final byte[] privateKeyBytes, final String signerAddress) {
+        final X9ECParameters curve = CustomNamedCurves.getByName("secp256k1");
+        final ECPoint publicKey =
+                curve.getG().multiply(new BigInteger(1, privateKeyBytes)).normalize();
+        final byte[] encoded = publicKey.getEncoded(false);
+        final byte[] hash = new byte[32];
+        hashKeccak256(Arrays.copyOfRange(encoded, 1, 65), 64, hash);
+        if (!Arrays.equals(Arrays.copyOfRange(hash, 12, 32), addressBytes(signerAddress))) {
+            throw new IllegalArgumentException("The Polymarket key does not sign for " + signerAddress);
         }
     }
 
@@ -335,17 +277,16 @@ public final class PolymarketIntlOrderSigner {
         dest[offset + 31] = (byte) value;
     }
 
-    private static void toUint256Bytes(final BigInteger value, final byte[] dest, final int offset) {
+    private static byte[] uint256(final BigInteger value) {
         final byte[] raw = value.toByteArray();
-        for (int i = 0; i < 32; i++) {
-            dest[offset + i] = 0;
-        }
+        final byte[] result = new byte[32];
         if (raw.length <= 32) {
-            System.arraycopy(raw, 0, dest, offset + 32 - raw.length, raw.length);
+            System.arraycopy(raw, 0, result, 32 - raw.length, raw.length);
         } else {
             // Strip BigInteger sign-padding byte when value exactly fills 32 bytes
-            System.arraycopy(raw, raw.length - 32, dest, offset, 32);
+            System.arraycopy(raw, raw.length - 32, result, 0, 32);
         }
+        return result;
     }
 
     // Copies 20-byte pre-computed address into a 32-byte ABI-encoded slot.
@@ -377,40 +318,59 @@ public final class PolymarketIntlOrderSigner {
         return bytes;
     }
 
-    public record SignedOrder(
-            long salt,
-            String maker,
-            String signer,
-            BigInteger tokenId,
-            long makerAmount,
-            long takerAmount,
-            int side,
-            int signatureType,
-            long timestampMillis,
-            BigInteger r,
-            BigInteger s,
-            byte v,
-            byte[] orderHash,
-            // Deposit wallets only: appended after r, s and v; null otherwise.
-            byte[] signatureSuffix) {
+    /** A signed order, reused by its signer for every order it signs. */
+    public static final class SignedOrder {
+        private final String maker;
+        private final String signer;
+        private final int signatureType;
+        private final byte[] orderHash = new byte[32];
+        // r, s and v
+        private final byte[] signature = new byte[Secp256k1Signer.SIGNATURE_LENGTH + 1];
+        // Deposit wallets only: appended after r, s and v; empty otherwise.
+        private final byte[] signatureSuffix;
+        private long salt;
+        private long makerAmount;
+        private long takerAmount;
+        private int side;
+        private long timestampMillis;
 
-        private static final char[] HEX_CHARS = "0123456789abcdef".toCharArray();
+        private SignedOrder(final String maker, final String signer, final int signatureType, final int suffixLength) {
+            this.maker = maker;
+            this.signer = signer;
+            this.signatureType = signatureType;
+            this.signatureSuffix = new byte[suffixLength];
+        }
 
-        public String signatureHex() {
-            final byte[] rBytes = toFixed32(r);
-            final byte[] sBytes = toFixed32(s);
-            final StringBuilder sb =
-                    new StringBuilder(132 + (signatureSuffix == null ? 0 : 2 * signatureSuffix.length));
-            sb.append("0x");
-            appendHex(sb, rBytes);
-            appendHex(sb, sBytes);
-            final int vInt = v & 0xFF;
-            sb.append(HEX_CHARS[vInt >> 4]);
-            sb.append(HEX_CHARS[vInt & 0xF]);
-            if (signatureSuffix != null) {
-                appendHex(sb, signatureSuffix);
-            }
-            return sb.toString();
+        public long salt() {
+            return this.salt;
+        }
+
+        public String maker() {
+            return this.maker;
+        }
+
+        public String signer() {
+            return this.signer;
+        }
+
+        public long makerAmount() {
+            return this.makerAmount;
+        }
+
+        public long takerAmount() {
+            return this.takerAmount;
+        }
+
+        public int side() {
+            return this.side;
+        }
+
+        public int signatureType() {
+            return this.signatureType;
+        }
+
+        public long timestampMillis() {
+            return this.timestampMillis;
         }
 
         /** Writes the order hash as {@code 0x}-prefixed lowercase hex, the form the venue reports it in. */
@@ -418,28 +378,31 @@ public final class PolymarketIntlOrderSigner {
             dest[offset] = '0';
             dest[offset + 1] = 'x';
             for (int i = 0; i < 32; i++) {
-                dest[offset + 2 + i * 2] = (byte) HEX_CHARS[(orderHash[i] >> 4) & 0xF];
-                dest[offset + 3 + i * 2] = (byte) HEX_CHARS[orderHash[i] & 0xF];
+                dest[offset + 2 + i * 2] = HEX_CHARS[(this.orderHash[i] >> 4) & 0xF];
+                dest[offset + 3 + i * 2] = HEX_CHARS[this.orderHash[i] & 0xF];
             }
             return 66;
         }
 
-        private static byte[] toFixed32(final BigInteger value) {
-            final byte[] bytes = value.toByteArray();
-            final byte[] result = new byte[32];
-            if (bytes.length <= 32) {
-                System.arraycopy(bytes, 0, result, 32 - bytes.length, bytes.length);
-            } else {
-                // Skip leading zero byte from BigInteger sign padding
-                System.arraycopy(bytes, bytes.length - 32, result, 0, 32);
-            }
-            return result;
+        /** Writes the signature as {@code 0x}-prefixed lowercase hex: r, s and v, then any deposit wallet suffix. */
+        public void writeSignatureHex(final ByteBuffer out) {
+            out.put((byte) '0');
+            out.put((byte) 'x');
+            putHex(out, this.signature);
+            putHex(out, this.signatureSuffix);
         }
 
-        private static void appendHex(final StringBuilder sb, final byte[] bytes) {
+        /** As {@link #writeSignatureHex}, as a string; allocates, so for tests and logs, not the order path. */
+        public String signatureHex() {
+            final ByteBuffer out = ByteBuffer.allocate(2 + 2 * (this.signature.length + this.signatureSuffix.length));
+            writeSignatureHex(out);
+            return new String(out.array(), 0, out.position(), StandardCharsets.US_ASCII);
+        }
+
+        private static void putHex(final ByteBuffer out, final byte[] bytes) {
             for (final byte b : bytes) {
-                sb.append(HEX_CHARS[(b >> 4) & 0xF]);
-                sb.append(HEX_CHARS[b & 0xF]);
+                out.put(HEX_CHARS[(b >> 4) & 0xF]);
+                out.put(HEX_CHARS[b & 0xF]);
             }
         }
     }

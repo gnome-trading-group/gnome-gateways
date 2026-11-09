@@ -4,6 +4,7 @@ import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.gateways.Rfc3339;
 import group.gnometrading.gateways.orders.recovery.VenueOrder;
 import group.gnometrading.gateways.orders.recovery.VenueOrderQuery;
+import group.gnometrading.gateways.ratelimit.RequestFailure;
 import group.gnometrading.networking.http.HTTPClient;
 import group.gnometrading.networking.http.HTTPResponse;
 import group.gnometrading.schemas.Statics;
@@ -104,9 +105,18 @@ public final class PolymarketUsVenueOrderQuery implements VenueOrderQuery {
 
     /** {@code {"orders":[...]}}: the market's open orders, copied out of the HTTP client's buffer. */
     ByteBuffer openOrdersPage(final String marketSlug) throws IOException {
-        final HTTPResponse response = get(PolymarketUsRequests.OPEN_ORDERS_PATH + "?slugs=" + marketSlug);
+        return openOrders(PolymarketUsRequests.OPEN_ORDERS_PATH + "?slugs=" + marketSlug);
+    }
+
+    /** Every open order on the account, in any market. */
+    ByteBuffer accountOpenOrdersPage() throws IOException {
+        return openOrders(PolymarketUsRequests.OPEN_ORDERS_PATH);
+    }
+
+    private ByteBuffer openOrders(final String path) throws IOException {
+        final HTTPResponse response = get(path);
         if (!response.isSuccess() || response.getBody() == null) {
-            throw new IOException("Polymarket US open orders failed with status " + response.getStatusCode());
+            throw RequestFailure.of("Polymarket US open orders", response);
         }
         return copy(response.getBody());
     }
@@ -118,7 +128,7 @@ public final class PolymarketUsVenueOrderQuery implements VenueOrderQuery {
             return null;
         }
         if (!response.isSuccess() || response.getBody() == null) {
-            throw new IOException("Polymarket US order lookup failed with status " + response.getStatusCode());
+            throw RequestFailure.of("Polymarket US order lookup", response);
         }
         return copy(response.getBody());
     }
@@ -176,7 +186,7 @@ public final class PolymarketUsVenueOrderQuery implements VenueOrderQuery {
                     + "&types=ACTIVITY_TYPE_TRADE&limit=" + ACTIVITY_PAGE_SIZE
                     + (cursor.isEmpty() ? "" : "&cursor=" + cursor));
             if (!response.isSuccess() || response.getBody() == null) {
-                throw new IOException("Polymarket US activities failed with status " + response.getStatusCode());
+                throw RequestFailure.of("Polymarket US activities", response);
             }
             final ActivityScan scan = scanActivities(response.getBody(), stamp, createdAfterMs);
             if (scan.venueId != null) {

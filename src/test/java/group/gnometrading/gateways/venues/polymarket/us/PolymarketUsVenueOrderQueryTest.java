@@ -2,6 +2,7 @@ package group.gnometrading.gateways.venues.polymarket.us;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -11,6 +12,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import group.gnometrading.gateways.orders.recovery.VenueOrder;
+import group.gnometrading.gateways.ratelimit.AccountBudget;
+import group.gnometrading.gateways.ratelimit.BudgetGate;
+import group.gnometrading.gateways.ratelimit.RequestClass;
 import group.gnometrading.networking.http.HTTPClient;
 import group.gnometrading.networking.http.HTTPResponse;
 import group.gnometrading.schemas.Statics;
@@ -18,6 +22,7 @@ import group.gnometrading.sm.Exchange;
 import group.gnometrading.sm.Listing;
 import group.gnometrading.sm.Security;
 import group.gnometrading.strings.GnomeString;
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -75,6 +80,30 @@ class PolymarketUsVenueOrderQueryTest {
                                 .generateKeyPair()
                                 .getPrivate()),
                 () -> OPENED_MS);
+    }
+
+    @Test
+    void aLookupItsBudgetKeptBackIsToldApartFromOneTheVenueRefused() throws Exception {
+        // A budget starts empty, and this gate waits for nothing, so the lookup is refused before it is sent.
+        final HTTPClient gated = HTTPClient.builder()
+                .withRequestGate(new BudgetGate(
+                        new AccountBudget(PolymarketUsVenue.rateLimits(), 0), RequestClass.CATCH_UP, 0, () -> 0))
+                .build();
+        final PolymarketUsVenueOrderQuery refused = new PolymarketUsVenueOrderQuery(
+                gated,
+                "api.test",
+                new PolymarketUsAuthSigner(
+                        "key",
+                        KeyPairGenerator.getInstance("Ed25519")
+                                .generateKeyPair()
+                                .getPrivate()),
+                () -> OPENED_MS);
+
+        final IOException failure = assertThrows(IOException.class, () -> refused.orderPage("DKKK4HNGK3YY"));
+
+        assertEquals(
+                "Polymarket US order lookup wasn't sent: the account's budget had no room for it in time",
+                failure.getMessage());
     }
 
     @Test

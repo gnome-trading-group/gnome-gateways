@@ -34,6 +34,9 @@ public final class OrderContext {
     public static final long QTY_ABSENT = -1L;
 
     public long clientOidCounter;
+    // Behind the order gateway, the session's slot (its registry session_seq): orders are told apart by slot and
+    // counter, as every session's OMS counts from 1. Zero in a session's own gateway.
+    public long sessionSlot;
     public int clientOidStrategyId;
     public int exchangeId;
     public long securityId;
@@ -47,6 +50,11 @@ public final class OrderContext {
     public final OrderFeeState feeState = new OrderFeeState();
     // When the order was prepared, so a lookup on a venue that can only search by time knows where to look.
     public long submittedAtMillis;
+    // Sender-side, for SubmitPolicy: sends so far, when the last one started, and why and when to look the order up.
+    public int submitAttempts;
+    public long lastSendNanos;
+    public SubmitPolicy.LookupReason lookupReason;
+    public long lookUpNotBeforeNanos;
 
     // Reader-side: the order has been acknowledged to the OMS with an ExecType.NEW.
     public boolean acked;
@@ -63,6 +71,10 @@ public final class OrderContext {
     public long finalFillQty = QTY_ABSENT;
     // Writer-to-reader marker: this context carries the venue's id for an order, learned from the submit's answer.
     public boolean venueOrderIdNotice;
+    // A notice that hands the reader a new order to hold, on the same queue as the order's later notices.
+    public boolean registration;
+    // A notice that ends an order the reader was handed: if the reader has ended it already, it is dropped.
+    public boolean endsRegistered;
     // The limit price as the venue was sent it, for venues whose events can only be matched by the order's terms.
     public long limitPrice;
     public Side side;
@@ -78,8 +90,25 @@ public final class OrderContext {
     public final byte[] correlationIdBytes = new byte[EXCHANGE_ORDER_ID_MAX_LENGTH];
     public int correlationIdLength;
 
+    /**
+     * Whether the fills so far end the order: at its own size, or for an {@link #awaitsFinalFill} order at the venue's
+     * total, once known.
+     */
+    public boolean fillsComplete() {
+        if (!this.awaitsFinalFill) {
+            return this.cumulativeFilledQty >= this.originalQty;
+        }
+        return this.finalFillQty != QTY_ABSENT && this.cumulativeFilledQty >= this.finalFillQty;
+    }
+
+    /** Whether the venue has said the order fills more than has been seen. */
+    public boolean fillsPending() {
+        return this.awaitsFinalFill && this.finalFillQty != QTY_ABSENT && this.cumulativeFilledQty < this.finalFillQty;
+    }
+
     public void reset() {
         this.clientOidCounter = 0;
+        this.sessionSlot = 0;
         this.clientOidStrategyId = 0;
         this.exchangeId = 0;
         this.securityId = 0;
@@ -91,6 +120,10 @@ public final class OrderContext {
         this.cumulativeFees = 0;
         this.feeState.reset();
         this.submittedAtMillis = 0;
+        this.submitAttempts = 0;
+        this.lastSendNanos = 0;
+        this.lookupReason = null;
+        this.lookUpNotBeforeNanos = 0;
         this.acked = false;
         this.amendFillCount = QTY_ABSENT;
         this.amendAccepted = false;
@@ -98,6 +131,8 @@ public final class OrderContext {
         this.finalFillNotice = false;
         this.finalFillQty = QTY_ABSENT;
         this.venueOrderIdNotice = false;
+        this.registration = false;
+        this.endsRegistered = false;
         this.limitPrice = 0;
         this.side = null;
         this.flags = 0;
@@ -110,6 +145,7 @@ public final class OrderContext {
 
     public void copyFrom(final OrderContext src) {
         this.clientOidCounter = src.clientOidCounter;
+        this.sessionSlot = src.sessionSlot;
         this.clientOidStrategyId = src.clientOidStrategyId;
         this.exchangeId = src.exchangeId;
         this.securityId = src.securityId;
@@ -121,6 +157,10 @@ public final class OrderContext {
         this.cumulativeFees = src.cumulativeFees;
         this.feeState.copyFrom(src.feeState);
         this.submittedAtMillis = src.submittedAtMillis;
+        this.submitAttempts = src.submitAttempts;
+        this.lastSendNanos = src.lastSendNanos;
+        this.lookupReason = src.lookupReason;
+        this.lookUpNotBeforeNanos = src.lookUpNotBeforeNanos;
         this.acked = src.acked;
         this.amendFillCount = src.amendFillCount;
         this.amendAccepted = src.amendAccepted;
@@ -128,6 +168,8 @@ public final class OrderContext {
         this.finalFillNotice = src.finalFillNotice;
         this.finalFillQty = src.finalFillQty;
         this.venueOrderIdNotice = src.venueOrderIdNotice;
+        this.registration = src.registration;
+        this.endsRegistered = src.endsRegistered;
         this.limitPrice = src.limitPrice;
         this.side = src.side;
         this.flags = src.flags;

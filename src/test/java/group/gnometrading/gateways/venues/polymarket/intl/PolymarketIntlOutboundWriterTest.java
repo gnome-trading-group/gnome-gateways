@@ -326,6 +326,45 @@ class PolymarketIntlOutboundWriterTest {
     }
 
     @Test
+    void submitOrder_ResendAnsweredDuplicated_IsTheOrderExisting_NeverARejection() throws Exception {
+        // The first answer is lost; the resend gets the CLOB's duplicate answer, and the lookup lags behind it.
+        stubPost(ByteBuffer.wrap(
+                ("{\"error\":\"order " + ORDER_HASH + " is invalid. Duplicated.\"}").getBytes(StandardCharsets.UTF_8)));
+        when(httpResponse.isSuccess()).thenReturn(false);
+        when(httpResponse.getStatusCode()).thenReturn(0, 400);
+        final HTTPResponse lookup = mock(HTTPResponse.class);
+        when(lookup.isSuccess()).thenReturn(false);
+        when(lookup.getStatusCode()).thenReturn(404);
+        when(httpClient.get(
+                        any(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString()))
+                .thenReturn(lookup);
+
+        publishOrder(Side.Bid, price("0.55"), qty("10"), OrderType.LIMIT, TimeInForce.GOOD_TILL_CANCELED, false);
+        writer.doWork();
+
+        assertEquals(0, drainQueue(writerReportQueue).size(), "the venue has it, so it stays for its events to settle");
+        assertTrue(
+                mockingDetails(logger).getInvocations().stream()
+                        .filter(call -> call.getArgument(0) == LogMessage.ORDER_REJECTED_BY_VENUE)
+                        .map(call ->
+                                String.format((String) call.getRawArguments()[1], (Object[]) call.getRawArguments()[2]))
+                        .noneMatch(line -> line.contains(": 400 ")),
+                "a resend's duplicate is expected, not a refusal");
+    }
+
+    @Test
     void submitOrder_NoAnswerThenNotFoundOnTheVenue_IsRejected() throws Exception {
         stubPost(null);
         when(httpResponse.isSuccess()).thenReturn(false);
@@ -691,12 +730,15 @@ class PolymarketIntlOutboundWriterTest {
     }
 
     @Test
-    void cancelOrder_UnknownOrderIsANoOp() throws Exception {
+    void cancelOrder_UnknownOrderIsRefusedWithoutTouchingTheVenue() throws Exception {
         publishCancel(999L);
         writer.doWork();
 
         verifyNoInteractions(httpClient);
-        assertEquals(0, drainQueue(writerReportQueue).size());
+        final List<OrderContext> reports = drainQueue(writerReportQueue);
+        assertEquals(1, reports.size(), "answered, so the OMS never waits on it");
+        assertEquals(ExecType.CANCEL_REJECT, reports.get(0).execType);
+        assertEquals(RejectReason.UNKNOWN_ORDER, reports.get(0).rejectReason);
     }
 
     // ========== Modify ==========
@@ -728,7 +770,7 @@ class PolymarketIntlOutboundWriterTest {
                 new Security(3, "TEST", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
                 "0xcondition:" + TOKEN_ID,
                 "TEST-YES");
-        return new PolymarketIntlOutboundWriter(
+        final PolymarketIntlOutboundWriter writer = new PolymarketIntlOutboundWriter(
                 logger,
                 orderBuffer,
                 newOrderQueue,
@@ -741,6 +783,9 @@ class PolymarketIntlOutboundWriterTest {
                 marketInfo,
                 () -> TIMESTAMP_MILLIS * 1_000_000L,
                 listing);
+        // The settle wait itself is OutboundSocketWriterTest's; here a lookup's miss is believed at once.
+        writer.readSettleNanos(0);
+        return writer;
     }
 
     private long submitWorkingOrder() throws Exception {
@@ -900,7 +945,7 @@ class PolymarketIntlOutboundWriterTest {
         final PolymarketIntlOrderSigner.SignedOrder order = PolymarketIntlOrderSignerAccess.withSalt(
                         PRIVATE_KEY, EOA, EOA, PolymarketIntlOrderSigner.SIGNATURE_TYPE_EOA, SALT + nth)
                 .signOrder(
-                        new java.math.BigInteger(TOKEN_ID),
+                        PolymarketIntlOrderSigner.tokenIdBytes(TOKEN_ID),
                         buy ? notional : size,
                         buy ? size : notional,
                         buy ? 0 : 1,

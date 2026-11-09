@@ -4,7 +4,6 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.util.HexFormat;
 import java.util.stream.Stream;
@@ -23,8 +22,8 @@ class PolymarketIntlOrderSignerTest {
     private static final byte[] PRIVATE_KEY =
             HexFormat.of().parseHex("ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80");
     private static final String EOA = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
-    private static final BigInteger TOKEN_ID =
-            new BigInteger("71321045679252212594626385532706912750332728571942532289631379312455583992563");
+    private static final byte[] TOKEN_ID = PolymarketIntlOrderSigner.tokenIdBytes(
+            "71321045679252212594626385532706912750332728571942532289631379312455583992563");
     private static final long SALT = 1234567890123L;
     private static final long TIMESTAMP_MILLIS = 1759350000000L;
 
@@ -191,13 +190,14 @@ class PolymarketIntlOrderSignerTest {
         final PolymarketIntlOrderSigner signer = PolymarketIntlOrderSignerAccess.withSalt(
                 PRIVATE_KEY, EOA, EOA, PolymarketIntlOrderSigner.SIGNATURE_TYPE_EOA, SALT);
 
-        final PolymarketIntlOrderSigner.SignedOrder first =
-                signer.signOrder(TOKEN_ID, 5_500_000L, 10_000_000L, 0, TIMESTAMP_MILLIS, false);
+        // The signed order is reused, so each is read before the next is signed.
+        final String first =
+                orderHashHex(signer.signOrder(TOKEN_ID, 5_500_000L, 10_000_000L, 0, TIMESTAMP_MILLIS, false));
         final PolymarketIntlOrderSigner.SignedOrder second =
                 signer.signOrder(TOKEN_ID, 5_500_000L, 10_000_000L, 0, TIMESTAMP_MILLIS, false);
 
         assertEquals(SALT + 1, second.salt());
-        assertEquals(false, orderHashHex(first).equals(orderHashHex(second)));
+        assertEquals(false, first.equals(orderHashHex(second)));
     }
 
     @Test
@@ -209,6 +209,45 @@ class PolymarketIntlOrderSignerTest {
                 signer.signOrder(TOKEN_ID, 1L, 1L, 0, TIMESTAMP_MILLIS, false).salt();
 
         assertEquals(true, salt >= 0 && salt < (1L << 53));
+    }
+
+    @Test
+    void aKeyThatDoesntSignForTheGivenAddressIsRefusedUpFront() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new PolymarketIntlOrderSigner(
+                        PRIVATE_KEY,
+                        "0x3333333333333333333333333333333333333333",
+                        EOA,
+                        PolymarketIntlOrderSigner.SIGNATURE_TYPE_EOA));
+    }
+
+    @Test
+    void signingAllocatesNothing() {
+        final PolymarketIntlOrderSigner signer = PolymarketIntlOrderSignerAccess.withSalt(
+                PRIVATE_KEY, EOA, EOA, PolymarketIntlOrderSigner.SIGNATURE_TYPE_EOA, SALT);
+        final java.nio.ByteBuffer out = java.nio.ByteBuffer.allocate(512);
+        final byte[] hash = new byte[66];
+        final Runnable sign = () -> {
+            final PolymarketIntlOrderSigner.SignedOrder order =
+                    signer.signOrder(TOKEN_ID, 5_500_000L, 10_000_000L, 0, TIMESTAMP_MILLIS, false);
+            order.writeOrderHashHex(hash, 0);
+            out.clear();
+            order.writeSignatureHex(out);
+        };
+        for (int i = 0; i < 20_000; i++) {
+            sign.run();
+        }
+        final com.sun.management.ThreadMXBean threads =
+                (com.sun.management.ThreadMXBean) java.lang.management.ManagementFactory.getThreadMXBean();
+        final long before =
+                threads.getThreadAllocatedBytes(Thread.currentThread().getId());
+        for (int i = 0; i < 10_000; i++) {
+            sign.run();
+        }
+        final long allocated =
+                threads.getThreadAllocatedBytes(Thread.currentThread().getId()) - before;
+        assertEquals(true, allocated < 2_048, "allocated " + allocated + " bytes over 10,000 orders");
     }
 
     @Test

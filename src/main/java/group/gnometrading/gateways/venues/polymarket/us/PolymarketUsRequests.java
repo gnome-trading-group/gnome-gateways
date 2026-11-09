@@ -15,6 +15,12 @@ final class PolymarketUsRequests {
     static final String ORDERS_PATH = "/v1/orders";
     static final GnomeString ORDERS_PATH_GS = new ViewString(ORDERS_PATH);
     static final String OPEN_ORDERS_PATH = "/v1/orders/open";
+    // Up to 20 creates, or cancels, to a request; each batch counts once against the rate limit.
+    static final String BATCH_ORDERS_PATH = "/v1/orders/batched";
+    static final GnomeString BATCH_ORDERS_PATH_GS = new ViewString(BATCH_ORDERS_PATH);
+    static final String BATCH_CANCEL_PATH = "/v1/orders/batched/cancel";
+    static final GnomeString BATCH_CANCEL_PATH_GS = new ViewString(BATCH_CANCEL_PATH);
+    static final int MAX_BATCH = 20;
     static final String ORDER_PATH = "/v1/order/";
     static final String CANCEL_SUFFIX = "/cancel";
     static final String MODIFY_SUFFIX = "/modify";

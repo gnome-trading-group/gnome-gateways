@@ -50,6 +50,11 @@ public final class RateBucket {
         return this.name;
     }
 
+    /** How long one token takes to come back, at the rate the bucket now holds. */
+    long intervalNanos() {
+        return this.intervalNanos;
+    }
+
     long burstTokens() {
         return this.burstTokens;
     }
@@ -58,7 +63,8 @@ public final class RateBucket {
     long headroomFor(final RequestClass requestClass) {
         return switch (requestClass) {
             case CANCEL -> 0;
-            case ORDER -> this.reserveTokens;
+            case CATCH_UP -> this.reserveTokens / 2;
+            case AMEND, NEW -> this.reserveTokens;
             case BACKGROUND -> this.reserveTokens + this.backgroundHeadroomTokens;
         };
     }

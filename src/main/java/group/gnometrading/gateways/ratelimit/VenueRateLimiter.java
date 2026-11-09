@@ -6,7 +6,6 @@ import group.gnometrading.networking.http.HTTPMethod;
 import group.gnometrading.networking.http.HTTPResponse;
 import group.gnometrading.networking.http.RequestGate;
 import group.gnometrading.strings.GnomeString;
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicIntegerArray;
@@ -44,7 +43,6 @@ public final class VenueRateLimiter implements RequestGate {
     static final long BACKGROUND_WAIT_NANOS = TimeUnit.SECONDS.toNanos(5);
 
     private static final int STATUS_TOO_MANY_REQUESTS = 429;
-    private static final int NO_BUCKET = -1;
     private static final long ABSENT = -1;
 
     private final VenueRateLimits limits;
@@ -56,12 +54,7 @@ public final class VenueRateLimiter implements RequestGate {
     private final RateBucket[] buckets;
     private final double[] baseRates;
 
-    private final HTTPMethod[] ruleMethods;
-    private final byte[][] rulePrefixes;
-    private final byte[][] ruleSuffixes;
-    private final int[] ruleBuckets;
-    private final long[] ruleCosts;
-    private final RequestClass[] ruleTypes;
+    private final RequestRules rules;
 
     private final int retryAfterHeader;
     private final int remainingHeader;
@@ -124,23 +117,7 @@ public final class VenueRateLimiter implements RequestGate {
                     now);
         }
 
-        final List<VenueRateLimits.Rule> rules = limits.rules();
-        this.ruleMethods = new HTTPMethod[rules.size()];
-        this.rulePrefixes = new byte[rules.size()][];
-        this.ruleSuffixes = new byte[rules.size()][];
-        this.ruleBuckets = new int[rules.size()];
-        this.ruleCosts = new long[rules.size()];
-        this.ruleTypes = new RequestClass[rules.size()];
-        for (int i = 0; i < rules.size(); i++) {
-            final VenueRateLimits.Rule rule = rules.get(i);
-            this.ruleMethods[i] = rule.method();
-            this.rulePrefixes[i] = rule.prefix().getBytes(StandardCharsets.US_ASCII);
-            this.ruleSuffixes[i] =
-                    rule.suffix() == null ? new byte[0] : rule.suffix().getBytes(StandardCharsets.US_ASCII);
-            this.ruleBuckets[i] = bucketIndex(specs, rule.bucket());
-            this.ruleCosts[i] = rule.cost();
-            this.ruleTypes[i] = rule.type();
-        }
+        this.rules = new RequestRules(limits);
 
         this.retryAfterHeader = limits.headerIndex(VenueRateLimits.RETRY_AFTER);
         this.remainingHeader = limits.headerIndex(VenueRateLimits.POLY_REMAINING);
@@ -167,10 +144,10 @@ public final class VenueRateLimiter implements RequestGate {
         if (response.isRefusedLocally()) {
             return;
         }
-        final int bucket = this.ruleBuckets[tag];
+        final int bucket = this.rules.bucket(tag);
         if (response.getStatusCode() == STATUS_TOO_MANY_REQUESTS) {
             onVenueRateLimited(tag, bucket, response);
-        } else if (bucket != NO_BUCKET && this.remainingHeader >= 0) {
+        } else if (bucket != RequestRules.NO_BUCKET && this.remainingHeader >= 0) {
             holdUntilVenueReset(bucket, response);
         }
     }
@@ -186,41 +163,22 @@ public final class VenueRateLimiter implements RequestGate {
     }
 
     int classify(final HTTPMethod method, final String path) {
-        int end = path.indexOf('?');
-        end = end < 0 ? path.length() : end;
-        for (int i = 0; i < this.ruleMethods.length; i++) {
-            if (methodMatches(i, method) && matches(path, end, this.rulePrefixes[i], this.ruleSuffixes[i])) {
-                return i;
-            }
-        }
-        throw new IllegalStateException("The last rule matches every request");
+        return this.rules.classify(method, path);
     }
 
     int classify(final HTTPMethod method, final GnomeString path) {
-        int end = path.length();
-        for (int i = 0; i < end; i++) {
-            if (path.byteAt(i) == '?') {
-                end = i;
-                break;
-            }
-        }
-        for (int i = 0; i < this.ruleMethods.length; i++) {
-            if (methodMatches(i, method) && matches(path, end, this.rulePrefixes[i], this.ruleSuffixes[i])) {
-                return i;
-            }
-        }
-        throw new IllegalStateException("The last rule matches every request");
+        return this.rules.classify(method, path);
     }
 
     /** Lets the request of {@code rule} through, waiting if its class may wait; {@link #REFUSE} if not. */
     int admit(final int rule) {
-        final int bucketIndex = this.ruleBuckets[rule];
-        if (bucketIndex == NO_BUCKET) {
+        final int bucketIndex = this.rules.bucket(rule);
+        if (bucketIndex == RequestRules.NO_BUCKET) {
             return rule;
         }
         final RateBucket bucket = this.buckets[bucketIndex];
-        final RequestClass type = this.ruleTypes[rule];
-        final long cost = this.ruleCosts[rule];
+        final RequestClass type = sharedClass(this.rules.type(rule));
+        final long cost = this.rules.cost(rule);
         final long headroom = bucket.headroomFor(type);
         final long start = this.clock.nanoTime();
         maybeRaiseBudget(bucketIndex, start);
@@ -230,7 +188,7 @@ public final class VenueRateLimiter implements RequestGate {
                 onAdmitted(type);
                 return rule;
             }
-            if (type == RequestClass.ORDER) {
+            if (type.isOrder()) {
                 return refuse(bucketIndex);
             }
             final long wait = nanosToWait(bucket, type, cost, headroom, now);
@@ -242,6 +200,14 @@ public final class VenueRateLimiter implements RequestGate {
             this.pause.accept(Math.max(1, wait));
             now = this.clock.nanoTime();
         }
+    }
+
+    /**
+     * Catch-up here is a listing's own lookups and recovery, which have no hurry over its orders the way an account's
+     * catch-up for every session does, so it waits as background work.
+     */
+    private static RequestClass sharedClass(final RequestClass type) {
+        return type == RequestClass.CATCH_UP ? RequestClass.BACKGROUND : type;
     }
 
     private static boolean tryTake(
@@ -267,7 +233,7 @@ public final class VenueRateLimiter implements RequestGate {
     }
 
     private void onAdmitted(final RequestClass type) {
-        if (type == RequestClass.ORDER && this.throttling) {
+        if (type.isOrder() && this.throttling) {
             endThrottling();
         }
     }
@@ -313,13 +279,13 @@ public final class VenueRateLimiter implements RequestGate {
         final long penalty = retryAfterSeconds < 0
                 ? DEFAULT_PENALTY_NANOS
                 : Math.min(MAX_PENALTY_NANOS, TimeUnit.SECONDS.toNanos(retryAfterSeconds));
-        if (bucket == NO_BUCKET) {
+        if (bucket == RequestRules.NO_BUCKET) {
             // A request the catalogue leaves unlimited: there is no budget of ours to lower or hold.
             this.logger.logf(
                     LogMessage.VENUE_RATE_LIMITED,
                     "%s answered 429 to a %s request it isn't known to limit",
                     this.limits.venue(),
-                    this.ruleTypes[rule]);
+                    this.rules.type(rule));
             return;
         }
         this.buckets[bucket].blockUntil(now + penalty);
@@ -328,7 +294,7 @@ public final class VenueRateLimiter implements RequestGate {
                 LogMessage.VENUE_RATE_LIMITED,
                 "%s answered 429 to a %s request: holding for %d ms, %s budget now %.0f%% of the venue's rate",
                 this.limits.venue(),
-                this.ruleTypes[rule],
+                this.rules.type(rule),
                 TimeUnit.NANOSECONDS.toMillis(penalty),
                 this.buckets[bucket].name(),
                 lowered * 100);
@@ -384,57 +350,5 @@ public final class VenueRateLimiter implements RequestGate {
 
     private void applyBudget(final int bucket, final long now) {
         this.buckets[bucket].setRate(this.baseRates[bucket] * this.budgets[bucket], now);
-    }
-
-    private boolean methodMatches(final int rule, final HTTPMethod method) {
-        return this.ruleMethods[rule] == null || this.ruleMethods[rule] == method;
-    }
-
-    private static boolean matches(final String path, final int end, final byte[] prefix, final byte[] suffix) {
-        if (end < prefix.length + suffix.length) {
-            return false;
-        }
-        for (int i = 0; i < prefix.length; i++) {
-            if (path.charAt(i) != prefix[i]) {
-                return false;
-            }
-        }
-        final int suffixStart = end - suffix.length;
-        for (int i = 0; i < suffix.length; i++) {
-            if (path.charAt(suffixStart + i) != suffix[i]) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private static boolean matches(final GnomeString path, final int end, final byte[] prefix, final byte[] suffix) {
-        if (end < prefix.length + suffix.length) {
-            return false;
-        }
-        for (int i = 0; i < prefix.length; i++) {
-            if (path.byteAt(i) != prefix[i]) {
-                return false;
-            }
-        }
-        final int suffixStart = end - suffix.length;
-        for (int i = 0; i < suffix.length; i++) {
-            if (path.byteAt(suffixStart + i) != suffix[i]) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private static int bucketIndex(final List<VenueRateLimits.Bucket> buckets, final String name) {
-        if (name == null) {
-            return NO_BUCKET;
-        }
-        for (int i = 0; i < buckets.size(); i++) {
-            if (buckets.get(i).name().equals(name)) {
-                return i;
-            }
-        }
-        throw new IllegalArgumentException("No rate-limit bucket " + name);
     }
 }

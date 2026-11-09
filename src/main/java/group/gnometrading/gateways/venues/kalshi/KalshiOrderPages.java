@@ -2,6 +2,7 @@ package group.gnometrading.gateways.venues.kalshi;
 
 import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.gateways.ratelimit.RateLimitedRetry;
+import group.gnometrading.gateways.ratelimit.RequestFailure;
 import group.gnometrading.networking.http.HTTPClient;
 import group.gnometrading.networking.http.HTTPProtocol;
 import group.gnometrading.networking.http.HTTPResponse;
@@ -47,10 +48,24 @@ final class KalshiOrderPages {
      * @return each page's {@code {"orders":[...],"cursor":...}} body
      */
     List<ByteBuffer> fetch(final String ticker, final String filter) throws IOException {
+        return fetchPages("?ticker=" + ticker + filter + "&limit=" + PAGE_LIMIT);
+    }
+
+    /**
+     * Every market's orders on the account, narrowed by {@code filter} as {@link #fetch}'s is.
+     *
+     * @param filter e.g. {@code "&min_ts=1791397312"}
+     */
+    List<ByteBuffer> fetchAccount(final String filter) throws IOException {
+        return fetchPages("?limit=" + PAGE_LIMIT + filter);
+    }
+
+    private List<ByteBuffer> fetchPages(final String query) throws IOException {
         final List<ByteBuffer> pages = new ArrayList<>();
         String cursor = "";
         do {
-            final String path = ORDERS_PATH + "?ticker=" + ticker + filter + "&limit=" + PAGE_LIMIT
+            final String path = ORDERS_PATH
+                    + query
                     + (cursor.isEmpty() ? "" : "&cursor=" + URLEncoder.encode(cursor, StandardCharsets.UTF_8));
             HTTPResponse response;
             int attempt = 0;
@@ -59,7 +74,7 @@ final class KalshiOrderPages {
                 response = getPage(path);
             } while (RateLimitedRetry.shouldRetry(response, attempt));
             if (!response.isSuccess() || response.getBody() == null) {
-                throw new IOException("Kalshi order list failed with status " + response.getStatusCode());
+                throw RequestFailure.of("Kalshi order list", response);
             }
             final ByteBuffer body = response.getBody();
             final ByteBuffer page = ByteBuffer.allocate(body.remaining());

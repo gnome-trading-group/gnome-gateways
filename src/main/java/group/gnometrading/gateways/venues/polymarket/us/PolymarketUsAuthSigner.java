@@ -1,10 +1,14 @@
 package group.gnometrading.gateways.venues.polymarket.us;
 
+import group.gnometrading.networking.crypto.Ed25519Signer;
 import group.gnometrading.strings.GnomeString;
+import group.gnometrading.utils.ByteBufferUtils;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.security.KeyFactory;
 import java.security.PrivateKey;
-import java.security.Signature;
+import java.security.interfaces.EdECPrivateKey;
 import java.security.spec.EdECPrivateKeySpec;
 import java.security.spec.NamedParameterSpec;
 import java.util.Arrays;
@@ -12,7 +16,8 @@ import java.util.Base64;
 
 /**
  * Signs Polymarket US API requests: base64 Ed25519 over {@code timestamp + METHOD + path}, sent
- * as {@code X-PM-Access-Key}, {@code X-PM-Timestamp} and {@code X-PM-Signature}.
+ * as {@code X-PM-Access-Key}, {@code X-PM-Timestamp} and {@code X-PM-Signature}. Signing allocates nothing; the
+ * timestamp and signature are kept as ASCII bytes for header values, and as strings only when asked for.
  *
  * <p>Not thread-safe — each reader and writer gets its own instance.
  */
@@ -23,26 +28,39 @@ public final class PolymarketUsAuthSigner {
     public static final String SIGNATURE_HEADER = "X-PM-Signature";
 
     private static final int SEED_LENGTH = 32;
-    private static final int SIG_BUF_SIZE = 64;
     // 13 (timestamp millis digits) + 6 (method) + path
     private static final int MSG_BUF_SIZE = 512;
+    private static final int MAX_TIMESTAMP_DIGITS = 20;
 
-    private final String apiKey;
-    private final Signature sig;
+    private String apiKey;
+    private byte[] apiKeyBytes;
+    private Ed25519Signer ed25519;
+    private final Base64.Encoder base64 = Base64.getEncoder();
     private final byte[] msgBuf = new byte[MSG_BUF_SIZE];
-    private final byte[] sigBuf = new byte[SIG_BUF_SIZE];
-
-    private String timestamp;
-    private String signature;
+    private final byte[] sigBuf = new byte[Ed25519Signer.SIGNATURE_LENGTH];
+    private final byte[] sigBase64 = new byte[4 * ((Ed25519Signer.SIGNATURE_LENGTH + 2) / 3)];
+    private final byte[] timestampBuf = new byte[MAX_TIMESTAMP_DIGITS];
+    private final ByteBuffer timestampBuffer = ByteBuffer.wrap(this.timestampBuf);
+    private int timestampLength;
+    private int sigBase64Length;
 
     public PolymarketUsAuthSigner(final String apiKey, final PrivateKey privateKey) throws IOException {
-        this.apiKey = apiKey;
-        try {
-            this.sig = Signature.getInstance("Ed25519");
-            this.sig.initSign(privateKey);
-        } catch (Exception e) {
-            throw new IOException("Failed to initialize Polymarket US auth signer", e);
+        rekey(apiKey, privateKey);
+    }
+
+    /** Signs with a new key from now on, e.g. after the venue refused the old one. On the signing thread. */
+    public void rekey(final String apiKey, final PrivateKey privateKey) throws IOException {
+        if (!(privateKey instanceof EdECPrivateKey edKey) || edKey.getBytes().isEmpty()) {
+            throw new IOException("Failed to initialize Polymarket US auth signer: not an Ed25519 private key");
         }
+        final Ed25519Signer replacement = new Ed25519Signer(edKey.getBytes().get());
+        if (this.ed25519 != null) {
+            this.ed25519.close();
+        }
+        this.ed25519 = replacement;
+        this.apiKey = apiKey;
+        this.apiKeyBytes = apiKey.getBytes(StandardCharsets.US_ASCII);
+        this.sigBase64Length = 0;
     }
 
     /**
@@ -65,21 +83,33 @@ public final class PolymarketUsAuthSigner {
     }
 
     public void sign(final long timestampMillis, final String method, final String path) throws IOException {
-        this.timestamp = Long.toString(timestampMillis);
-        int off = writeAscii(this.timestamp, 0);
+        int off = writeTimestamp(timestampMillis);
         off = writeAscii(method, off);
         off = writeAscii(path, off);
         doSign(off);
     }
 
     public void sign(final long timestampMillis, final String method, final GnomeString path) throws IOException {
-        this.timestamp = Long.toString(timestampMillis);
-        int off = writeAscii(this.timestamp, 0);
+        sign(timestampMillis, method, path, path.length());
+    }
+
+    /** Signs the first {@code pathLength} bytes of {@code path}: the venue verifies a path without its query. */
+    public void sign(final long timestampMillis, final String method, final GnomeString path, final int pathLength)
+            throws IOException {
+        int off = writeTimestamp(timestampMillis);
         off = writeAscii(method, off);
-        for (int i = 0; i < path.length(); i++) {
+        for (int i = 0; i < pathLength; i++) {
             this.msgBuf[off++] = path.byteAt(i);
         }
         doSign(off);
+    }
+
+    private int writeTimestamp(final long timestampMillis) {
+        this.timestampBuffer.clear();
+        ByteBufferUtils.putLongAscii(this.timestampBuffer, timestampMillis);
+        this.timestampLength = this.timestampBuffer.position();
+        System.arraycopy(this.timestampBuf, 0, this.msgBuf, 0, this.timestampLength);
+        return this.timestampLength;
     }
 
     private int writeAscii(final String value, final int offset) {
@@ -92,11 +122,9 @@ public final class PolymarketUsAuthSigner {
 
     private void doSign(final int len) throws IOException {
         try {
-            this.sig.update(this.msgBuf, 0, len);
-            final int sigLen = this.sig.sign(this.sigBuf, 0, SIG_BUF_SIZE);
-            // Allocates one String per request — acceptable on the connect / HTTP I/O path
-            this.signature = Base64.getEncoder().encodeToString(Arrays.copyOf(this.sigBuf, sigLen));
-        } catch (Exception e) {
+            this.ed25519.sign(this.msgBuf, 0, len, this.sigBuf, 0);
+            this.sigBase64Length = this.base64.encode(this.sigBuf, this.sigBase64);
+        } catch (final RuntimeException e) {
             throw new IOException("Failed to compute Polymarket US auth signature", e);
         }
     }
@@ -105,11 +133,35 @@ public final class PolymarketUsAuthSigner {
         return this.apiKey;
     }
 
-    public String signature() {
-        return this.signature;
+    public byte[] apiKeyBytes() {
+        return this.apiKeyBytes;
     }
 
+    /** The last signature as a string; allocates, so for the blocking client, not the order path. */
+    public String signature() {
+        return new String(this.sigBase64, 0, this.sigBase64Length, StandardCharsets.US_ASCII);
+    }
+
+    /** The last signature's base64 bytes, the first {@link #signatureLength()} of them. */
+    public byte[] signatureBytes() {
+        return this.sigBase64;
+    }
+
+    public int signatureLength() {
+        return this.sigBase64Length;
+    }
+
+    /** The last timestamp as a string; allocates, so for the blocking client, not the order path. */
     public String timestamp() {
-        return this.timestamp;
+        return new String(this.timestampBuf, 0, this.timestampLength, StandardCharsets.US_ASCII);
+    }
+
+    /** The last timestamp's ASCII digits, the first {@link #timestampLength()} of them. */
+    public byte[] timestampBytes() {
+        return this.timestampBuf;
+    }
+
+    public int timestampLength() {
+        return this.timestampLength;
     }
 }

@@ -3,6 +3,7 @@ package group.gnometrading.gateways.venues.polymarket.intl;
 import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.gateways.orders.recovery.VenueOrder;
 import group.gnometrading.gateways.orders.recovery.VenueOrderQuery;
+import group.gnometrading.gateways.ratelimit.RequestFailure;
 import group.gnometrading.networking.http.HTTPClient;
 import group.gnometrading.networking.http.HTTPResponse;
 import group.gnometrading.schemas.Statics;
@@ -48,14 +49,23 @@ public final class PolymarketIntlVenueOrderQuery implements VenueOrderQuery {
 
     @Override
     public List<VenueOrder> listOpenOrders(final Listing listing) throws IOException {
+        return openOrders("?asset_id=" + tokenId(listing));
+    }
+
+    /** Every open order on the account, in any market. */
+    List<VenueOrder> listAccountOpenOrders() throws IOException {
+        return openOrders("");
+    }
+
+    /** @param filter the query without its cursor: empty, or {@code ?name=value...} */
+    private List<VenueOrder> openOrders(final String filter) throws IOException {
         final List<VenueOrder> orders = new ArrayList<>();
         String cursor = "";
         do {
-            final String path =
-                    ORDERS_PATH + "?asset_id=" + tokenId(listing) + (cursor.isEmpty() ? "" : "&next_cursor=" + cursor);
+            final String path = ORDERS_PATH + filter + cursorParameter(filter, cursor);
             final HTTPResponse response = get(ORDERS_PATH, path);
             if (!response.isSuccess() || response.getBody() == null) {
-                throw new IOException("Polymarket order list failed with status " + response.getStatusCode());
+                throw RequestFailure.of("Polymarket order list", response);
             }
             cursor = readPage(response.getBody(), orders);
         } while (!cursor.isEmpty() && !cursor.equals(END_CURSOR));
@@ -71,11 +81,19 @@ public final class PolymarketIntlVenueOrderQuery implements VenueOrderQuery {
             return Optional.empty();
         }
         if (!response.isSuccess() || response.getBody() == null) {
-            throw new IOException("Polymarket order lookup failed with status " + response.getStatusCode());
+            throw RequestFailure.of("Polymarket order lookup", response);
         }
-        try (var root = this.jsonDecoder.wrap(response.getBody());
-                var order = root.asObject()) {
-            return Optional.of(readOrder(order));
+        try (var root = this.jsonDecoder.wrap(response.getBody())) {
+            // An order the CLOB doesn't know is answered 200 with a bare null, not 404.
+            if (root.isNull()) {
+                return Optional.empty();
+            }
+            try (var order = root.asObject()) {
+                return Optional.of(readOrder(order));
+            }
+        } catch (final RuntimeException e) {
+            // The decoder trusts its input; a body that isn't an order object is the venue's fault, not ours.
+            throw new IOException("Polymarket order lookup answered something unreadable: " + e, e);
         }
     }
 
@@ -94,14 +112,22 @@ public final class PolymarketIntlVenueOrderQuery implements VenueOrderQuery {
      * our orders can be matched by a taker on the other outcome.
      */
     List<ByteBuffer> tradePages(final String conditionId, final long afterSeconds) throws IOException {
+        return trades("?market=" + conditionId + "&after=" + afterSeconds);
+    }
+
+    /** As {@link #tradePages}, for every market on the account. */
+    List<ByteBuffer> accountTradePages(final long afterSeconds) throws IOException {
+        return trades("?after=" + afterSeconds);
+    }
+
+    private List<ByteBuffer> trades(final String filter) throws IOException {
         final List<ByteBuffer> pages = new ArrayList<>();
         String cursor = "";
         do {
-            final String path = TRADES_PATH + "?market=" + conditionId + "&after=" + afterSeconds
-                    + (cursor.isEmpty() ? "" : "&next_cursor=" + cursor);
+            final String path = TRADES_PATH + filter + cursorParameter(filter, cursor);
             final HTTPResponse response = get(TRADES_PATH, path);
             if (!response.isSuccess() || response.getBody() == null) {
-                throw new IOException("Polymarket trade list failed with status " + response.getStatusCode());
+                throw RequestFailure.of("Polymarket trade list", response);
             }
             final ByteBuffer body = response.getBody();
             final ByteBuffer page = ByteBuffer.allocate(body.remaining());
@@ -110,6 +136,13 @@ public final class PolymarketIntlVenueOrderQuery implements VenueOrderQuery {
             cursor = readPage(page.duplicate(), null);
         } while (!cursor.isEmpty() && !cursor.equals(END_CURSOR));
         return pages;
+    }
+
+    private static String cursorParameter(final String filter, final String cursor) {
+        if (cursor.isEmpty()) {
+            return "";
+        }
+        return (filter.isEmpty() ? "?" : "&") + "next_cursor=" + cursor;
     }
 
     private HTTPResponse get(final String signedPath, final String path) throws IOException {

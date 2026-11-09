@@ -829,11 +829,15 @@ class KalshiOutboundWriterTest {
     }
 
     @Test
-    void cancelOrder_UnknownOrderId_IsNoOp() throws Exception {
+    void cancelOrder_UnknownOrderId_IsRefusedWithoutTouchingTheVenue() throws Exception {
         publishCancel(999L);
         writer.doWork();
 
         verifyNoInteractions(httpClient);
+        final List<OrderContext> reports = drainQueue(writerReportQueue);
+        assertEquals(1, reports.size(), "answered, so the OMS never waits on it");
+        assertEquals(ExecType.CANCEL_REJECT, reports.get(0).execType);
+        assertEquals(RejectReason.UNKNOWN_ORDER, reports.get(0).rejectReason);
     }
 
     // ========== Amend order (native) ==========
@@ -1115,11 +1119,15 @@ class KalshiOutboundWriterTest {
     }
 
     @Test
-    void amendOrder_UnknownOrderId_IsNoOp() throws Exception {
+    void amendOrder_UnknownOrderId_IsRefusedWithoutTouchingTheVenue() throws Exception {
         publishModify(999L, price("0.60"), qty("5.0"));
         writer.doWork();
 
         verifyNoInteractions(httpClient);
+        final List<OrderContext> reports = drainQueue(writerReportQueue);
+        assertEquals(1, reports.size(), "answered, so the OMS never waits on it");
+        assertEquals(ExecType.CANCEL_REJECT, reports.get(0).execType);
+        assertEquals(RejectReason.UNKNOWN_ORDER, reports.get(0).rejectReason);
     }
 
     // ========== POST_ONLY flag ==========
@@ -1169,7 +1177,7 @@ class KalshiOutboundWriterTest {
                 new Security(3, "TEST", null, null, null, null, null, null, false, false, 0L, 0L, true, 0),
                 exchangeSecurityId,
                 "KALSHI-TEST");
-        return new KalshiOutboundWriter(
+        final KalshiOutboundWriter writer = new KalshiOutboundWriter(
                 logger,
                 buf,
                 newOrderQueue,
@@ -1181,6 +1189,9 @@ class KalshiOutboundWriterTest {
                 () -> FIXED_NANO,
                 listing,
                 sessionTag);
+        // The settle wait itself is OutboundSocketWriterTest's; here a lookup's miss is believed at once.
+        writer.readSettleNanos(0);
+        return writer;
     }
 
     private void mockPostSuccess(final ByteBuffer body) throws Exception {

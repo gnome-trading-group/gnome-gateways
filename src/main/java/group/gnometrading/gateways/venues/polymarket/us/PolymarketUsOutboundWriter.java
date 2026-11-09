@@ -1,25 +1,24 @@
 package group.gnometrading.gateways.venues.polymarket.us;
 
-import group.gnometrading.codecs.json.JsonDecoder;
-import group.gnometrading.codecs.json.JsonEncoder;
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
-import group.gnometrading.gateways.orders.IdleConnections;
+import group.gnometrading.gateways.orders.CancelResult;
+import group.gnometrading.gateways.orders.LookupResult;
 import group.gnometrading.gateways.orders.OrderContext;
-import group.gnometrading.gateways.orders.OutboundSocketWriter;
+import group.gnometrading.gateways.orders.SubmitPolicy;
+import group.gnometrading.gateways.orders.SubmitResult;
 import group.gnometrading.gateways.orders.VenueRejectText;
+import group.gnometrading.gateways.outbound.IdleConnections;
+import group.gnometrading.gateways.outbound.OutboundSocketWriter;
 import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.networking.http.HTTPClient;
 import group.gnometrading.networking.http.HTTPResponse;
 import group.gnometrading.schemas.OrderType;
 import group.gnometrading.schemas.RejectReason;
-import group.gnometrading.schemas.Statics;
 import group.gnometrading.schemas.TimeInForce;
 import group.gnometrading.sequencer.SequencedRingBuffer;
 import group.gnometrading.sm.Listing;
 import group.gnometrading.strings.MutableString;
-import group.gnometrading.utils.ByteBufferUtils;
-import group.gnometrading.utils.FixedPointAscii;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -47,7 +46,6 @@ public final class PolymarketUsOutboundWriter extends OutboundSocketWriter {
     private static final int MAX_LOGGED_REASON_CHARS = 500;
     // IOCs whose outcome a lost answer left unknown; more than this and every IOC is refused until they settle.
     private static final int MAX_UNRESOLVED_IMMEDIATE = 16;
-    private static final byte[] IMMEDIATE_ID_PREFIX = "ioc-".getBytes(StandardCharsets.US_ASCII);
 
     private final Logger logger;
     private final HTTPClient httpClient;
@@ -56,21 +54,15 @@ public final class PolymarketUsOutboundWriter extends OutboundSocketWriter {
     private final PolymarketUsAuthSigner signer;
     // Kept to sign requests that may be retried; a method reference made per call would allocate.
     private final LongSupplier epochMillisSupplier = this::epochMillis;
-    private final PolymarketUsMarketInfo marketInfo;
-    private final PolymarketUsListing venueListing;
+    private final PolymarketUsMarket market;
+    private final PolymarketUsOrderCodec codec = new PolymarketUsOrderCodec();
     private final EpochNanoClock clock;
     private final int sessionSlot;
 
     private final byte[] jsonBodyBuf = new byte[1 << 11]; // 2 KiB
     private final ByteBuffer jsonBodyBuffer = ByteBuffer.wrap(jsonBodyBuf);
-    private final JsonEncoder jsonEncoder = new JsonEncoder();
-    private final JsonDecoder jsonDecoder = new JsonDecoder();
     private int jsonBodyLength;
-    private final byte[] cancelBody;
-    private final MutableString orderPath = new MutableString(PolymarketUsRequests.ORDER_PATH.length()
-            + OrderContext.EXCHANGE_ORDER_ID_MAX_LENGTH
-            + Math.max(PolymarketUsRequests.CANCEL_SUFFIX.length(), PolymarketUsRequests.MODIFY_SUFFIX.length()));
-    private final PolymarketUsOrderFields lookupFields = new PolymarketUsOrderFields();
+    private final MutableString orderPath = new MutableString(PolymarketUsOrderCodec.MAX_PATH_LENGTH);
 
     private final long[] unresolvedImmediate = new long[MAX_UNRESOLVED_IMMEDIATE];
     private int unresolvedImmediateCount;
@@ -95,13 +87,9 @@ public final class PolymarketUsOutboundWriter extends OutboundSocketWriter {
         this.idleConnections =
                 new IdleConnections(logger, "Polymarket US", httpClient, apiHost, MAX_IDLE_CONNECTION_NANOS);
         this.signer = signer;
-        this.marketInfo = marketInfo;
-        this.venueListing = new PolymarketUsListing(listing);
+        this.market = new PolymarketUsMarket(listing, marketInfo);
         this.clock = clock;
         this.sessionSlot = PolymarketUsStamps.slot(sessionTag);
-        this.jsonEncoder.wrap(this.jsonBodyBuffer);
-        this.cancelBody =
-                ("{\"marketSlug\":\"" + this.venueListing.marketSlug() + "\"}").getBytes(StandardCharsets.US_ASCII);
     }
 
     @Override
@@ -121,10 +109,10 @@ public final class PolymarketUsOutboundWriter extends OutboundSocketWriter {
             return false;
         }
         final long price = this.order.decoder.price();
-        if (!validTerms(price, this.order.decoder.size())) {
+        if (!this.market.validTerms(price, this.order.decoder.size())) {
             return false;
         }
-        final long venuePrice = this.venueListing.convertPrice(price);
+        final long venuePrice = this.market.listing().convertPrice(price);
         final TimeInForce tif = this.order.decoder.timeInForce();
         if (tif == TimeInForce.FILL_OR_KILL) {
             // The venue takes a FOK as an IOC (verified live), which can fill in part.
@@ -137,25 +125,18 @@ public final class PolymarketUsOutboundWriter extends OutboundSocketWriter {
             if (twinOfUnresolvedImmediate(ctx)) {
                 return false;
             }
-            writeImmediateId(ctx);
+            PolymarketUsOrderCodec.writeImmediateId(this.sessionSlot, ctx);
         } else {
-            final long stamp = PolymarketUsStamps.stampMillis(this.sessionSlot, ctx.clientOidCounter);
-            ctx.correlationIdLength = PolymarketUsStamps.write(stamp, ctx.correlationIdBytes, 0);
+            PolymarketUsOrderCodec.writeStampId(this.sessionSlot, ctx);
         }
-        buildOrderJson(ctx, venuePrice, immediate);
+        this.jsonBodyLength = this.codec.buildOrder(
+                this.market,
+                ctx,
+                venuePrice,
+                ctx.side,
+                this.order.decoder.flags().postOnly(),
+                this.jsonBodyBuffer);
         return true;
-    }
-
-    /**
-     * Whether the venue would take the price and size as they are: it cuts an off-tick price down to the tick, and a
-     * quantity down to the market's lot, rather than refusing them.
-     */
-    private boolean validTerms(final long price, final long size) {
-        return price > 0
-                && price < Statics.PRICE_SCALING_FACTOR
-                && price % this.marketInfo.tickSize() == 0
-                && size > 0
-                && size % this.marketInfo.lotSize() == 0;
     }
 
     @Override
@@ -172,46 +153,15 @@ public final class PolymarketUsOutboundWriter extends OutboundSocketWriter {
     }
 
     private SubmitResult readSubmitAnswer(final HTTPResponse response, final OrderContext ctx) {
+        final int status = response.getStatusCode();
         if (!response.isSuccess()) {
-            final int status = response.getStatusCode();
             logRejection("submit", ctx, status, response);
-            final SubmitResult result = classifyFailure(status);
-            if (result == SubmitResult.REJECTED) {
-                ctx.rejectReason = VenueRejectText.POLYMARKET_US.classify(response.getBody());
-            }
-            return result;
         }
-        // An order the exchange refuses still gets an id, and its rejection comes on the order stream: the reader
-        // reports it, as it does everything else that happens to the order.
-        if (!readOrderId(response, ctx)) {
-            return SubmitResult.UNKNOWN;
+        final SubmitResult result = this.codec.readSubmitAnswer(response, status, ctx);
+        if (result == SubmitResult.ACCEPTED) {
+            enqueueVenueOrderId(ctx);
         }
-        enqueueVenueOrderId(ctx);
-        return SubmitResult.ACCEPTED;
-    }
-
-    /** Takes the venue's id from {@code {"id":"...","executions":[...]}}. */
-    private boolean readOrderId(final HTTPResponse response, final OrderContext ctx) {
-        final ByteBuffer body = response.getBody();
-        if (body == null || !body.hasRemaining()) {
-            return false;
-        }
-        ctx.exchangeOrderIdLength = 0;
-        try (var root = this.jsonDecoder.wrap(body);
-                var obj = root.asObject()) {
-            while (obj.hasNextKey()) {
-                try (var entry = obj.nextKey()) {
-                    if (entry.getName().equals("id") && !entry.isNull()) {
-                        final var id = entry.asString();
-                        ctx.exchangeOrderIdLength = Math.min(id.length(), OrderContext.EXCHANGE_ORDER_ID_MAX_LENGTH);
-                        for (int i = 0; i < ctx.exchangeOrderIdLength; i++) {
-                            ctx.exchangeOrderIdBytes[i] = id.byteAt(i);
-                        }
-                    }
-                }
-            }
-        }
-        return ctx.exchangeOrderIdLength > 0;
+        return result;
     }
 
     /**
@@ -219,84 +169,49 @@ public final class PolymarketUsOutboundWriter extends OutboundSocketWriter {
      * way, or may have filled at once, so a miss settles nothing. An IOC can't be looked up.
      */
     @Override
-    protected SubmitResult findOrder(final OrderContext ctx) throws Exception {
-        if (isImmediate(ctx)) {
+    protected LookupResult findOrder(final OrderContext ctx) throws Exception {
+        if (PolymarketUsOrderCodec.isImmediate(ctx)) {
             // Asked only after a submit with no clear answer, however it failed.
             recordUnresolvedImmediate(ctx);
-            return SubmitResult.UNKNOWN;
+            return LookupResult.UNKNOWN;
         }
         final HTTPResponse response = PolymarketUsRequests.get(
                 this.httpClient,
                 this.apiHost,
                 this.signer,
                 this.epochMillisSupplier,
-                PolymarketUsRequests.OPEN_ORDERS_PATH + "?slugs=" + this.venueListing.marketSlug());
+                PolymarketUsRequests.OPEN_ORDERS_PATH + "?slugs=" + this.market.marketSlug());
         if (!response.isSuccess() || response.getBody() == null) {
-            return SubmitResult.UNKNOWN;
+            return LookupResult.UNKNOWN;
         }
         final long stamp = PolymarketUsStamps.stampMillis(this.sessionSlot, ctx.clientOidCounter);
-        if (!findOpenOrder(response.getBody(), stamp, ctx)) {
-            return SubmitResult.UNKNOWN;
+        if (!this.codec.findOpenOrder(response.getBody(), stamp, ctx)) {
+            return LookupResult.UNKNOWN;
         }
         enqueueVenueOrderId(ctx);
-        return SubmitResult.ACCEPTED;
-    }
-
-    private boolean findOpenOrder(final ByteBuffer body, final long stamp, final OrderContext ctx) {
-        boolean found = false;
-        try (var root = this.jsonDecoder.wrap(body);
-                var obj = root.asObject()) {
-            while (obj.hasNextKey()) {
-                try (var entry = obj.nextKey()) {
-                    if (entry.getName().equals("orders") && !entry.isNull()) {
-                        found = scanOrders(entry, stamp, ctx);
-                    }
-                }
-            }
-        }
-        return found;
-    }
-
-    private boolean scanOrders(final JsonDecoder.JsonNode orders, final long stamp, final OrderContext ctx) {
-        boolean found = false;
-        try (var list = orders.asArray()) {
-            while (list.hasNextItem()) {
-                try (var item = list.nextItem();
-                        var order = item.asObject()) {
-                    this.lookupFields.reset();
-                    this.lookupFields.readOrder(order);
-                    if (!found && this.lookupFields.goodTillMillis == stamp) {
-                        ctx.exchangeOrderIdLength = this.lookupFields.orderIdLength;
-                        System.arraycopy(
-                                this.lookupFields.orderId, 0, ctx.exchangeOrderIdBytes, 0, ctx.exchangeOrderIdLength);
-                        found = true;
-                    }
-                }
-            }
-        }
-        return found;
+        return LookupResult.FOUND;
     }
 
     @Override
     protected CancelResult cancelOrder(final OrderContext ctx) throws Exception {
-        if (ctx.exchangeOrderIdLength == 0 && findOrder(ctx) != SubmitResult.ACCEPTED) {
+        if (ctx.exchangeOrderIdLength == 0 && findOrder(ctx) != LookupResult.FOUND) {
             // The OMS gets the same answer as for a cancel that never reached the venue.
             throw new IOException("Polymarket US has no order "
                     + new String(ctx.correlationIdBytes, 0, ctx.correlationIdLength, StandardCharsets.US_ASCII)
                     + " to cancel");
         }
-        buildOrderPath(ctx, PolymarketUsRequests.CANCEL_SUFFIX);
+        PolymarketUsOrderCodec.orderPath(ctx, PolymarketUsRequests.CANCEL_SUFFIX, this.orderPath);
         final HTTPResponse response = PolymarketUsRequests.post(
                 this.httpClient,
                 this.apiHost,
                 this.signer,
                 epochMillis(),
                 this.orderPath,
-                this.cancelBody,
-                this.cancelBody.length);
+                this.market.cancelBody(),
+                this.market.cancelBody().length);
         if (!response.isSuccess()) {
             logRejection("cancel", ctx, response.getStatusCode(), response);
-            return classifyCancelFailure(response);
+            return SubmitPolicy.classifyCancelFailure(response);
         }
         return CancelResult.ACCEPTED;
     }
@@ -311,21 +226,28 @@ public final class PolymarketUsOutboundWriter extends OutboundSocketWriter {
     protected void handleModifyOrder() throws Exception {
         final OrderContext ctx = getActiveOrder(this.modifyOrder.getClientOidCounter());
         if (ctx == null) {
+            rejectUnknownModify();
             return;
         }
         final long price = this.modifyOrder.decoder.price();
         final long size = this.modifyOrder.decoder.size();
-        if (isImmediate(ctx) || !validTerms(price, size)) {
+        if (PolymarketUsOrderCodec.isImmediate(ctx) || !this.market.validTerms(price, size)) {
             enqueueCancelReject(ctx, RejectReason.GATEWAY_REJECTED);
             return;
         }
-        if (ctx.exchangeOrderIdLength == 0 && findOrder(ctx) != SubmitResult.ACCEPTED) {
+        if (ctx.exchangeOrderIdLength == 0 && findOrder(ctx) != LookupResult.FOUND) {
             enqueueCancelReject(ctx, RejectReason.UNKNOWN);
             return;
         }
-        final long venuePrice = this.venueListing.convertPrice(price);
-        buildModifyJson(ctx, venuePrice, size, this.modifyOrder.decoder.flags().postOnly());
-        buildOrderPath(ctx, PolymarketUsRequests.MODIFY_SUFFIX);
+        final long venuePrice = this.market.listing().convertPrice(price);
+        this.jsonBodyLength = this.codec.buildModify(
+                this.market,
+                ctx,
+                venuePrice,
+                size,
+                this.modifyOrder.decoder.flags().postOnly(),
+                this.jsonBodyBuffer);
+        PolymarketUsOrderCodec.orderPath(ctx, PolymarketUsRequests.MODIFY_SUFFIX, this.orderPath);
         final HTTPResponse response = PolymarketUsRequests.post(
                 this.httpClient,
                 this.apiHost,
@@ -336,119 +258,12 @@ public final class PolymarketUsOutboundWriter extends OutboundSocketWriter {
                 this.jsonBodyLength);
         if (!response.isSuccess()) {
             logRejection("modify", ctx, response.getStatusCode(), response);
-            enqueueCancelReject(ctx, rejectReasonFor(response, VenueRejectText.POLYMARKET_US));
+            enqueueCancelReject(ctx, SubmitPolicy.rejectReasonFor(response, VenueRejectText.POLYMARKET_US));
             return;
         }
         ctx.originalQty = size;
         ctx.limitPrice = venuePrice;
         enqueueAmendAccepted(ctx, size, OrderContext.QTY_ABSENT, OrderContext.QTY_ABSENT);
-    }
-
-    /** {@code /v1/order/{venue id}{suffix}}, into the reused path. */
-    private void buildOrderPath(final OrderContext ctx, final String suffix) {
-        this.orderPath.reset();
-        for (int i = 0; i < PolymarketUsRequests.ORDER_PATH.length(); i++) {
-            this.orderPath.append((byte) PolymarketUsRequests.ORDER_PATH.charAt(i));
-        }
-        for (int i = 0; i < ctx.exchangeOrderIdLength; i++) {
-            this.orderPath.append(ctx.exchangeOrderIdBytes[i]);
-        }
-        for (int i = 0; i < suffix.length(); i++) {
-            this.orderPath.append((byte) suffix.charAt(i));
-        }
-    }
-
-    private void buildModifyJson(
-            final OrderContext ctx, final long venuePrice, final long size, final boolean postOnly) {
-        this.jsonBodyBuffer.clear();
-        this.jsonEncoder.writeObjectStart();
-        this.jsonEncoder
-                .writeObjectEntry("marketSlug", this.venueListing.marketSlug())
-                .writeComma();
-        writePriceAndQuantity(venuePrice, size);
-        this.jsonEncoder.writeObjectEntry("tif", "TIME_IN_FORCE_GOOD_TILL_DATE").writeComma();
-        writeGoodTillTime(ctx);
-        this.jsonEncoder.writeObjectEntry("participateDontInitiate", postOnly);
-        this.jsonEncoder.writeObjectEnd();
-        this.jsonBodyLength = this.jsonBodyBuffer.position();
-    }
-
-    private void writePriceAndQuantity(final long venuePrice, final long size) {
-        this.jsonEncoder.writeString("price").writeColon().writeObjectStart();
-        this.jsonEncoder.writeString("value").writeColon();
-        this.jsonBodyBuffer.put((byte) '"');
-        FixedPointAscii.put(this.jsonBodyBuffer, venuePrice, Statics.PRICE_SCALING_FACTOR);
-        this.jsonBodyBuffer.put((byte) '"');
-        this.jsonEncoder.writeComma();
-        this.jsonEncoder.writeObjectEntry("currency", "USD");
-        this.jsonEncoder.writeObjectEnd().writeComma();
-        this.jsonEncoder.writeString("quantity").writeColon();
-        FixedPointAscii.put(this.jsonBodyBuffer, size, Statics.SIZE_SCALING_FACTOR);
-        this.jsonEncoder.writeComma();
-    }
-
-    private void writeGoodTillTime(final OrderContext ctx) {
-        this.jsonEncoder.writeString("goodTillTime").writeColon();
-        this.jsonBodyBuffer.put((byte) '"');
-        this.jsonBodyBuffer.put(ctx.correlationIdBytes, 0, ctx.correlationIdLength);
-        this.jsonBodyBuffer.put((byte) '"');
-        this.jsonEncoder.writeComma();
-    }
-
-    private void buildOrderJson(final OrderContext ctx, final long venuePrice, final boolean immediate) {
-        this.jsonBodyBuffer.clear();
-        this.jsonEncoder.writeObjectStart();
-        this.jsonEncoder
-                .writeObjectEntry("marketSlug", this.venueListing.marketSlug())
-                .writeComma();
-        this.jsonEncoder.writeObjectEntry("type", "ORDER_TYPE_LIMIT").writeComma();
-        writePriceAndQuantity(venuePrice, ctx.originalQty);
-        if (immediate) {
-            this.jsonEncoder
-                    .writeObjectEntry("tif", "TIME_IN_FORCE_IMMEDIATE_OR_CANCEL")
-                    .writeComma();
-        } else {
-            this.jsonEncoder
-                    .writeObjectEntry("tif", "TIME_IN_FORCE_GOOD_TILL_DATE")
-                    .writeComma();
-            writeGoodTillTime(ctx);
-        }
-        this.jsonEncoder
-                .writeObjectEntry("intent", PolymarketUsListing.intentName(this.venueListing.intent(ctx.side)))
-                .writeComma();
-        this.jsonEncoder
-                .writeObjectEntry("manualOrderIndicator", "MANUAL_ORDER_INDICATOR_AUTOMATIC")
-                .writeComma();
-        this.jsonEncoder
-                .writeObjectEntry(
-                        "participateDontInitiate", this.order.decoder.flags().postOnly())
-                .writeComma();
-        // Waits for an IOC's outcome, so its answer is final. A resting order would wait up to ten seconds.
-        this.jsonEncoder.writeObjectEntry("synchronousExecution", immediate);
-        this.jsonEncoder.writeObjectEnd();
-        this.jsonBodyLength = this.jsonBodyBuffer.position();
-    }
-
-    /** {@code ioc-{slot}-{counter}}: never sent, so only unique among this reader's orders. */
-    private void writeImmediateId(final OrderContext ctx) {
-        final ByteBuffer id = ByteBuffer.wrap(ctx.correlationIdBytes);
-        id.put(IMMEDIATE_ID_PREFIX);
-        ByteBufferUtils.putLongAscii(id, this.sessionSlot);
-        id.put((byte) '-');
-        ByteBufferUtils.putLongAscii(id, ctx.clientOidCounter);
-        ctx.correlationIdLength = id.position();
-    }
-
-    static boolean isImmediate(final OrderContext ctx) {
-        if (ctx.correlationIdLength < IMMEDIATE_ID_PREFIX.length) {
-            return false;
-        }
-        for (int i = 0; i < IMMEDIATE_ID_PREFIX.length; i++) {
-            if (ctx.correlationIdBytes[i] != IMMEDIATE_ID_PREFIX[i]) {
-                return false;
-            }
-        }
-        return true;
     }
 
     /**

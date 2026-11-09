@@ -32,9 +32,22 @@ public final class PolymarketUsStamps {
 
     private PolymarketUsStamps() {}
 
-    /** A session's slot, from the tag that names it. */
+    /** A session's slot, from the tag that names it: for a session that trades the venue itself. */
     public static int slot(final String sessionTag) {
         return Math.floorMod(sessionTag.hashCode(), SLOTS);
+    }
+
+    /**
+     * A session's slot behind the order gateway, from its registry {@code session_seq}: never reused, so a slot repeats
+     * only after {@link #SLOTS} sessions, and two sessions trading at once never share one unless that far apart.
+     */
+    public static int slot(final long sessionSeq) {
+        return (int) Math.floorMod(sessionSeq, (long) SLOTS);
+    }
+
+    /** Whether a session's {@code counter}th order gets a stamp of its own; past the range it would repeat its first. */
+    public static boolean counterFits(final long counter) {
+        return counter > 0 && counter < COUNTER_RANGE;
     }
 
     /** The stamp of the {@code counter}th order of the session in {@code slot}, in epoch millis. */
