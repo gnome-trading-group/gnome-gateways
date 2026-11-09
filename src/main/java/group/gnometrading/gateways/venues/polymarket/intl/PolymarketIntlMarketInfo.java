@@ -19,9 +19,30 @@ import java.nio.ByteBuffer;
  * @param negRisk whether orders settle through the neg-risk exchange
  * @param takerOrderDelay whether the venue holds incoming taker orders briefly
  * @param minOrderAgeSeconds how long an order must rest before it can be cancelled
+ * @param firstTokenId the token of the market's first outcome, which the second's prices complement; null if the
+ *     venue didn't list its tokens
  */
 public record PolymarketIntlMarketInfo(
-        long tickSize, long minOrderSize, boolean negRisk, boolean takerOrderDelay, int minOrderAgeSeconds) {
+        long tickSize,
+        long minOrderSize,
+        boolean negRisk,
+        boolean takerOrderDelay,
+        int minOrderAgeSeconds,
+        String firstTokenId) {
+
+    public PolymarketIntlMarketInfo(
+            final long tickSize,
+            final long minOrderSize,
+            final boolean negRisk,
+            final boolean takerOrderDelay,
+            final int minOrderAgeSeconds) {
+        this(tickSize, minOrderSize, negRisk, takerOrderDelay, minOrderAgeSeconds, null);
+    }
+
+    /** Whether {@code tokenId} is the market's second outcome, whose price is one minus the first's. */
+    public boolean isSecondOutcome(final String tokenId) {
+        return this.firstTokenId != null && !this.firstTokenId.equals(tokenId);
+    }
 
     /** The order-signing version this gateway implements; the venue reports its own at {@code /version}. */
     public static final int SUPPORTED_CLOB_VERSION = 2;
@@ -92,6 +113,7 @@ public record PolymarketIntlMarketInfo(
         private boolean negRisk;
         private boolean takerOrderDelay;
         private int minOrderAgeSeconds;
+        private String firstTokenId;
 
         void accept(final JsonDecoder.JsonNode entry) {
             final GnomeString name = entry.getName();
@@ -105,14 +127,41 @@ public record PolymarketIntlMarketInfo(
                 takerOrderDelay = entry.asBoolean();
             } else if (name.equals("oas")) {
                 minOrderAgeSeconds = entry.asInt();
+            } else if (name.equals("t")) {
+                firstTokenId = firstToken(entry);
             }
+        }
+
+        private static String firstToken(final JsonDecoder.JsonNode tokens) {
+            try (var list = tokens.asArray()) {
+                if (!list.hasNextItem()) {
+                    return null;
+                }
+                try (var item = list.nextItem()) {
+                    return tokenOf(item);
+                }
+            }
+        }
+
+        private static String tokenOf(final JsonDecoder.JsonNode item) {
+            try (var token = item.asObject()) {
+                while (token.hasNextKey()) {
+                    try (var field = token.nextKey()) {
+                        if (field.getName().equals("t")) {
+                            return field.asString().toString();
+                        }
+                    }
+                }
+            }
+            return null;
         }
 
         PolymarketIntlMarketInfo build() {
             if (tickSize <= 0 || minOrderSize < 0) {
                 throw new IllegalStateException("Polymarket market info is missing its tick size or minimum size");
             }
-            return new PolymarketIntlMarketInfo(tickSize, minOrderSize, negRisk, takerOrderDelay, minOrderAgeSeconds);
+            return new PolymarketIntlMarketInfo(
+                    tickSize, minOrderSize, negRisk, takerOrderDelay, minOrderAgeSeconds, firstTokenId);
         }
     }
 }

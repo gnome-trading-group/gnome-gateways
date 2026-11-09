@@ -9,6 +9,10 @@ final class LaneSession {
 
     static final int NO_ORDER = -1;
     static final long NEVER = Long.MIN_VALUE;
+    private static final long MILLI = 1_000;
+    // How long a thousandth of an order takes to refill at one order a second.
+    private static final long NANOS_PER_MILLI_TOKEN = 1_000_000L;
+    private static final long NANOS_PER_SECOND = 1_000_000_000L;
 
     final int index;
     long slot;
@@ -34,6 +38,14 @@ final class LaneSession {
     long emptiedAtNanos = NEVER;
     // Its orders are all being cancelled: its new orders are refused until the gateway introduces it again.
     boolean fenced;
+
+    // Its caps, 0 for none: orders it may hold at once, and new orders a second (a bucket a second deep, in
+    // thousandths of an order).
+    int maxOpenOrders;
+    long newPerSecond;
+    int openOrders;
+    long newTokensMilli;
+    long newRefilledAtNanos = NEVER;
 
     LaneSession(final int index) {
         this.index = index;
@@ -63,5 +75,47 @@ final class LaneSession {
         this.endWanted = false;
         this.emptiedAtNanos = NEVER;
         this.fenced = false;
+        this.maxOpenOrders = 0;
+        this.newPerSecond = 0;
+        this.openOrders = 0;
+        this.newTokensMilli = 0;
+        this.newRefilledAtNanos = NEVER;
+    }
+
+    /**
+     * Whether a new order is within the session's caps, taking it from the rate bucket if so. The bucket starts full
+     * and refills continuously, so a session may send a second's worth at once and then its rate.
+     */
+    boolean admitNew(final long nowNanos) {
+        if (this.maxOpenOrders > 0 && this.openOrders >= this.maxOpenOrders) {
+            return false;
+        }
+        if (this.newPerSecond <= 0) {
+            return true;
+        }
+        final long full = this.newPerSecond * MILLI;
+        if (this.newRefilledAtNanos == NEVER) {
+            this.newTokensMilli = full;
+            this.newRefilledAtNanos = nowNanos;
+        } else {
+            // The bucket is a second deep, so more than a second away refills it whatever the rate; capping the
+            // elapsed time there also keeps elapsed * rate from overflowing.
+            final long elapsed = Math.min(nowNanos - this.newRefilledAtNanos, NANOS_PER_SECOND);
+            final long refill = elapsed * this.newPerSecond / NANOS_PER_MILLI_TOKEN;
+            if (this.newTokensMilli + refill >= full) {
+                this.newTokensMilli = full;
+                this.newRefilledAtNanos = nowNanos;
+            } else if (refill > 0) {
+                // Only the time those thousandths took is used up: rounding the rest away on every call would starve
+                // a session that asks more often than a thousandth refills.
+                this.newTokensMilli += refill;
+                this.newRefilledAtNanos += refill * NANOS_PER_MILLI_TOKEN / this.newPerSecond;
+            }
+        }
+        if (this.newTokensMilli < MILLI) {
+            return false;
+        }
+        this.newTokensMilli -= MILLI;
+        return true;
     }
 }

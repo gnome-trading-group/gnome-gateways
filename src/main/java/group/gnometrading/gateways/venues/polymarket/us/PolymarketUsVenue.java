@@ -4,6 +4,7 @@ import group.gnometrading.gateways.GatewayConfig;
 import group.gnometrading.gateways.feed.SubjectRef;
 import group.gnometrading.gateways.feed.VenueFeed;
 import group.gnometrading.gateways.feed.book.Projection;
+import group.gnometrading.gateways.orders.CrossMarket;
 import group.gnometrading.gateways.ratelimit.RequestClass;
 import group.gnometrading.gateways.ratelimit.VenueRateLimits;
 import group.gnometrading.networking.http.HTTPMethod;
@@ -36,6 +37,12 @@ public final class PolymarketUsVenue {
         final boolean isShort = "short".equalsIgnoreCase(exchangeSecurityId.substring(colon + 1));
         return new SubjectRef(
                 exchangeSecurityId.substring(0, colon), isShort ? Projection.COMPLEMENT : Projection.IDENTITY);
+    }
+
+    /** Where a listing's orders can trade against others: its market, the same one its book is. */
+    public static CrossMarket crossMarketOf(final String exchangeSecurityId) {
+        final SubjectRef subject = subjectOf(exchangeSecurityId);
+        return new CrossMarket(subject.key(), subject.projection() == Projection.COMPLEMENT);
     }
 
     /**

@@ -109,6 +109,9 @@ public final class AccountLane<M> implements GnomeAgent {
         /** The venue's id for a held order is now known. */
         default void venueIdLearned(final OrderContext ctx) {}
 
+        /** The venue took an amend: the order's price and size are now the amend's. */
+        default void amended(final OrderContext ctx) {}
+
         /** The lane no longer holds the order: it ended, or was given up on. */
         default void ended(final OrderContext ctx) {}
     }
@@ -170,6 +173,7 @@ public final class AccountLane<M> implements GnomeAgent {
     private final AccountBudget budget;
     private final SubmitPolicy policy;
     private final LongSupplier nanoClock;
+    private Caps caps = Caps.NONE;
     private final EpochClock epochClock;
     private final Timing timing;
 
@@ -376,6 +380,21 @@ public final class AccountLane<M> implements GnomeAgent {
     }
 
     /**
+     * Caps on what sessions may send: orders one session may hold at once and new orders it may send a second, its
+     * defaults until the gateway grants it its own ({@link LaneCommand#SESSION}), and orders the whole account may
+     * hold. 0 is no cap. A new order past one is refused {@code SESSION_CAP}; cancels and amends are never capped.
+     */
+    public record Caps(int sessionMaxOpenOrders, int sessionMaxNewPerSecond, int accountMaxOpenOrders) {
+        public static final Caps NONE = new Caps(0, 0, 0);
+    }
+
+    /** Before the lane starts. */
+    public void caps(final Caps caps) {
+        this.caps = caps;
+        this.fair.defaultCaps(caps.sessionMaxOpenOrders(), caps.sessionMaxNewPerSecond());
+    }
+
+    /**
      * Takes on again an order a process before this one sent, as its record of the account's orders had it: held under
      * its session's slot and counter like any other, never sent again. With the venue's id it can be cancelled at
      * once; without it, its submit's outcome is unknown, so it is looked for once the venue's reads have settled, and then
@@ -402,9 +421,7 @@ public final class AccountLane<M> implements GnomeAgent {
         ctx.copyFrom(src);
         ctx.registration = false;
         ctx.endsRegistered = false;
-        this.table.put(ctx.sessionSlot, ctx.clientOidCounter, order);
-        this.byCorrelation.put(correlationKey, order);
-        order.held = true;
+        hold(order, correlationKey);
         order.submitState = LaneOrder.SETTLED;
         this.ownership.added(ctx);
         final long now = this.nanoClock.getAsLong();
@@ -473,6 +490,7 @@ public final class AccountLane<M> implements GnomeAgent {
         this.handledThisPass++;
         if (command.kind != LaneCommand.CANCEL
                 && command.kind != LaneCommand.CANCEL_SESSION
+                && command.kind != LaneCommand.CANCEL_ORDERS
                 && (this.parkedCount > 0 || !readerHasRoom())) {
             final int slot = (this.parkedHead + this.parkedCount) % PARKED_COMMANDS;
             this.parked[slot].copyFrom(command);
@@ -488,6 +506,7 @@ public final class AccountLane<M> implements GnomeAgent {
             case LaneCommand.CANCEL -> onCancel(command);
             case LaneCommand.AMEND -> onAmend(command);
             case LaneCommand.CANCEL_SESSION -> onCancelSession(command.sessionSlot);
+            case LaneCommand.CANCEL_ORDERS -> cancelOrders(command.sessionSlot, command.exchangeId, command.securityId);
             case LaneCommand.SESSION -> onSession(command);
             case LaneCommand.SESSION_ENDED -> this.fair.ended(command.sessionSlot);
             default -> this.notices.rejectUnheld(
@@ -529,27 +548,19 @@ public final class AccountLane<M> implements GnomeAgent {
 
     private void onSession(final LaneCommand command) {
         this.fair.configure(command.sessionSlot, command.weight, command.maxQueueNanos);
+        this.fair.caps(command.sessionSlot, command.maxOpenOrders, command.maxNewPerSecond);
     }
 
     private void onNew(final LaneCommand command) {
-        if (this.fair.fenced(command.sessionSlot)) {
+        final RejectReason refusal = refusal(command);
+        if (refusal != null) {
             this.notices.rejectUnheld(
                     command.sessionSlot,
                     command.clientOidCounter,
                     command.clientOidStrategyId,
                     command.exchangeId,
                     command.securityId,
-                    RejectReason.GATEWAY_REJECTED);
-            return;
-        }
-        if (this.fair.session(command.sessionSlot) == null) {
-            this.notices.rejectUnheld(
-                    command.sessionSlot,
-                    command.clientOidCounter,
-                    command.clientOidStrategyId,
-                    command.exchangeId,
-                    command.securityId,
-                    RejectReason.SESSION_CAP);
+                    refusal);
             return;
         }
         final M market = this.venue.market(command.exchangeId, command.securityId);
@@ -576,6 +587,7 @@ public final class AccountLane<M> implements GnomeAgent {
         ctx.exchangeId = command.exchangeId;
         ctx.securityId = command.securityId;
         ctx.side = command.side;
+        ctx.limitPrice = command.price;
         ctx.originalQty = command.size;
         ctx.leavesQty = command.size;
 
@@ -595,9 +607,7 @@ public final class AccountLane<M> implements GnomeAgent {
         // when that answer is lost, still find the order, and a restart still knows it.
         this.ownership.added(ctx);
         this.notices.register(ctx);
-        this.table.put(ctx.sessionSlot, ctx.clientOidCounter, order);
-        this.byCorrelation.put(correlationKey, order);
-        order.held = true;
+        hold(order, correlationKey);
         this.fair.enqueue(order, LaneOrder.SUBMIT);
     }
 
@@ -626,11 +636,23 @@ public final class AccountLane<M> implements GnomeAgent {
     private void onCancelSession(final long slot) {
         // A new order of the session's may be on the ring behind this, sent before the gateway stopped taking them.
         this.fair.fence(slot);
-        dropParked(slot);
+        cancelOrders(slot, 0, 0);
+    }
+
+    /** The session's working orders, on one listing or (exchange and security both 0) on all, each cancelled. */
+    private void cancelOrders(final long slot, final int exchangeId, final long securityId) {
+        dropParked(slot, exchangeId, securityId);
         int count = 0;
         for (int i = 0; i < this.table.capacity(); i++) {
             final LaneOrder order = this.table.at(i);
-            if (order != null && order.ctx.sessionSlot == slot) {
+            if (order != null
+                    && covered(
+                            order.ctx.sessionSlot,
+                            order.ctx.exchangeId,
+                            order.ctx.securityId,
+                            slot,
+                            exchangeId,
+                            securityId)) {
                 this.sessionOrders[count++] = order.entry();
             }
         }
@@ -642,10 +664,25 @@ public final class AccountLane<M> implements GnomeAgent {
         }
     }
 
-    private void dropParked(final long slot) {
+    /** Whether an order of {@code orderSlot}'s on its listing is the session's, on the listing or (0, 0) on any. */
+    private static boolean covered(
+            final long orderSlot,
+            final int orderExchangeId,
+            final long orderSecurityId,
+            final long slot,
+            final int exchangeId,
+            final long securityId) {
+        return orderSlot == slot
+                && ((exchangeId == 0 && securityId == 0)
+                        || (orderExchangeId == exchangeId && orderSecurityId == securityId));
+    }
+
+    private void dropParked(final long slot, final int exchangeId, final long securityId) {
         for (int i = 0; i < this.parkedCount; i++) {
             final LaneCommand parked = this.parked[(this.parkedHead + i) % PARKED_COMMANDS];
-            if (parked.kind == LaneCommand.NEW && parked.sessionSlot == slot) {
+            if (parked.kind == LaneCommand.NEW
+                    && covered(
+                            parked.sessionSlot, parked.exchangeId, parked.securityId, slot, exchangeId, securityId)) {
                 parked.kind = 0;
                 this.notices.canceledUnheld(
                         parked.sessionSlot,
@@ -1474,6 +1511,8 @@ public final class AccountLane<M> implements GnomeAgent {
             return;
         }
         order.ctx.originalQty = order.amendSize;
+        order.ctx.limitPrice = order.amendPrice;
+        this.ownership.amended(order.ctx);
         this.notices.amendAccepted(order.ctx, order.amendSize, this.amendAnswer.fillCount, this.amendAnswer.remaining);
     }
 
@@ -1612,9 +1651,42 @@ public final class AccountLane<M> implements GnomeAgent {
         }
     }
 
+    /**
+     * Why a new order of the session's can't be taken on, or null: its session is fenced behind a cancel, or has no
+     * place, or the order is past the session's caps or the account's.
+     */
+    private RejectReason refusal(final LaneCommand command) {
+        if (this.fair.fenced(command.sessionSlot)) {
+            return RejectReason.GATEWAY_REJECTED;
+        }
+        final LaneSession session = this.fair.session(command.sessionSlot);
+        if (session == null
+                || (this.caps.accountMaxOpenOrders() > 0 && this.table.size() >= this.caps.accountMaxOpenOrders())
+                || !session.admitNew(this.nanoClock.getAsLong())) {
+            return RejectReason.SESSION_CAP;
+        }
+        return null;
+    }
+
+    /** The lane holds the order from now until it ends: in its table, and counted against its session's cap. */
+    private void hold(final LaneOrder order, final long correlationKey) {
+        this.table.put(order.ctx.sessionSlot, order.ctx.clientOidCounter, order);
+        this.byCorrelation.put(correlationKey, order);
+        order.held = true;
+        // A recovered order's session may not be introduced yet: it takes its place now, so the order counts.
+        final LaneSession session = this.fair.session(order.ctx.sessionSlot);
+        if (session != null) {
+            session.openOrders++;
+        }
+    }
+
     private void free(final LaneOrder order) {
         this.fair.unqueue(order);
         if (order.held) {
+            final LaneSession session = this.fair.existing(order.ctx.sessionSlot);
+            if (session != null && session.openOrders > 0) {
+                session.openOrders--;
+            }
             this.table.remove(order.ctx.sessionSlot, order.ctx.clientOidCounter);
             this.byCorrelation.remove(OrderKeys.of(order.ctx));
             this.ownership.ended(order.ctx);

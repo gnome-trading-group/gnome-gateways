@@ -32,6 +32,8 @@ final class FairQueue {
 
     private final LaneOrder[] orders;
     private final long defaultMaxQueueNanos;
+    private int defaultMaxOpenOrders;
+    private long defaultNewPerSecond;
     private final LongSupplier nanoClock;
     // Refuses a queued request that waited too long, or drops one that no longer stands; it must unqueue the order.
     private final Consumer<LaneOrder> expire;
@@ -89,9 +91,43 @@ final class FairQueue {
             session.slot = slot;
             session.weight = 1;
             session.maxQueueNanos = this.defaultMaxQueueNanos;
+            session.maxOpenOrders = this.defaultMaxOpenOrders;
+            session.newPerSecond = this.defaultNewPerSecond;
             this.sessionsBySlot.put(slot, session);
         }
         return session;
+    }
+
+    /** The caps a session gets until the gateway says otherwise; 0 for none. */
+    void defaultCaps(final int maxOpenOrders, final long newPerSecond) {
+        this.defaultMaxOpenOrders = maxOpenOrders;
+        this.defaultNewPerSecond = newPerSecond;
+    }
+
+    /**
+     * A session's own caps, as it asked for them: it may ask for less than the default, never more. 0 keeps the
+     * default.
+     */
+    void caps(final long slot, final int maxOpenOrders, final long newPerSecond) {
+        final LaneSession session = session(slot);
+        if (session == null) {
+            return;
+        }
+        session.maxOpenOrders = (int) lower(this.defaultMaxOpenOrders, maxOpenOrders);
+        session.newPerSecond = lower(this.defaultNewPerSecond, newPerSecond);
+    }
+
+    /** The tighter of two caps, either 0 for none. */
+    private static long lower(final long cap, final long asked) {
+        if (asked <= 0) {
+            return cap;
+        }
+        return cap <= 0 ? asked : Math.min(cap, asked);
+    }
+
+    /** The session in {@code slot} if the queue holds one; never takes a place for it. */
+    LaneSession existing(final long slot) {
+        return this.sessionsBySlot.get(slot);
     }
 
     /**

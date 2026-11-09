@@ -4,6 +4,7 @@ import group.gnometrading.gateways.GatewayConfig;
 import group.gnometrading.gateways.feed.SubjectRef;
 import group.gnometrading.gateways.feed.VenueFeed;
 import group.gnometrading.gateways.feed.book.Projection;
+import group.gnometrading.gateways.orders.CrossMarket;
 import group.gnometrading.gateways.ratelimit.RequestClass;
 import group.gnometrading.gateways.ratelimit.VenueRateLimits;
 import group.gnometrading.networking.http.HTTPMethod;
@@ -33,6 +34,20 @@ public final class PolymarketIntlVenue {
         final int colon = exchangeSecurityId.indexOf(':');
         return new SubjectRef(
                 colon < 0 ? exchangeSecurityId : exchangeSecurityId.substring(colon + 1), Projection.IDENTITY);
+    }
+
+    /**
+     * Where a listing's orders can trade against others: the market's condition, as the venue matches a buy of one
+     * outcome against a buy of the other. Which outcome a token is comes from the market's info; without it, each
+     * token is taken as its own market, so orders on one token are still checked against each other.
+     */
+    public static CrossMarket crossMarketOf(final String exchangeSecurityId, final PolymarketIntlMarketInfo info) {
+        final int colon = exchangeSecurityId.indexOf(':');
+        final String tokenId = colon < 0 ? exchangeSecurityId : exchangeSecurityId.substring(colon + 1);
+        if (colon < 0 || info.firstTokenId() == null) {
+            return new CrossMarket(tokenId, false);
+        }
+        return new CrossMarket(exchangeSecurityId.substring(0, colon), info.isSecondOutcome(tokenId));
     }
 
     /**

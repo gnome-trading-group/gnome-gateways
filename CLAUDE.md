@@ -65,14 +65,20 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
     over weight, goes next; one back after over a second idle starts level; one back sooner, as when its queued
     orders all expired between two of the venue's slots, keeps its place, but never more than a second of the budget
     behind the level), at most `AccountLane.MAX_SESSIONS` per account. A session's `CANCEL_SESSION` fences it: its new
-    orders are refused until its next `SESSION`, so none queued behind the cancel reaches the venue. `LaneVenue` per venue; `FairShareTrace` records the fair share for a post-mortem.
+    orders are refused until its next `SESSION`, so none queued behind the cancel reaches the venue. A kill's
+    `CANCEL_ORDERS` cancels a session's orders (all, or on one listing) without fencing it. `AccountLane.Caps` caps
+    what each session may hold at once and send a second (a one-second token bucket) and what the account may hold;
+    a session's `SESSION` may ask for less than the defaults, never more; past a cap a new order is refused
+    `SESSION_CAP`, and cancels and amends are never capped. `LaneVenue` per venue; `FairShareTrace` records the
+    fair share for a post-mortem.
   - `account/reader/`: `AccountReader` + `AccountConnection` (one account-wide event socket, catch-up over REST
     fetched beside the reader and repeated once the venue's reads settle) with an `AccountProtocol` per venue.
   - `orders/OrderReports` holds the order state and builds every report, for this reader and the in-session
     `outbound/OutboundSocketReader` alike.
 - `venues/<venue>/`: everything specific to one venue, on top of the generic layers above, which never depend on it.
-  `<Venue>Venue` holds its facts (`FEED`, `subjectOf`, and `rateLimits()` where it has order entry); `<Venue>Protocol`
-  its market data (auth, subscribe/unsubscribe/resync, keep-alive, frame decoding); `<Venue>BookProbe` its REST probe
+  `<Venue>Venue` holds its facts (`FEED`, `subjectOf`, and where it has order entry `rateLimits()` and
+  `crossMarketOf`: the market a listing's orders can trade against others on, for the order gateway's self-trade
+  check); `<Venue>Protocol` its market data (auth, subscribe/unsubscribe/resync, keep-alive, frame decoding); `<Venue>BookProbe` its REST probe
   if it sends book changes; `<Venue>Outbound*`, signers, requests and order queries its order entry. Venues:
   `kalshi`, `polymarket/intl`, `polymarket/us` (market data and orders), `hyperliquid`, `lighter` (market data only).
 - `fix/`: generic FIX transport; nothing in this repo or gnome-orchestrator uses it now that Binance is gone.

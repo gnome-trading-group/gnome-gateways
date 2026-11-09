@@ -27,6 +27,8 @@ public final class TestLaneVenue implements LaneVenue<String> {
     public static final String MARKET = "market";
     public static final int EXCHANGE_ID = 7;
     public static final long SECURITY_ID = 11;
+    // A second listing on the same market, for what acts on one listing and not another.
+    public static final long OTHER_SECURITY_ID = 21;
 
     public boolean resendsAreSafe = true;
     // Off: the venue can't look an order up, so an unclear submit is left to its events.
@@ -37,7 +39,9 @@ public final class TestLaneVenue implements LaneVenue<String> {
 
     @Override
     public String market(final int exchangeId, final long securityId) {
-        return exchangeId == EXCHANGE_ID && securityId == SECURITY_ID ? MARKET : null;
+        return exchangeId == EXCHANGE_ID && (securityId == SECURITY_ID || securityId == OTHER_SECURITY_ID)
+                ? MARKET
+                : null;
     }
 
     @Override

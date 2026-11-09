@@ -145,7 +145,7 @@ class PolymarketUsOutboundWriterTest {
         assertFalse(body.contains("goodTillTime"), body);
         final OrderContext registered = drainQueue(newOrderQueue).get(0);
         assertEquals("ioc-" + PolymarketUsStamps.slot(SESSION) + "-1", correlationId(registered));
-        assertEquals(price("0.435"), registered.limitPrice);
+        assertEquals(price("0.435"), registered.venuePrice);
     }
 
     @Test

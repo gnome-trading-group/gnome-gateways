@@ -92,7 +92,7 @@ class AccountReaderAllocationTest {
                         "slug-a"));
         final String stamp = "2100-01-05T03:46:40.007Z";
         prepare(stamp, 3_000_000L);
-        this.order.limitPrice = 550_000_000L;
+        this.order.venuePrice = 550_000_000L;
         run(
                 "Polymarket US",
                 protocol,

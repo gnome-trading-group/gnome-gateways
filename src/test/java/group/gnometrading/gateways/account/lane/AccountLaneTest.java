@@ -207,6 +207,164 @@ class AccountLaneTest {
     }
 
     @Test
+    void aKillOfOneListingCancelsOnlyTheSessionsOrdersThere() {
+        this.server.script(request -> request.method().equals("POST") ? Reply.ok("v-" + request.body()) : Reply.ok(""));
+        submit(1);
+        this.harness.submit(2, command -> command.securityId = TestLaneVenue.OTHER_SECURITY_ID);
+        this.harness.submit(3, command -> command.sessionSlot = SLOT + 1);
+        runUntil(() -> requests("POST").size() == 3 && this.connections.inFlight() == 0);
+
+        this.harness.command(LaneCommand.CANCEL_ORDERS, 0, command -> {
+            command.exchangeId = TestLaneVenue.EXCHANGE_ID;
+            command.securityId = TestLaneVenue.SECURITY_ID;
+        });
+        runUntil(() -> requests("DELETE").size() == 1 && this.connections.inFlight() == 0);
+        runFor(100);
+
+        assertEquals(
+                List.of("/orders/v-s3-1"),
+                requests("DELETE").stream().map(Request::path).toList());
+    }
+
+    @Test
+    void aKillsCancelLeavesTheSessionFreeToSendOnceTheGatewayLetsItsOrdersThrough() {
+        this.server.script(request -> request.method().equals("POST") ? Reply.ok("v-" + request.body()) : Reply.ok(""));
+        submit(1);
+        runUntil(() -> requests("POST").size() == 1 && this.connections.inFlight() == 0);
+
+        this.harness.command(LaneCommand.CANCEL_ORDERS, 0, command -> {});
+        submit(2);
+
+        runUntil(() -> requests("DELETE").size() == 1 && requests("POST").size() == 2);
+        assertTrue(this.notices.isEmpty(), "nothing refused: a kill's refusals are the gateway's");
+    }
+
+    @Test
+    void aSessionPastItsOpenOrderCapIsRefusedUntilOneEnds() {
+        this.lane.caps(new AccountLane.Caps(2, 0, 0));
+        this.server.script(request -> Reply.ok("v-" + request.body()));
+        submit(1);
+        submit(2);
+        submit(3);
+        runUntil(() -> !this.notices.isEmpty());
+        assertEquals(RejectReason.SESSION_CAP, this.notices.get(0).rejectReason);
+        assertEquals(3, this.notices.get(0).clientOidCounter);
+
+        runUntil(() -> requests("POST").size() == 2 && this.connections.inFlight() == 0);
+        release(1);
+        runUntil(() -> this.lane.workingOrders() == 1);
+        submit(4);
+        runUntil(() -> requests("POST").size() == 3);
+    }
+
+    @Test
+    void aSessionPastItsNewOrderRateIsRefusedUntilItsBucketRefills() {
+        this.lane.caps(new AccountLane.Caps(0, 2, 0));
+        this.server.script(request -> Reply.ok("v-" + request.body()));
+        submit(1);
+        submit(2);
+        submit(3);
+        runUntil(() -> !this.notices.isEmpty());
+        assertEquals(RejectReason.SESSION_CAP, this.notices.get(0).rejectReason);
+        assertEquals(3, this.notices.get(0).clientOidCounter);
+
+        // Two a second: one more in half a second.
+        runFor(600);
+        submit(4);
+        runUntil(() -> requests("POST").size() == 3);
+        assertEquals(1, this.notices.size());
+    }
+
+    @Test
+    void theAccountsOpenOrderCapCountsEverySession() {
+        this.lane.caps(new AccountLane.Caps(0, 0, 2));
+        this.server.script(request -> Reply.ok("v-" + request.body()));
+        submit(1);
+        this.harness.submit(1, command -> command.sessionSlot = SLOT + 1);
+        runUntil(() -> requests("POST").size() == 2 && this.connections.inFlight() == 0);
+
+        this.harness.submit(2, command -> command.sessionSlot = SLOT + 2);
+        runUntil(() -> !this.notices.isEmpty());
+
+        assertEquals(RejectReason.SESSION_CAP, this.notices.get(0).rejectReason);
+    }
+
+    @Test
+    void theGatewayCanGrantASessionLessThanTheDefault() {
+        this.lane.caps(new AccountLane.Caps(10, 0, 0));
+        this.harness.command(LaneCommand.SESSION, 0, command -> command.maxOpenOrders = 1);
+        this.server.script(request -> Reply.ok("v-" + request.body()));
+        submit(1);
+        submit(2);
+
+        runUntil(() -> !this.notices.isEmpty());
+        assertEquals(RejectReason.SESSION_CAP, this.notices.get(0).rejectReason);
+        assertEquals(2, this.notices.get(0).clientOidCounter);
+    }
+
+    @Test
+    void aSessionAskingForMoreThanTheDefaultGetsTheDefault() {
+        this.lane.caps(new AccountLane.Caps(1, 0, 0));
+        this.harness.command(LaneCommand.SESSION, 0, command -> command.maxOpenOrders = 5);
+        this.server.script(request -> Reply.ok("v-" + request.body()));
+        submit(1);
+        submit(2);
+
+        runUntil(() -> !this.notices.isEmpty());
+        assertEquals(RejectReason.SESSION_CAP, this.notices.get(0).rejectReason);
+        assertEquals(2, this.notices.get(0).clientOidCounter);
+    }
+
+    @Test
+    void aSessionAskingFasterThanItsRateRefillsStillGetsItsOrdersAsTheyRefill() {
+        this.lane.caps(new AccountLane.Caps(0, 20, 0));
+        this.server.script(request -> Reply.ok("v-" + request.body()));
+        // Twenty a second: the bucket's 20 go at once, then one each 50 ms, however often it asks in between.
+        for (int counter = 1; counter <= 20; counter++) {
+            submit(counter);
+        }
+        runUntil(() -> requests("POST").size() == 20 && this.connections.inFlight() == 0);
+        long counter = 21;
+        final long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(500);
+        while (System.nanoTime() < until) {
+            submit(counter++);
+            runFor(1);
+        }
+        runFor(100);
+
+        final int sent = requests("POST").size() - 20;
+        assertTrue(sent >= 7 && sent <= 12, "about 10 in half a second at 20 a second, not 0: " + sent);
+    }
+
+    @Test
+    void anOrdersListingPriceIsRecordedFromItsFirstSend() {
+        final List<Long> prices = new ArrayList<>();
+        this.lane.ownership(new AccountLane.Ownership() {
+            @Override
+            public void added(final OrderContext ctx) {
+                prices.add(ctx.limitPrice);
+            }
+        });
+        this.server.script(request -> Reply.ok("v-" + request.body()));
+        submit(1);
+        runUntil(() -> requests("POST").size() == 1);
+
+        assertEquals(List.of(400_000_000L), prices, "the price the session sent, which a restart restores");
+    }
+
+    @Test
+    void cancelsGoWhateverTheCaps() {
+        this.lane.caps(new AccountLane.Caps(1, 1, 1));
+        this.server.script(request -> request.method().equals("POST") ? Reply.ok("v-" + request.body()) : Reply.ok(""));
+        submit(1);
+        runUntil(() -> requests("POST").size() == 1 && this.connections.inFlight() == 0);
+
+        cancel(1);
+
+        runUntil(() -> requests("DELETE").size() == 1);
+    }
+
+    @Test
     void cancellingASessionDropsItsOrdersNotYetSent() {
         this.server.script(request -> Reply.ok("v-" + request.body()).after(300));
         // Every connection busy, so the next order waits unsent.
@@ -267,6 +425,26 @@ class AccountLaneTest {
         assertEquals("/orders/v-s3-1/amend", requests("POST").get(1).path());
         assertTrue(this.notices.get(0).amendAccepted);
         assertEquals(4_000_000L, this.notices.get(0).originalQty);
+    }
+
+    @Test
+    void anAcceptedAmendIsRecordedAtItsNewTerms() {
+        final List<long[]> amended = new ArrayList<>();
+        this.lane.ownership(new AccountLane.Ownership() {
+            @Override
+            public void amended(final OrderContext ctx) {
+                amended.add(new long[] {ctx.limitPrice, ctx.originalQty});
+            }
+        });
+        this.server.script(request -> Reply.ok("v-" + request.body()));
+        submit(1);
+        runUntil(() -> requests("POST").size() == 1 && this.connections.inFlight() == 0);
+        amend(1, 500_000_000L, 4_000_000L);
+        runUntil(() -> !this.notices.isEmpty());
+
+        assertEquals(1, amended.size());
+        assertEquals(500_000_000L, amended.get(0)[0]);
+        assertEquals(4_000_000L, amended.get(0)[1]);
     }
 
     @Test
@@ -417,7 +595,7 @@ class AccountLaneTest {
 
     @Test
     void anUnknownCommandIsRefusedNotFatal() {
-        this.harness.command(7, 1, command -> {});
+        this.harness.command(99, 1, command -> {});
         runUntil(() -> !this.notices.isEmpty());
         assertEquals(ExecType.REJECT, this.notices.get(0).execType);
         assertEquals(RejectReason.GATEWAY_REJECTED, this.notices.get(0).rejectReason);

@@ -198,7 +198,7 @@ public final class PolymarketUsUserEvents {
         return ctx.exchangeOrderIdLength == 0
                 && PolymarketUsOrderCodec.isImmediate(ctx)
                 && ctx.side == side
-                && ctx.limitPrice == order.price
+                && ctx.venuePrice == order.price
                 // The venue may cut an order's quantity (to the lot, or to what the balance covers), never raise it.
                 && order.quantity <= ctx.originalQty;
     }

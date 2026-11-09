@@ -102,7 +102,7 @@ public final class PolymarketUsLaneVenue implements LaneVenue<PolymarketUsMarket
         }
         final int slot = PolymarketUsStamps.slot(command.sessionSlot);
         final long venuePrice = market.listing().convertPrice(command.price);
-        ctx.limitPrice = venuePrice;
+        ctx.venuePrice = venuePrice;
         ctx.submittedAtMillis = nowMillis;
         final boolean immediate = command.timeInForce == TimeInForce.IMMEDIATE_OR_CANCELED;
         if (immediate) {
@@ -453,7 +453,7 @@ public final class PolymarketUsLaneVenue implements LaneVenue<PolymarketUsMarket
         for (int i = 0; i < this.heldCount; i++) {
             twin |= this.heldListing[i] == listing
                     && this.heldSide[i] == ctx.side
-                    && this.heldPrice[i] == ctx.limitPrice;
+                    && this.heldPrice[i] == ctx.venuePrice;
         }
         if (twin || this.heldCount == MAX_HELD_IMMEDIATE) {
             this.logger.logf(
@@ -471,7 +471,7 @@ public final class PolymarketUsLaneVenue implements LaneVenue<PolymarketUsMarket
         this.heldCounter[this.heldCount] = ctx.clientOidCounter;
         this.heldListing[this.heldCount] = PublishedMap.listingKey(ctx.exchangeId, ctx.securityId);
         this.heldSide[this.heldCount] = ctx.side;
-        this.heldPrice[this.heldCount] = ctx.limitPrice;
+        this.heldPrice[this.heldCount] = ctx.venuePrice;
         this.heldCount++;
     }
 

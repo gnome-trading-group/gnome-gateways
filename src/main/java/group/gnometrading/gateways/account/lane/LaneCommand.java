@@ -30,6 +30,13 @@ public final class LaneCommand {
     /** The gateway is done with the session in {@link #sessionSlot}: its place in the fair share is given up. */
     public static final int SESSION_ENDED = 6;
 
+    /**
+     * The working orders of the session in {@link #sessionSlot}, on the listing {@link #exchangeId}/{@link #securityId}
+     * or on every listing when both are 0: cancelled, and its new orders still held here dropped, as for a kill. Unlike
+     * {@link #CANCEL_SESSION} the session isn't fenced: its later orders are the gateway's to refuse or let through.
+     */
+    public static final int CANCEL_ORDERS = 7;
+
     public int kind;
     public long sessionSlot;
     public long clientOidCounter;
@@ -44,6 +51,10 @@ public final class LaneCommand {
     public boolean postOnly;
     public int weight;
     public long maxQueueNanos;
+    // A SESSION's caps as it asked for them, 0 for the lane's default, which also bounds them: orders it may hold at
+    // once, and new orders a second.
+    public int maxOpenOrders;
+    public int maxNewPerSecond;
 
     public void reset() {
         this.kind = 0;
@@ -60,6 +71,8 @@ public final class LaneCommand {
         this.postOnly = false;
         this.weight = 0;
         this.maxQueueNanos = 0;
+        this.maxOpenOrders = 0;
+        this.maxNewPerSecond = 0;
     }
 
     public void copyFrom(final LaneCommand src) {
@@ -77,5 +90,7 @@ public final class LaneCommand {
         this.postOnly = src.postOnly;
         this.weight = src.weight;
         this.maxQueueNanos = src.maxQueueNanos;
+        this.maxOpenOrders = src.maxOpenOrders;
+        this.maxNewPerSecond = src.maxNewPerSecond;
     }
 }

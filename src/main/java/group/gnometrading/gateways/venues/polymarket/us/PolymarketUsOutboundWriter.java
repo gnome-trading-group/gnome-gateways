@@ -119,7 +119,7 @@ public final class PolymarketUsOutboundWriter extends OutboundSocketWriter {
             return false;
         }
         final boolean immediate = tif == TimeInForce.IMMEDIATE_OR_CANCELED;
-        ctx.limitPrice = venuePrice;
+        ctx.venuePrice = venuePrice;
         ctx.submittedAtMillis = epochMillis();
         if (immediate) {
             if (twinOfUnresolvedImmediate(ctx)) {
@@ -262,7 +262,7 @@ public final class PolymarketUsOutboundWriter extends OutboundSocketWriter {
             return;
         }
         ctx.originalQty = size;
-        ctx.limitPrice = venuePrice;
+        ctx.venuePrice = venuePrice;
         enqueueAmendAccepted(ctx, size, OrderContext.QTY_ABSENT, OrderContext.QTY_ABSENT);
     }
 
@@ -280,7 +280,7 @@ public final class PolymarketUsOutboundWriter extends OutboundSocketWriter {
                 continue;
             }
             this.unresolvedImmediate[kept++] = this.unresolvedImmediate[i];
-            twin |= other.side == ctx.side && other.limitPrice == ctx.limitPrice;
+            twin |= other.side == ctx.side && other.venuePrice == ctx.venuePrice;
         }
         this.unresolvedImmediateCount = kept;
         if (twin || kept == MAX_UNRESOLVED_IMMEDIATE) {

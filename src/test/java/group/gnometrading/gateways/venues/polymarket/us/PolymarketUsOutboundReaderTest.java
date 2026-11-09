@@ -679,7 +679,7 @@ class PolymarketUsOutboundReaderTest {
         ctx.side = side;
         ctx.originalQty = qty(size);
         ctx.leavesQty = ctx.originalQty;
-        ctx.limitPrice = price(limit);
+        ctx.venuePrice = price(limit);
         final byte[] id = correlationId.getBytes(StandardCharsets.US_ASCII);
         ctx.correlationIdLength = id.length;
         System.arraycopy(id, 0, ctx.correlationIdBytes, 0, id.length);

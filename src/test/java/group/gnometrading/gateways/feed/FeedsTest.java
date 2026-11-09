@@ -54,6 +54,16 @@ class FeedsTest {
         }
     }
 
+    /** One tick at {@code now}; whether the market's group is then empty. */
+    private boolean tickedEmpty(final long now) {
+        try {
+            feeds.tick(now);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+        return feeds.groups().get(0).size() == 0;
+    }
+
     private static List<Mbp10Schema> records(final VenueTestKit.Stream stream) {
         try {
             return stream.drain();
@@ -127,8 +137,9 @@ class FeedsTest {
         }
         await(() -> market.state() == SubjectState.QUARANTINED);
 
-        feeds.tick(MINUTE);
-        assertEquals(0, feeds.groups().get(0).size());
+        // The connection marks the market quarantined, then tells the feeds on its own thread: a tick takes it in
+        // only once that has arrived.
+        await(() -> tickedEmpty(MINUTE));
         feeds.tick(MINUTE + Feeds.RETRY_DELAYS_NANOS[0] - 1);
         assertEquals(SubjectState.QUARANTINED, market.state());
         feeds.tick(MINUTE + Feeds.RETRY_DELAYS_NANOS[0]);

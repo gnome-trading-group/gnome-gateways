@@ -75,8 +75,11 @@ public final class OrderContext {
     public boolean registration;
     // A notice that ends an order the reader was handed: if the reader has ended it already, it is dropped.
     public boolean endsRegistered;
-    // The limit price as the venue was sent it, for venues whose events can only be matched by the order's terms.
+    // The order's limit price in its listing's own terms, as the session sent it or its last accepted amend set it.
     public long limitPrice;
+    // The limit price as the venue was sent it, for venues whose events can only be matched by the order's terms; on
+    // a complement listing it is the venue's side of the market.
+    public long venuePrice;
     public Side side;
     public short flags;
     public ExecType execType;
@@ -134,6 +137,7 @@ public final class OrderContext {
         this.registration = false;
         this.endsRegistered = false;
         this.limitPrice = 0;
+        this.venuePrice = 0;
         this.side = null;
         this.flags = 0;
         this.execType = null;
@@ -171,6 +175,7 @@ public final class OrderContext {
         this.registration = src.registration;
         this.endsRegistered = src.endsRegistered;
         this.limitPrice = src.limitPrice;
+        this.venuePrice = src.venuePrice;
         this.side = src.side;
         this.flags = src.flags;
         this.execType = src.execType;

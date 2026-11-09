@@ -643,7 +643,7 @@ class KalshiOutboundWriterTest {
         assertTrue(json.contains("\"price\":\"0.5600\""), json);
         assertTrue(json.contains("\"count\":\"10.00\""), json);
         assertTrue(json.contains("\"time_in_force\":\"good_till_canceled\""), json);
-        assertTrue(json.contains("\"self_trade_prevention_type\":\"maker\""), json);
+        assertTrue(json.contains("\"self_trade_prevention_type\":\"taker_at_cross\""), json);
     }
 
     @Test

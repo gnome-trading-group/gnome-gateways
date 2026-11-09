@@ -151,7 +151,7 @@ public final class PolymarketUsOrderPath {
         this.ctx.side = Side.Bid;
         this.ctx.originalQty = SIZE;
         this.ctx.leavesQty = SIZE;
-        this.ctx.limitPrice = PRICE;
+        this.ctx.venuePrice = PRICE;
         PolymarketUsOrderCodec.writeStampId(SLOT, this.ctx);
     }
 

@@ -264,7 +264,7 @@ class AccountLatencyBenchmark {
         final ReaderNotices lane = new ReaderNotices(notices);
         final OrderContext order = RecordedReports.order(SLOT, 1, EXCHANGE_ID, SECURITY_ID, correlationId, size);
         order.side = Side.Bid;
-        order.limitPrice = 550_000_000L;
+        order.venuePrice = 550_000_000L;
         final byte[] id = correlationId.getBytes(java.nio.charset.StandardCharsets.US_ASCII);
         System.arraycopy(id, 0, order.exchangeOrderIdBytes, 0, id.length);
         order.exchangeOrderIdLength = id.length;

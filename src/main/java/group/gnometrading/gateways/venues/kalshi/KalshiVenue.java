@@ -4,6 +4,7 @@ import group.gnometrading.gateways.GatewayConfig;
 import group.gnometrading.gateways.feed.SubjectRef;
 import group.gnometrading.gateways.feed.VenueFeed;
 import group.gnometrading.gateways.feed.book.Projection;
+import group.gnometrading.gateways.orders.CrossMarket;
 import group.gnometrading.gateways.ratelimit.RequestClass;
 import group.gnometrading.gateways.ratelimit.VenueRateLimits;
 import group.gnometrading.networking.http.HTTPMethod;
@@ -26,6 +27,12 @@ public final class KalshiVenue {
     private static final String PORTFOLIO_ORDERS = "/trade-api/v2/portfolio/orders";
     private static final String BALANCE = "/trade-api/v2/portfolio/balance";
 
+    /**
+     * Kalshi's self-trade prevention for every order: when two of the account's own orders meet, the one crossing is
+     * cancelled, not the resting quote, so a strategy's quotes survive another's mistake.
+     */
+    public static final String SELF_TRADE_PREVENTION = "taker_at_cross";
+
     private KalshiVenue() {}
 
     /**
@@ -39,6 +46,12 @@ public final class KalshiVenue {
         }
         final boolean no = "no".equalsIgnoreCase(exchangeSecurityId.substring(colon + 1));
         return new SubjectRef(exchangeSecurityId.substring(0, colon), no ? Projection.COMPLEMENT : Projection.IDENTITY);
+    }
+
+    /** Where a listing's orders can trade against others: its market, the same one its book is. */
+    public static CrossMarket crossMarketOf(final String exchangeSecurityId) {
+        final SubjectRef subject = subjectOf(exchangeSecurityId);
+        return new CrossMarket(subject.key(), subject.projection() == Projection.COMPLEMENT);
     }
 
     /**

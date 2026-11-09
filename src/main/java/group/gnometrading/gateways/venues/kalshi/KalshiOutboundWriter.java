@@ -35,7 +35,6 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
     private static final String ORDER_PATH = KalshiOrderCodec.ORDER_PATH;
     private static final long LOOKUP_WINDOW_SECONDS = 60L;
     private static final int MAX_LOGGED_REASON_CHARS = 500;
-    private static final String SELF_TRADE_PREVENTION = "maker";
     private static final long NANOS_PER_MILLI = 1_000_000L;
 
     private final Logger logger;
@@ -45,7 +44,7 @@ public final class KalshiOutboundWriter extends OutboundSocketWriter {
     private final KalshiAuthSigner authSigner;
     private final EpochNanoClock clock;
     private final KalshiMarket market;
-    private final KalshiOrderCodec codec = new KalshiOrderCodec(SELF_TRADE_PREVENTION);
+    private final KalshiOrderCodec codec = new KalshiOrderCodec(KalshiVenue.SELF_TRADE_PREVENTION);
 
     private final byte[] jsonBodyBuf = new byte[1 << 11]; // 2 KiB
     private final ByteBuffer jsonBodyBuffer = ByteBuffer.wrap(jsonBodyBuf);

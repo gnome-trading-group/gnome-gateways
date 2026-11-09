@@ -42,6 +42,24 @@ class PolymarketIntlMarketInfoTest {
     }
 
     @Test
+    void knowsWhichTokenIsTheSecondOutcome() {
+        final PolymarketIntlMarketInfo info = PolymarketIntlMarketInfo.parse(bytes(LIVE_RESPONSE));
+
+        assertFalse(
+                info.isSecondOutcome("30832906867199915342888320351856964164180073964149724713946648532860513266622"));
+        assertTrue(
+                info.isSecondOutcome("78546959674779340117340396156968781977757001842497240027375881342764329442735"));
+    }
+
+    @Test
+    void aMarketWithoutItsTokensCallsNoTokenTheSecond() {
+        final PolymarketIntlMarketInfo info = PolymarketIntlMarketInfo.parse(bytes("{\"mos\":5,\"mts\":0.01}"));
+
+        assertFalse(
+                info.isSecondOutcome("78546959674779340117340396156968781977757001842497240027375881342764329442735"));
+    }
+
+    @Test
     void parsesDocumentedOptionalFields() {
         final PolymarketIntlMarketInfo info = PolymarketIntlMarketInfo.parse(
                 bytes("{\"mos\":5,\"mts\":0.001,\"itode\":true,\"fd\":{\"r\":0.02,\"e\":2,\"to\":true},\"oas\":60}"));

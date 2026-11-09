@@ -206,7 +206,7 @@ class PolymarketUsAccountProtocolTest {
         final OrderContext ctx =
                 RecordedReports.order(SESSION, counter, EXCHANGE_ID, securityId, stamp(counter), qty(size));
         ctx.side = Side.Bid;
-        ctx.limitPrice = price("0.55");
+        ctx.venuePrice = price("0.55");
         this.reports.register(ctx);
     }
 
@@ -214,7 +214,7 @@ class PolymarketUsAccountProtocolTest {
         final OrderContext ctx = RecordedReports.order(
                 SESSION, counter, EXCHANGE_ID, securityId, "ioc-" + SLOT + "-" + counter, qty("1"));
         ctx.side = Side.Bid;
-        ctx.limitPrice = price("0.55");
+        ctx.venuePrice = price("0.55");
         this.reports.register(ctx);
     }
 
