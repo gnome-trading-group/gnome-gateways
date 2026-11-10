@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import group.gnometrading.strings.ViewString;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -22,7 +23,7 @@ class PolymarketUsStampsTest {
             longs = {4_102_444_800_000L, 4_102_444_800_001L, 4_102_444_801_999L, 5_102_444_799_999L, 4_200_000_123_456L
             })
     void writtenText_IsTheIsoInstant_AndParsesBack(final long millis) {
-        final String text = PolymarketUsOutboundWriterTest.stampText(millis);
+        final String text = PolymarketUsStampsTest.stampText(millis);
 
         assertEquals(ISO_MILLIS.format(Instant.ofEpochMilli(millis)), text);
         assertEquals(PolymarketUsStamps.LENGTH, text.length());
@@ -31,11 +32,10 @@ class PolymarketUsStampsTest {
 
     @Test
     void stampsRunFrom2100To2131() {
-        assertEquals(
-                "2100-01-01T00:00:00.000Z", PolymarketUsOutboundWriterTest.stampText(PolymarketUsStamps.BASE_MILLIS));
+        assertEquals("2100-01-01T00:00:00.000Z", PolymarketUsStampsTest.stampText(PolymarketUsStamps.BASE_MILLIS));
         assertEquals(
                 "2131-09-10T01:46:39.999Z",
-                PolymarketUsOutboundWriterTest.stampText(PolymarketUsStamps.stampMillis(
+                PolymarketUsStampsTest.stampText(PolymarketUsStamps.stampMillis(
                         PolymarketUsStamps.SLOTS - 1, PolymarketUsStamps.COUNTER_RANGE - 1)));
     }
 
@@ -78,5 +78,10 @@ class PolymarketUsStampsTest {
         assertTrue(PolymarketUsStamps.counterFits(PolymarketUsStamps.COUNTER_RANGE - 1));
         assertFalse(PolymarketUsStamps.counterFits(PolymarketUsStamps.COUNTER_RANGE));
         assertFalse(PolymarketUsStamps.counterFits(0));
+    }
+
+    static String stampText(final long millis) {
+        final byte[] text = new byte[PolymarketUsStamps.LENGTH];
+        return new String(text, 0, PolymarketUsStamps.write(millis, text, 0), StandardCharsets.US_ASCII);
     }
 }

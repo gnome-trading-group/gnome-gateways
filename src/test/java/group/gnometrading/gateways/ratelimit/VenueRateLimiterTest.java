@@ -3,8 +3,6 @@ package group.gnometrading.gateways.ratelimit;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertNotSame;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -409,20 +407,6 @@ class VenueRateLimiterTest {
                 IllegalArgumentException.class, () -> KalshiVenue.rateLimits().withShare(1.5));
         assertThrows(
                 IllegalArgumentException.class, () -> KalshiVenue.rateLimits().withRate("nope", 10));
-    }
-
-    @Test
-    void oneLimiterPerAccount() {
-        final VenueRateLimiters limiters = new VenueRateLimiters(logger, clock, () -> EPOCH_MILLIS);
-
-        final VenueRateLimiter first = limiters.forAccount(pmUsAt25(), "key-1");
-
-        assertSame(first, limiters.forAccount(pmUsAt25(), "key-1"));
-        assertNotSame(first, limiters.forAccount(pmUsAt25(), "key-2"));
-        assertNotSame(first, limiters.forAccount(KalshiVenue.rateLimits(), "key-1"));
-        assertEquals(
-                List.of("Kalshi/key-1", "Polymarket US/key-1", "Polymarket US/key-2"),
-                List.copyOf(limiters.all().keySet()));
     }
 
     @Test

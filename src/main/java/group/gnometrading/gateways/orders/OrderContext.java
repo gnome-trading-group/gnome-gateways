@@ -10,26 +10,6 @@ public final class OrderContext {
 
     public static final int EXCHANGE_ORDER_ID_MAX_LENGTH = 70;
 
-    /**
-     * Orders a gateway may have live at once. Both the writer and the reader hold a copy of every
-     * live order, so both pools must be sized from this one bound.
-     */
-    public static final int MAX_IN_FLIGHT_ORDERS = 256;
-
-    /**
-     * Capacity of each writer/reader handoff queue. One writer poll handles at most one outbound
-     * buffer's worth of messages, so twice the in-flight bound leaves headroom for every live order
-     * to complete plus that poll's own submissions before the writer drains again.
-     */
-    public static final int HANDOFF_QUEUE_CAPACITY = 2 * MAX_IN_FLIGHT_ORDERS;
-
-    /**
-     * The reader's pool. The writer frees an order only once the reader has, so the reader holds at most the
-     * writer's live orders, plus refused submits whose rejection it hasn't reached yet: it takes in a pass's new
-     * orders before that pass's reports, and those can be at most a handoff queue's worth.
-     */
-    public static final int READER_POOL_SIZE = MAX_IN_FLIGHT_ORDERS + HANDOFF_QUEUE_CAPACITY;
-
     /** Marks a quantity the venue did not report. */
     public static final long QTY_ABSENT = -1L;
 

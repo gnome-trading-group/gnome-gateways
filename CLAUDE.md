@@ -1,10 +1,10 @@
 # CLAUDE.md
 
 gnome-gateways is the Java library that talks to trading venues: the feed layer (`feed/`) reads venues' market data,
-many markets multiplexed per connection, into `Mbp10Schema` records on each stream's `SequencedRingBuffer`, and
-outbound gateways send the OMS's orders to the venue and report fills and acks back. It has no process or deployment of
-its own; gnome-orchestrator wires it up, both in a strategy session's JVM and in the market data shards
-(`collectors/ShardOrchestrator`), which run the same feeds.
+many markets multiplexed per connection, into `Mbp10Schema` records on each stream's `SequencedRingBuffer`, and the
+account path (`account/`) sends every session's orders for one venue account and reports fills and acks back. It has no
+process or deployment of its own; gnome-orchestrator wires it up, in the market data shards (`shard/ShardOrchestrator`)
+and in the order gateway (`gateway/`).
 
 ## Commands
 
@@ -29,7 +29,7 @@ its own; gnome-orchestrator wires it up, both in a strategy session's JVM and in
 
 All code is under `src/main/java/group/gnometrading/gateways/`.
 - `GatewaySupervisor`, `SocketConnectController`, `ConnectLimiter`, `GatewayConfig`, `ReaderPauseControl`: connect,
-  reconnect, keep-alive and silence detection shared by feeds and outbound.
+  reconnect, keep-alive and silence detection shared by feeds and the account reader.
 - `feed/`: the market data layer, generic over transport and venue.
   - `Subject`: one venue market, its full-depth `book/Book` (sides grow to 65,536 levels), state machine
     (`SUBSCRIBING -> LIVE <-> SUSPECT -> STALE`, plus `EMPTY`, `QUARANTINED`, `REMOVING`) and liveness; publishes to
@@ -47,10 +47,8 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
   - `VenueFeed`: what a venue tells the feed about itself (market mapping, depth, URL property, probe budget).
 - `transport/`: `Transport` (`WebSocketTransport` now; FIX later), `FrameReader`, `FrameWriter`/`WebSocketWriter` (MPSC
   queues), shared by feeds and the account reader.
-- `orders/`: order state and rules both order paths share: `OrderContext`, `OrderReports`, `ReaderNotices`,
+- `orders/`: order state and rules under the account path: `OrderContext`, `OrderReports`, `ReaderNotices`,
   `SubmitPolicy`, `OrderEventSink`, `VenueRejectText`, the result types, `recovery/` (venue order lookup).
-- `outbound/`: the per-listing order path a session runs in its own process: `OutboundGateway`,
-  `OutboundSocketWriter` (HTTP), `OutboundSocketReader` (private socket for order events), `IdleConnections`.
 - `ratelimit/`: per-account REST limiter (`VenueRateLimiter`, `VenueRateLimits`) shared by every listing on an account;
   `AccountBudget`, the thread-safe budget the account lane draws on without waiting, and `BudgetGate`, a blocking
   `RequestGate` over it at a fixed `RequestClass` for clients reading the account beside the lane (catch-up,
@@ -73,23 +71,21 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
     fair share for a post-mortem.
   - `account/reader/`: `AccountReader` + `AccountConnection` (one account-wide event socket, catch-up over REST
     fetched beside the reader and repeated once the venue's reads settle) with an `AccountProtocol` per venue.
-  - `orders/OrderReports` holds the order state and builds every report, for this reader and the in-session
-    `outbound/OutboundSocketReader` alike.
+  - `orders/OrderReports` holds the order state and builds every report for this reader.
 - `venues/<venue>/`: everything specific to one venue, on top of the generic layers above, which never depend on it.
   `<Venue>Venue` holds its facts (`FEED`, `subjectOf`, and where it has order entry `rateLimits()` and
   `crossMarketOf`: the market a listing's orders can trade against others on, for the order gateway's self-trade
   check); `<Venue>Protocol` its market data (auth, subscribe/unsubscribe/resync, keep-alive, frame decoding); `<Venue>BookProbe` its REST probe
-  if it sends book changes; `<Venue>Outbound*`, signers, requests and order queries its order entry. Venues:
+  if it sends book changes; `<Venue>LaneVenue`, `<Venue>AccountProtocol`, signers, requests and order queries its order entry. Venues:
   `kalshi`, `polymarket/intl`, `polymarket/us` (market data and orders), `hyperliquid`, `lighter` (market data only).
 - `fix/`: generic FIX transport; nothing in this repo or gnome-orchestrator uses it now that Binance is gone.
 - The test jar is published: gnome-orchestrator's order gateway tests use the account path's fakes
   (`account/lane/FakeVenueServer`, `account/lane/TestLaneVenue`, `account/reader/FakeAccountTransport`,
   `account/reader/TextAccountProtocol`), so keep them public and stable.
-- Tests mirror the code: generic tests under `feed/`, `orders/`, `outbound/` and `account/{lane,reader}/` (whole
+- Tests mirror the code: generic tests under `feed/`, `orders/` and `account/{lane,reader}/` (whole
   account path tests, which use both halves, in `account/`), each venue's under `venues/<venue>/`.
-- `LayoutTest` (ArchUnit) keeps the layers apart: lane and reader use neither each other, `account/` and `outbound/`
-  use neither each other, `orders/` and `ratelimit/` use neither order path, nothing outside `venues/` uses it, and
-  `feed/` uses no order code.
+- `LayoutTest` (ArchUnit) keeps the layers apart: lane and reader use neither each other, `orders/` and `ratelimit/`
+  don't use `account/`, nothing outside `venues/` uses it, and `feed/` uses no order code.
 - `venues/polymarket/intl/PolymarketIntlCaptureReplay` is a `main()` tool, not a test.
 
 ## Conventions and invariants
@@ -114,8 +110,7 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
   (3) failed cycles it throws `GatewayConnectFailedException` to the error handler. Forced reconnect when nothing
   arrives for `maxSilentInterval` (30s), and every 12h for order entry; a feed connection is rolled instead.
   `GatewayConfig` validates timeout relationships; keep them valid.
-- `ConnectLimiter.forSource` spaces connects per source across the process: Kalshi 2/s, others 5/s. Outbound uses
-  `UNLIMITED` (one connect per venue).
+- `ConnectLimiter.forSource` spaces connects per source across the process: Kalshi 2/s, others 5/s.
 - Every venue snapshots over its socket. Gap detection: a bad book goes `STALE`, is published once flagged badData, and
   only that market is resynced on its connection. Kalshi checks `seq` over every frame of the connection (a gap
   resyncs all its markets, hence 250 per connection), Lighter each market's nonce chain, Polymarket Intl the venue's
@@ -166,7 +161,7 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
   or post-only. Polymarket US refusals are all reported as plain venue rejects (no captured texts yet).
 - Rate limits: `VENUE_RATE_LIMITED` (venue 429), `RATE_LIMIT_THROTTLING` / `RATE_LIMIT_RECOVERED` (local budget).
   Other processes on the same account share the venue budget.
-- "Order context pool exhausted" means more in-flight orders than `OrderContext.MAX_IN_FLIGHT_ORDERS`.
+- "Order context pool exhausted" means more in-flight orders than the reader's pool (the gateway's `gateway.max.orders`).
 - Release: every push to `main` runs gnome-build-tools' bump-and-deploy (`mvn verify`, then maven-release-plugin to
   GitHub Packages). Commit prefix picks the bump: `major:` major, `feat:` minor, anything else patch. The release
   fails on SNAPSHOT dependencies, so pin released versions of gnome-core/gnome-networking first.

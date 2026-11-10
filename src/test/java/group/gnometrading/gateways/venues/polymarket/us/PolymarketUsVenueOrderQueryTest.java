@@ -39,7 +39,7 @@ import org.mockito.ArgumentCaptor;
 class PolymarketUsVenueOrderQueryTest {
 
     private static final String SLUG = "tec-mlb-champ-2026-09-27-lad";
-    private static final String STAMP = PolymarketUsOutboundWriterTest.stampText(PolymarketUsStamps.stampMillis(17, 3));
+    private static final String STAMP = PolymarketUsStampsTest.stampText(PolymarketUsStamps.stampMillis(17, 3));
     private static final long OPENED_MS = 1_791_469_000_000L;
 
     private HTTPClient httpClient;

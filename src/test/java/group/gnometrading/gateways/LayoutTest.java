@@ -8,9 +8,9 @@ import com.tngtech.archunit.core.importer.ImportOption;
 import org.junit.jupiter.api.Test;
 
 /**
- * The library's layers: market data, the order gateway's account path, and the per-listing order path a session runs
- * in its own process are separate, sharing only the order state and rate limits below them. Within the account path,
- * the lane and the reader talk only through the order state's notices, so neither may use the other.
+ * The library's layers: market data and the order gateway's account path are separate, sharing only the order state
+ * and rate limits below them. Within the account path, the lane and the reader talk only through the order state's
+ * notices, so neither may use the other.
  */
 class LayoutTest {
 
@@ -37,31 +37,13 @@ class LayoutTest {
     }
 
     @Test
-    void theAccountPathAndTheSessionsOrderPathUseNeitherEachOther() {
-        noClasses()
-                .that()
-                .resideInAPackage("..gateways.account..")
-                .should()
-                .dependOnClassesThat()
-                .resideInAPackage("..gateways.outbound..")
-                .check(CLASSES);
-        noClasses()
-                .that()
-                .resideInAPackage("..gateways.outbound..")
-                .should()
-                .dependOnClassesThat()
-                .resideInAPackage("..gateways.account..")
-                .check(CLASSES);
-    }
-
-    @Test
-    void theSharedLayersUseNeitherOrderPath() {
+    void theSharedLayersDontUseTheAccountPath() {
         noClasses()
                 .that()
                 .resideInAnyPackage("..gateways.orders..", "..gateways.ratelimit..")
                 .should()
                 .dependOnClassesThat()
-                .resideInAnyPackage("..gateways.account..", "..gateways.outbound..")
+                .resideInAPackage("..gateways.account..")
                 .check(CLASSES);
     }
 

@@ -236,7 +236,7 @@ class PolymarketUsAccountProtocolTest {
     }
 
     private static String stamp(final long counter) {
-        return PolymarketUsOutboundWriterTest.stampText(PolymarketUsStamps.stampMillis(SLOT, counter));
+        return PolymarketUsStampsTest.stampText(PolymarketUsStamps.stampMillis(SLOT, counter));
     }
 
     private static Listing listing(final long securityId, final String slug) {
