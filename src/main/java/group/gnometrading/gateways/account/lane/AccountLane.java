@@ -146,6 +146,9 @@ public final class AccountLane<M> implements GnomeAgent {
 
         /** Every connection was in use when the lane had a request to send; told once until one is free again. */
         default void connectionsBusy() {}
+
+        /** A queued amend or new order was refused for waiting too long with no connection open, not for the budget. */
+        default void refusedWithoutConnection() {}
     }
 
     /** The most sessions an account serves: a bound against a leak, far above what its budget can serve. */
@@ -166,6 +169,9 @@ public final class AccountLane<M> implements GnomeAgent {
     private static final long INDEX_MASK = (1 << LaneOrder.INDEX_BITS) - 1;
     private static final int COMMANDS_PER_PASS = 64;
     private static final int PARKED_COMMANDS = 256;
+    // How often idle connections gone stale are handed back for replacing, ahead of the requests that would find them
+    // so.
+    private static final long RETIRE_INTERVAL_NANOS = TimeUnit.MILLISECONDS.toNanos(100);
 
     private final String name;
     private final LaneVenue<M> venue;
@@ -240,6 +246,7 @@ public final class AccountLane<M> implements GnomeAgent {
     private boolean connectionsWereBusy;
     // Whether the last request held back was held by the budget rather than for want of a connection.
     private boolean heldByBudget;
+    private long retireAtNanos;
 
     /**
      * @param maxOrders the most orders the account may have working
@@ -324,6 +331,7 @@ public final class AccountLane<M> implements GnomeAgent {
 
     @Override
     public int doWork() {
+        retireIdleConnections();
         int work = drainReleased();
         work += pollAnswers();
         work += wakeWaiting();
@@ -332,6 +340,20 @@ public final class AccountLane<M> implements GnomeAgent {
         work += drainCommands();
         work += sendQueued();
         return work;
+    }
+
+    /**
+     * Hands back, one at a time, connections idle past half the time they may be trusted, so the connector has replaced
+     * them before an order needs one: an order that finds them all stale waits for a new connect, longer than it may
+     * wait, and on a quiet account every connection goes stale between orders. One per pass replaces all of them in
+     * {@code connections x} {@link #RETIRE_INTERVAL_NANOS}, well inside half their max idle.
+     */
+    private void retireIdleConnections() {
+        final long now = this.nanoClock.getAsLong();
+        if (now - this.retireAtNanos >= 0) {
+            this.retireAtNanos = now + RETIRE_INTERVAL_NANOS;
+            this.connections.retireIdle(now, this.connections.maxIdleNanos() / 2);
+        }
     }
 
     /** Orders working on the account, for status and tests. */
@@ -855,6 +877,9 @@ public final class AccountLane<M> implements GnomeAgent {
             return;
         }
         final RejectReason reason = this.heldByBudget ? RejectReason.RATE_LIMITED : RejectReason.GATEWAY_DEGRADED;
+        if (!this.heldByBudget) {
+            this.admissions.refusedWithoutConnection();
+        }
         if (kind == LaneOrder.SUBMIT) {
             decided(order, RequestClass.NEW, AdmissionAction.REJECTED_RATE_LIMITED, order.queuedAtNanos, -1);
             rejectAndFree(order, reason);

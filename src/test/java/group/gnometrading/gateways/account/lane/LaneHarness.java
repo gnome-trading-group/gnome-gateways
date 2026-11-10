@@ -43,6 +43,8 @@ public final class LaneHarness<M> implements AutoCloseable {
             new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 256);
     private final ManyToOneRingBuffer<OrderContext> releasedOrderQueue =
             new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 256);
+    // The connection pool's own default.
+    private static final long DEFAULT_MAX_IDLE_NANOS = TimeUnit.SECONDS.toNanos(30);
     private final long sessionSlot;
     // Set to stop reading the lane's notices, as a reader paused for catch-up or stalled would.
     public boolean readerStalled;
@@ -97,6 +99,18 @@ public final class LaneHarness<M> implements AutoCloseable {
             final int exchangeId,
             final long securityId)
             throws IOException {
+        this(venue, timing, sessionSlot, exchangeId, securityId, DEFAULT_MAX_IDLE_NANOS);
+    }
+
+    /** @param maxIdleNanos how long a connection may sit unused before it counts as stale */
+    public LaneHarness(
+            final LaneVenue<M> venue,
+            final AccountLane.Timing timing,
+            final long sessionSlot,
+            final int exchangeId,
+            final long securityId,
+            final long maxIdleNanos)
+            throws IOException {
         this(
                 venue,
                 timing,
@@ -109,7 +123,8 @@ public final class LaneHarness<M> implements AutoCloseable {
                         List.of()),
                 sessionSlot,
                 exchangeId,
-                securityId);
+                securityId,
+                maxIdleNanos);
     }
 
     /** @param limits the account's budget, which starts empty */
@@ -121,6 +136,22 @@ public final class LaneHarness<M> implements AutoCloseable {
             final int exchangeId,
             final long securityId)
             throws IOException {
+        this(venue, timing, limits, sessionSlot, exchangeId, securityId, DEFAULT_MAX_IDLE_NANOS);
+    }
+
+    /**
+     * @param limits the account's budget, which starts empty
+     * @param maxIdleNanos how long a connection may sit unused before it counts as stale
+     */
+    public LaneHarness(
+            final LaneVenue<M> venue,
+            final AccountLane.Timing timing,
+            final VenueRateLimits limits,
+            final long sessionSlot,
+            final int exchangeId,
+            final long securityId,
+            final long maxIdleNanos)
+            throws IOException {
         this.sessionSlot = sessionSlot;
         this.exchangeId = exchangeId;
         this.securityId = securityId;
@@ -128,6 +159,7 @@ public final class LaneHarness<M> implements AutoCloseable {
         this.connections = AsyncHTTPConnections.builder(HTTPProtocol.HTTP, "127.0.0.1")
                 .withPort(this.server.port())
                 .withConnections(CONNECTIONS)
+                .withMaxIdle(maxIdleNanos)
                 .build();
         this.connector = new HTTPConnector(List.of(this.connections), HTTPConnector.Listener.NONE);
         final AccountBudget budget = new AccountBudget(limits, System.nanoTime());

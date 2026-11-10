@@ -2,6 +2,7 @@ package group.gnometrading.gateways.account.lane;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import group.gnometrading.gateways.account.lane.FakeVenueServer.Reply;
@@ -612,6 +613,33 @@ class AccountLaneTest {
         assertEquals(ExecType.CANCEL, this.notices.get(1).execType, "the order's");
         runFor(50);
         assertTrue(this.server.requests().isEmpty());
+    }
+
+    @Test
+    void aQuietAccountAlwaysHasAFreshConnectionReadyForTheNextOrder() throws Exception {
+        final long maxIdleNanos = TimeUnit.SECONDS.toNanos(2);
+        try (LaneHarness<String> quiet = new LaneHarness<>(
+                this.venue,
+                AccountLane.Timing.defaults(),
+                SLOT,
+                TestLaneVenue.EXCHANGE_ID,
+                TestLaneVenue.SECURITY_ID,
+                maxIdleNanos)) {
+            quiet.runUntil(() -> quiet.connections.acquire() != AsyncHTTPConnections.NONE);
+            // Unused for longer than any connection may be trusted: without replacing ahead of time, all would be
+            // stale together and the next order would wait for a new connect.
+            final long until = System.nanoTime() + 2 * maxIdleNanos;
+            int samples = 0;
+            while (System.nanoTime() < until) {
+                quiet.runFor(20);
+                assertNotEquals(
+                        AsyncHTTPConnections.NONE,
+                        quiet.connections.acquire(),
+                        "a connection fit to use, at every moment");
+                samples++;
+            }
+            assertTrue(samples > 100);
+        }
     }
 
     private LaneHarness<String> sweeping() throws Exception {
