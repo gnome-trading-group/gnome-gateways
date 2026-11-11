@@ -39,4 +39,12 @@ public interface VenueOrderQuery {
 
     /** Asks the venue to cancel an order {@link #listAllOpenOrders()} found; true if it accepted. */
     boolean cancel(AccountOrder order) throws IOException;
+
+    /**
+     * Whose order this is, on a venue whose ids encode it as a slot and counter rather than naming the session; empty
+     * where the id says nothing of its owner, or names the session outright.
+     */
+    default Optional<OrderOwner> ownerOf(VenueOrder order) {
+        return Optional.empty();
+    }
 }

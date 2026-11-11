@@ -3,6 +3,7 @@ package group.gnometrading.gateways.venues.polymarket.us;
 import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.gateways.Rfc3339;
 import group.gnometrading.gateways.orders.recovery.AccountOrder;
+import group.gnometrading.gateways.orders.recovery.OrderOwner;
 import group.gnometrading.gateways.orders.recovery.VenueOrder;
 import group.gnometrading.gateways.orders.recovery.VenueOrderQuery;
 import group.gnometrading.gateways.ratelimit.RequestFailure;
@@ -143,6 +144,15 @@ public final class PolymarketUsVenueOrderQuery implements VenueOrderQuery {
                 body,
                 body.length);
         return response.isSuccess();
+    }
+
+    @Override
+    public Optional<OrderOwner> ownerOf(final VenueOrder order) {
+        final long stamp = PolymarketUsStamps.parseMillis(new ViewString(order.exchangeOrderId()));
+        if (stamp == Rfc3339.INVALID || !PolymarketUsStamps.isStamp(stamp)) {
+            return Optional.empty();
+        }
+        return Optional.of(new OrderOwner(PolymarketUsStamps.slotOf(stamp), PolymarketUsStamps.counterOf(stamp)));
     }
 
     /** {@code {"orders":[...]}}: the market's open orders, copied out of the HTTP client's buffer. */

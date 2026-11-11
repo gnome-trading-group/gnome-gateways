@@ -48,6 +48,17 @@ class PolymarketUsStampsTest {
     }
 
     @Test
+    void aStampGivesBackItsSlotAndCounter() {
+        final long stamp = PolymarketUsStamps.stampMillis(543, 2);
+        assertEquals(543, PolymarketUsStamps.slotOf(stamp));
+        assertEquals(2, PolymarketUsStamps.counterOf(stamp));
+        final long last =
+                PolymarketUsStamps.stampMillis(PolymarketUsStamps.SLOTS - 1, PolymarketUsStamps.COUNTER_RANGE - 1);
+        assertEquals(PolymarketUsStamps.SLOTS - 1, PolymarketUsStamps.slotOf(last));
+        assertEquals(PolymarketUsStamps.COUNTER_RANGE - 1, PolymarketUsStamps.counterOf(last));
+    }
+
+    @Test
     void onlyTimesInTheRangeAreStamps() {
         assertTrue(PolymarketUsStamps.isStamp(PolymarketUsStamps.stampMillis(0, 1)));
         assertFalse(PolymarketUsStamps.isStamp(

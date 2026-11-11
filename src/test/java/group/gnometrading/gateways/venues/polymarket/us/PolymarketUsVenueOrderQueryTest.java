@@ -12,6 +12,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import group.gnometrading.gateways.orders.recovery.AccountOrder;
+import group.gnometrading.gateways.orders.recovery.OrderOwner;
 import group.gnometrading.gateways.orders.recovery.VenueOrder;
 import group.gnometrading.gateways.ratelimit.AccountBudget;
 import group.gnometrading.gateways.ratelimit.BudgetGate;
@@ -106,6 +107,19 @@ class PolymarketUsVenueOrderQueryTest {
         assertEquals(
                 "Polymarket US order lookup wasn't sent: the account's budget had no room for it in time",
                 failure.getMessage());
+    }
+
+    @Test
+    void anOrdersOwnerIsReadFromItsStamp_AndNoOtherIdHasOne() {
+        // Stamps 2100-03-04T12:00:00.001Z and .002Z: slot 540, its first and second orders.
+        assertEquals(
+                Optional.of(new OrderOwner(540, 1)),
+                query.ownerOf(new VenueOrder("2100-03-04T12:00:00.001Z", "venue-1", 0, 0, 0, false)));
+        assertEquals(
+                Optional.of(new OrderOwner(540, 2)),
+                query.ownerOf(new VenueOrder("2100-03-04T12:00:00.002Z", "venue-2", 0, 0, 0, false)));
+        assertEquals(Optional.empty(), query.ownerOf(new VenueOrder("ioc-540-3", "venue-3", 0, 0, 0, false)));
+        assertEquals(Optional.empty(), query.ownerOf(new VenueOrder("2026-12-31T23:59:59.123Z", "v", 0, 0, 0, false)));
     }
 
     @Test

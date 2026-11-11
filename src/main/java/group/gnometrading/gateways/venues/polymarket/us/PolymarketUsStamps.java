@@ -55,6 +55,16 @@ public final class PolymarketUsStamps {
         return BASE_MILLIS + slot * COUNTER_RANGE + Math.floorMod(counter, COUNTER_RANGE);
     }
 
+    /** The slot of the session whose order carries the stamp {@code epochMillis}; only for one {@link #isStamp}. */
+    static long slotOf(final long epochMillis) {
+        return (epochMillis - BASE_MILLIS) / COUNTER_RANGE;
+    }
+
+    /** The session's counter of the order that carries the stamp {@code epochMillis}; only for one {@link #isStamp}. */
+    static long counterOf(final long epochMillis) {
+        return (epochMillis - BASE_MILLIS) % COUNTER_RANGE;
+    }
+
     /** Whether a time can be one of our stamps. */
     static boolean isStamp(final long epochMillis) {
         return epochMillis >= BASE_MILLIS && epochMillis < END_MILLIS;

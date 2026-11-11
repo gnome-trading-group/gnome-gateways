@@ -48,7 +48,8 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
 - `transport/`: `Transport` (`WebSocketTransport` now; FIX later), `FrameReader`, `FrameWriter`/`WebSocketWriter` (MPSC
   queues), shared by feeds and the account reader.
 - `orders/`: order state and rules under the account path: `OrderContext`, `OrderReports`, `ReaderNotices`,
-  `SubmitPolicy`, `OrderEventSink`, `VenueRejectText`, the result types, `recovery/` (venue order lookup).
+  `SubmitPolicy`, `OrderEventSink`, `VenueRejectText`, the result types, `recovery/` (venue order lookup; `ownerOf`
+  reads the slot and counter out of an id that names them, as Polymarket US stamps do).
 - `ratelimit/`: per-account REST limiter (`VenueRateLimiter`, `VenueRateLimits`) shared by every listing on an account;
   `AccountBudget`, the thread-safe budget the account lane draws on without waiting, and `BudgetGate`, a blocking
   `RequestGate` over it at a fixed `RequestClass` for clients reading the account beside the lane (catch-up,
