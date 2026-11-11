@@ -2,6 +2,7 @@ package group.gnometrading.gateways.venues.polymarket.us;
 
 import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.gateways.Rfc3339;
+import group.gnometrading.gateways.orders.recovery.AccountOrder;
 import group.gnometrading.gateways.orders.recovery.VenueOrder;
 import group.gnometrading.gateways.orders.recovery.VenueOrderQuery;
 import group.gnometrading.gateways.ratelimit.RequestFailure;
@@ -88,16 +89,57 @@ public final class PolymarketUsVenueOrderQuery implements VenueOrderQuery {
         return venueId == null ? Optional.empty() : orderById(venueId);
     }
 
+    /** The venue answers every open order in one page. */
+    @Override
+    public List<AccountOrder> listAllOpenOrders() throws IOException {
+        final List<AccountOrder> orders = new ArrayList<>();
+        try (var root = this.jsonDecoder.wrap(accountOpenOrdersPage());
+                var obj = root.asObject()) {
+            while (obj.hasNextKey()) {
+                try (var entry = obj.nextKey()) {
+                    if (entry.getName().equals("orders") && !entry.isNull()) {
+                        readAccountOrders(entry, orders);
+                    }
+                }
+            }
+        }
+        return orders;
+    }
+
+    private void readAccountOrders(final JsonDecoder.JsonNode node, final List<AccountOrder> orders) {
+        try (var list = node.asArray()) {
+            while (list.hasNextItem()) {
+                try (var item = list.nextItem()) {
+                    final VenueOrder order = readOrder(item);
+                    final String market = new String(
+                            this.fields.marketSlug, 0, this.fields.marketSlugLength, StandardCharsets.US_ASCII);
+                    final long created = this.fields.createTimeNanos == Rfc3339.INVALID
+                            ? 0
+                            : this.fields.createTimeNanos / NANOS_PER_MILLI;
+                    orders.add(new AccountOrder(order, market, created));
+                }
+            }
+        }
+    }
+
     @Override
     public boolean cancel(final Listing listing, final VenueOrder order) throws IOException {
-        final byte[] body = ("{\"marketSlug\":\"" + new PolymarketUsListing(listing).marketSlug() + "\"}")
-                .getBytes(StandardCharsets.US_ASCII);
+        return cancel(new PolymarketUsListing(listing).marketSlug(), order.venueId());
+    }
+
+    @Override
+    public boolean cancel(final AccountOrder order) throws IOException {
+        return cancel(order.market(), order.order().venueId());
+    }
+
+    private boolean cancel(final String marketSlug, final String venueId) throws IOException {
+        final byte[] body = ("{\"marketSlug\":\"" + marketSlug + "\"}").getBytes(StandardCharsets.US_ASCII);
         final HTTPResponse response = PolymarketUsRequests.post(
                 this.httpClient,
                 this.apiHost,
                 this.signer,
                 this.clockMillis.getAsLong(),
-                new ViewString(PolymarketUsRequests.ORDER_PATH + order.venueId() + PolymarketUsRequests.CANCEL_SUFFIX),
+                new ViewString(PolymarketUsRequests.ORDER_PATH + venueId + PolymarketUsRequests.CANCEL_SUFFIX),
                 body,
                 body.length);
         return response.isSuccess();

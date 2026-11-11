@@ -9,6 +9,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import group.gnometrading.gateways.orders.recovery.AccountOrder;
 import group.gnometrading.gateways.orders.recovery.VenueOrder;
 import group.gnometrading.networking.http.HTTPClient;
 import group.gnometrading.networking.http.HTTPResponse;
@@ -133,6 +134,48 @@ class PolymarketIntlVenueOrderQueryTest {
 
         respond(200, "{\"canceled\":[],\"not_canceled\":{\"" + HASH + "\":\"order is already matched\"}}");
         assertFalse(query.cancel(LISTING, order));
+    }
+
+    @Test
+    void listAllOpenOrders_ReadsEveryPageOfTheAccount_WithEachOrdersTokenAndCreationTime() throws IOException {
+        final String other = "0x" + "cd".repeat(32);
+        respond(
+                200,
+                "{\"data\":[" + withCreated(order(HASH, "LIVE", "BUY", "0.42", "10", "4"), "1699999000")
+                        + "],\"next_cursor\":\"MTA=\"}");
+        respond(
+                200,
+                "{\"data\":["
+                        + withCreated(order(other, "LIVE", "SELL", "0.60", "5", "0"), "\"1699999500\"")
+                                .replace("\"777\"", "\"888\"")
+                        + "],\"next_cursor\":\"LTE=\"}");
+
+        final List<AccountOrder> orders = query.listAllOpenOrders();
+
+        assertEquals(List.of("/data/orders", "/data/orders?next_cursor=MTA="), paths);
+        assertEquals(
+                new AccountOrder(
+                        new VenueOrder(HASH, HASH, 4_000_000, 1_680_000_000L, 0, false), "777", 1_699_999_000_000L),
+                orders.get(0));
+        assertEquals(
+                new AccountOrder(new VenueOrder(other, other, 0, 0, 0, false), "888", 1_699_999_500_000L),
+                orders.get(1),
+                "a quoted creation time reads the same");
+    }
+
+    @Test
+    void cancelAccountOrder_CancelsByItsHash() throws IOException {
+        final AccountOrder order = new AccountOrder(new VenueOrder(HASH, HASH, 0, 0, 0, false), "777", 0);
+        respond(200, "{\"canceled\":[\"" + HASH + "\"],\"not_canceled\":{}}");
+        assertTrue(query.cancel(order));
+        assertEquals("{\"orderID\":\"" + HASH + "\"}", bodies.get(0));
+
+        respond(200, "{\"canceled\":[],\"not_canceled\":{\"" + HASH + "\":\"order is already matched\"}}");
+        assertFalse(query.cancel(order));
+    }
+
+    private static String withCreated(final String order, final String createdAt) {
+        return order.substring(0, order.length() - 1) + ",\"created_at\":" + createdAt + "}";
     }
 
     private static String order(

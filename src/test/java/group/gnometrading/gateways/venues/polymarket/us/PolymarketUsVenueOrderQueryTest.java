@@ -11,6 +11,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import group.gnometrading.gateways.orders.recovery.AccountOrder;
 import group.gnometrading.gateways.orders.recovery.VenueOrder;
 import group.gnometrading.gateways.ratelimit.AccountBudget;
 import group.gnometrading.gateways.ratelimit.BudgetGate;
@@ -27,6 +28,7 @@ import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPairGenerator;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -236,6 +238,115 @@ class PolymarketUsVenueOrderQueryTest {
                         anyString());
         assertEquals("/v1/order/V1/cancel", path.getValue().toString());
         assertFalse(paths.contains("/v1/orders/open"));
+    }
+
+    @Test
+    void listAllOpenOrders_ReadsEveryMarketsOrders_WithTheirSlugAndCreateTime() throws Exception {
+        final String other = "tec-nfl-week-9-2026-11-08-kc";
+        answers.put(
+                "/v1/orders/open",
+                "{\"orders\":["
+                        + withCreateTime(
+                                order("V1", "ORDER_STATE_NEW", "BUY_LONG", 2, 0, "0", STAMP),
+                                "2026-11-08T14:00:00.250Z")
+                        + ","
+                        + withCreateTime(
+                                order("V2", "ORDER_STATE_PARTIALLY_FILLED", "BUY_SHORT", 4, 2, "0.4000", null)
+                                        .replace(SLUG, other),
+                                "2026-11-08T15:00:00Z")
+                        + "]}");
+
+        final List<AccountOrder> orders = query.listAllOpenOrders();
+
+        assertEquals(List.of("/v1/orders/open"), paths);
+        assertEquals(
+                new AccountOrder(
+                        new VenueOrder(STAMP, "V1", 0, 0, 0, false),
+                        SLUG,
+                        Instant.parse("2026-11-08T14:00:00.250Z").toEpochMilli()),
+                orders.get(0));
+        assertEquals(other, orders.get(1).market());
+        assertEquals(price("1.2"), orders.get(1).order().filledNotional(), "a NO order's fills in NO terms");
+        assertEquals(
+                Instant.parse("2026-11-08T15:00:00Z").toEpochMilli(),
+                orders.get(1).createdMillis());
+    }
+
+    @Test
+    void listAllOpenOrders_NoneOpen_IsEmpty() throws Exception {
+        answers.put("/v1/orders/open", "{\"orders\":[]}");
+        assertTrue(query.listAllOpenOrders().isEmpty());
+    }
+
+    @Test
+    void cancelAccountOrder_PostsToItsCancelPath_NamingItsMarket() throws Exception {
+        final HTTPResponse ok = response(200, "{}");
+        when(httpClient.post(
+                        any(),
+                        anyString(),
+                        any(GnomeString.class),
+                        any(byte[].class),
+                        anyInt(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString()))
+                .thenReturn(ok);
+
+        assertTrue(query.cancel(new AccountOrder(new VenueOrder(STAMP, "V9", 0, 0, 0, false), "other-slug", 0)));
+
+        final ArgumentCaptor<GnomeString> path = ArgumentCaptor.forClass(GnomeString.class);
+        final ArgumentCaptor<byte[]> body = ArgumentCaptor.forClass(byte[].class);
+        final ArgumentCaptor<Integer> length = ArgumentCaptor.forClass(Integer.class);
+        verify(httpClient)
+                .post(
+                        any(),
+                        anyString(),
+                        path.capture(),
+                        body.capture(),
+                        length.capture(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString());
+        assertEquals("/v1/order/V9/cancel", path.getValue().toString());
+        assertEquals(
+                "{\"marketSlug\":\"other-slug\"}",
+                new String(body.getValue(), 0, length.getValue(), StandardCharsets.US_ASCII));
+    }
+
+    @Test
+    void cancelAccountOrder_Refused_IsFalse() throws Exception {
+        final HTTPResponse refused = response(400, "{}");
+        when(httpClient.post(
+                        any(),
+                        anyString(),
+                        any(GnomeString.class),
+                        any(byte[].class),
+                        anyInt(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString(),
+                        anyString()))
+                .thenReturn(refused);
+
+        assertFalse(query.cancel(new AccountOrder(new VenueOrder(STAMP, "V9", 0, 0, 0, false), SLUG, 0)));
+    }
+
+    private static String withCreateTime(final String order, final String createTime) {
+        return order.substring(0, order.length() - 1) + ",\"createTime\":\"" + createTime + "\"}";
     }
 
     private static Listing listing(final String suffix) {

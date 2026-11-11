@@ -28,6 +28,15 @@ public interface VenueOrderQuery {
      */
     Optional<VenueOrder> getOrder(Listing listing, String exchangeOrderId, long createdAfterMs) throws IOException;
 
+    /**
+     * Every order resting on the account, on every market (and on Kalshi every exchange shard), across all pages. For an
+     * order gateway that can't trust its own record of what it placed, e.g. after losing it.
+     */
+    List<AccountOrder> listAllOpenOrders() throws IOException;
+
     /** Asks the venue to cancel the order; true if it accepted. Whether the order is then terminal is for the caller to check. */
     boolean cancel(Listing listing, VenueOrder order) throws IOException;
+
+    /** Asks the venue to cancel an order {@link #listAllOpenOrders()} found; true if it accepted. */
+    boolean cancel(AccountOrder order) throws IOException;
 }

@@ -1,6 +1,7 @@
 package group.gnometrading.gateways.venues.polymarket.intl;
 
 import group.gnometrading.codecs.json.JsonDecoder;
+import group.gnometrading.gateways.orders.recovery.AccountOrder;
 import group.gnometrading.gateways.orders.recovery.VenueOrder;
 import group.gnometrading.gateways.orders.recovery.VenueOrderQuery;
 import group.gnometrading.gateways.ratelimit.RequestFailure;
@@ -32,6 +33,7 @@ public final class PolymarketIntlVenueOrderQuery implements VenueOrderQuery {
     // The cursor the CLOB returns after the last page.
     private static final String END_CURSOR = "LTE=";
     private static final int HTTP_NOT_FOUND = 404;
+    private static final long MILLIS_PER_SECOND = 1_000;
     // Statuses of an order that can still fill; anything else (matched, cancelled) has finished.
     private static final Set<String> WORKING_STATUSES = Set.of("LIVE", "DELAYED", "UNMATCHED");
 
@@ -49,17 +51,35 @@ public final class PolymarketIntlVenueOrderQuery implements VenueOrderQuery {
 
     @Override
     public List<VenueOrder> listOpenOrders(final Listing listing) throws IOException {
-        return openOrders("?asset_id=" + tokenId(listing));
+        return venueOrders(openOrders("?asset_id=" + tokenId(listing)));
     }
 
     /** Every open order on the account, in any market. */
     List<VenueOrder> listAccountOpenOrders() throws IOException {
-        return openOrders("");
+        return venueOrders(openOrders(""));
+    }
+
+    @Override
+    public List<AccountOrder> listAllOpenOrders() throws IOException {
+        final List<OrderFields> read = openOrders("");
+        final List<AccountOrder> orders = new ArrayList<>(read.size());
+        for (final OrderFields fields : read) {
+            orders.add(new AccountOrder(fields.toVenueOrder(), fields.tokenId, fields.createdMillis()));
+        }
+        return orders;
+    }
+
+    private static List<VenueOrder> venueOrders(final List<OrderFields> read) {
+        final List<VenueOrder> orders = new ArrayList<>(read.size());
+        for (final OrderFields fields : read) {
+            orders.add(fields.toVenueOrder());
+        }
+        return orders;
     }
 
     /** @param filter the query without its cursor: empty, or {@code ?name=value...} */
-    private List<VenueOrder> openOrders(final String filter) throws IOException {
-        final List<VenueOrder> orders = new ArrayList<>();
+    private List<OrderFields> openOrders(final String filter) throws IOException {
+        final List<OrderFields> orders = new ArrayList<>();
         String cursor = "";
         do {
             final String path = ORDERS_PATH + filter + cursorParameter(filter, cursor);
@@ -89,7 +109,7 @@ public final class PolymarketIntlVenueOrderQuery implements VenueOrderQuery {
                 return Optional.empty();
             }
             try (var order = root.asObject()) {
-                return Optional.of(readOrder(order));
+                return Optional.of(readOrder(order).toVenueOrder());
             }
         } catch (final RuntimeException e) {
             // The decoder trusts its input; a body that isn't an order object is the venue's fault, not ours.
@@ -99,10 +119,20 @@ public final class PolymarketIntlVenueOrderQuery implements VenueOrderQuery {
 
     @Override
     public boolean cancel(final Listing listing, final VenueOrder order) throws IOException {
-        final byte[] body = ("{\"orderID\":\"" + order.venueId() + "\"}").getBytes(StandardCharsets.US_ASCII);
+        return cancel(order.venueId());
+    }
+
+    /** The CLOB cancels by the order's hash alone, so the market isn't needed. */
+    @Override
+    public boolean cancel(final AccountOrder order) throws IOException {
+        return cancel(order.order().venueId());
+    }
+
+    private boolean cancel(final String venueId) throws IOException {
+        final byte[] body = ("{\"orderID\":\"" + venueId + "\"}").getBytes(StandardCharsets.US_ASCII);
         final HTTPResponse response =
                 PolymarketIntlRequests.cancel(this.httpClient, this.clobHost, this.authHeaders, body, body.length);
-        final byte[] id = order.venueId().getBytes(StandardCharsets.US_ASCII);
+        final byte[] id = venueId.getBytes(StandardCharsets.US_ASCII);
         return PolymarketIntlRequests.listsAsCanceled(this.jsonDecoder, response, id, id.length);
     }
 
@@ -150,7 +180,7 @@ public final class PolymarketIntlVenueOrderQuery implements VenueOrderQuery {
     }
 
     /** Adds the page's orders, unless {@code orders} is null, and returns the cursor to the next page. */
-    private String readPage(final ByteBuffer body, final List<VenueOrder> orders) {
+    private String readPage(final ByteBuffer body, final List<OrderFields> orders) {
         String cursor = "";
         try (var root = this.jsonDecoder.wrap(body);
                 var page = root.asObject()) {
@@ -171,7 +201,7 @@ public final class PolymarketIntlVenueOrderQuery implements VenueOrderQuery {
         return cursor;
     }
 
-    private static void readOrders(final JsonDecoder.JsonNode node, final List<VenueOrder> orders) {
+    private static void readOrders(final JsonDecoder.JsonNode node, final List<OrderFields> orders) {
         try (var list = node.asArray()) {
             while (list.hasNextItem()) {
                 try (var item = list.nextItem();
@@ -182,31 +212,62 @@ public final class PolymarketIntlVenueOrderQuery implements VenueOrderQuery {
         }
     }
 
-    private static VenueOrder readOrder(final JsonDecoder.JsonObject order) {
-        String id = "";
-        String status = "";
-        long price = 0;
-        long matched = 0;
+    private static OrderFields readOrder(final JsonDecoder.JsonObject order) {
+        final OrderFields fields = new OrderFields();
         while (order.hasNextKey()) {
             try (var field = order.nextKey()) {
                 // The decoder reads a null as whatever string comes after it.
-                if (field.isNull()) {
-                    continue;
-                }
-                final GnomeString name = field.getName();
-                if (name.equals("id")) {
-                    id = field.asString().toString();
-                } else if (name.equals("status")) {
-                    status = field.asString().toString();
-                } else if (name.equals("price")) {
-                    price = field.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR);
-                } else if (name.equals("size_matched")) {
-                    matched = field.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR);
+                if (!field.isNull()) {
+                    fields.read(field.getName(), field);
                 }
             }
         }
-        final long notional = ScaledMath.multiplyDivide(price, matched, Statics.SIZE_SCALING_FACTOR);
-        return new VenueOrder(id, id, matched, notional, 0, !WORKING_STATUSES.contains(status.toUpperCase()));
+        return fields;
+    }
+
+    private static final class OrderFields {
+        String id = "";
+        String status = "";
+        String tokenId = "";
+        long price;
+        long matched;
+        long createdSeconds;
+
+        void read(final GnomeString name, final JsonDecoder.JsonNode field) {
+            if (name.equals("id")) {
+                id = field.asString().toString();
+            } else if (name.equals("status")) {
+                status = field.asString().toString();
+            } else if (name.equals("asset_id")) {
+                tokenId = field.asString().toString();
+            } else if (name.equals("price")) {
+                price = field.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR);
+            } else if (name.equals("size_matched")) {
+                matched = field.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR);
+            } else if (name.equals("created_at")) {
+                createdSeconds = seconds(field.asRawJson().toString());
+            }
+        }
+
+        /** 0 if the CLOB didn't say. */
+        long createdMillis() {
+            return createdSeconds * MILLIS_PER_SECOND;
+        }
+
+        VenueOrder toVenueOrder() {
+            final long notional = ScaledMath.multiplyDivide(price, matched, Statics.SIZE_SCALING_FACTOR);
+            return new VenueOrder(id, id, matched, notional, 0, !WORKING_STATUSES.contains(status.toUpperCase()));
+        }
+
+        // Read raw, so a quoted number parses as well as a bare one.
+        private static long seconds(final String raw) {
+            final String digits = raw.replace("\"", "").trim();
+            try {
+                return digits.isEmpty() ? 0 : Long.parseLong(digits);
+            } catch (final NumberFormatException e) {
+                return 0;
+            }
+        }
     }
 
     private static String tokenId(final Listing listing) {

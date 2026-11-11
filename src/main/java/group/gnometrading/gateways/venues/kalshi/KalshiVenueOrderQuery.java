@@ -1,6 +1,8 @@
 package group.gnometrading.gateways.venues.kalshi;
 
 import group.gnometrading.codecs.json.JsonDecoder;
+import group.gnometrading.gateways.Rfc3339;
+import group.gnometrading.gateways.orders.recovery.AccountOrder;
 import group.gnometrading.gateways.orders.recovery.VenueOrder;
 import group.gnometrading.gateways.orders.recovery.VenueOrderQuery;
 import group.gnometrading.networking.http.HTTPClient;
@@ -32,6 +34,8 @@ public final class KalshiVenueOrderQuery implements VenueOrderQuery {
     // Placed shortly before the time given, by a clock that may run a little behind Kalshi's.
     private static final long LOOKUP_SLACK_SECONDS = 60;
     private static final long MILLIS_PER_SECOND = 1_000;
+    private static final long NANOS_PER_MILLI = 1_000_000;
+    private static final String RESTING = "&status=resting";
 
     private static final String HEADER_KEY = "KALSHI-ACCESS-KEY";
     private static final String HEADER_TIMESTAMP = "KALSHI-ACCESS-TIMESTAMP";
@@ -62,7 +66,27 @@ public final class KalshiVenueOrderQuery implements VenueOrderQuery {
 
     @Override
     public List<VenueOrder> listOpenOrders(final Listing listing) throws IOException {
-        return listOrders(listing, "&status=resting");
+        return listOrders(listing, RESTING);
+    }
+
+    /**
+     * Without a listing there is no side to value fills in, so each order's {@code filledNotional} is what Kalshi
+     * reports the side it bought paid. That matters only for an order that filled partly before it is cancelled.
+     *
+     * <p>Kalshi's order list isn't routed by exchange shard, so one account-wide list covers every shard; only a
+     * cancel is routed by its market's.
+     */
+    @Override
+    public List<AccountOrder> listAllOpenOrders() throws IOException {
+        final List<OrderFields> read = new ArrayList<>();
+        for (final ByteBuffer page : this.orderPages.fetchAccount(RESTING)) {
+            readPage(page, read);
+        }
+        final List<AccountOrder> orders = new ArrayList<>(read.size());
+        for (final OrderFields fields : read) {
+            orders.add(new AccountOrder(fields.toVenueOrder(""), fields.ticker, fields.createdMillis()));
+        }
+        return orders;
     }
 
     @Override
@@ -79,8 +103,16 @@ public final class KalshiVenueOrderQuery implements VenueOrderQuery {
 
     @Override
     public boolean cancel(final Listing listing, final VenueOrder order) throws IOException {
-        final String ticker = ticker(listing);
-        final String path = CANCEL_PATH + order.venueId();
+        return cancel(ticker(listing), order.venueId());
+    }
+
+    @Override
+    public boolean cancel(final AccountOrder order) throws IOException {
+        return cancel(order.market(), order.order().venueId());
+    }
+
+    private boolean cancel(final String ticker, final String venueId) throws IOException {
+        final String path = CANCEL_PATH + venueId;
         final String routing = KalshiApiUtil.routingQuery(ticker, shard(ticker));
         // Kalshi signs the path without its query.
         this.authSigner.sign(this.clock.time(), "DELETE", path);
@@ -116,47 +148,50 @@ public final class KalshiVenueOrderQuery implements VenueOrderQuery {
     }
 
     private List<VenueOrder> listOrders(final Listing listing, final String filter) throws IOException {
-        final String listingSide = listingSide(listing);
-        final List<VenueOrder> orders = new ArrayList<>();
+        final List<OrderFields> read = new ArrayList<>();
         for (final ByteBuffer page : this.orderPages.fetch(ticker(listing), filter)) {
-            readPage(page, listingSide, orders);
+            readPage(page, read);
+        }
+        final String listingSide = listingSide(listing);
+        final List<VenueOrder> orders = new ArrayList<>(read.size());
+        for (final OrderFields fields : read) {
+            orders.add(fields.toVenueOrder(listingSide));
         }
         return orders;
     }
 
-    private void readPage(final ByteBuffer body, final String listingSide, final List<VenueOrder> orders) {
+    private void readPage(final ByteBuffer body, final List<OrderFields> orders) {
         try (var root = this.jsonDecoder.wrap(body);
                 var page = root.asObject()) {
             while (page.hasNextKey()) {
                 try (var entry = page.nextKey()) {
                     if (entry.getName().equals("orders")) {
-                        readOrders(entry, listingSide, orders);
+                        readOrders(entry, orders);
                     }
                 }
             }
         }
     }
 
-    private static void readOrders(
-            final JsonDecoder.JsonNode node, final String listingSide, final List<VenueOrder> orders) {
+    private static void readOrders(final JsonDecoder.JsonNode node, final List<OrderFields> orders) {
         try (var list = node.asArray()) {
             while (list.hasNextItem()) {
                 try (var item = list.nextItem();
                         var order = item.asObject()) {
-                    orders.add(readOrder(order, listingSide));
+                    orders.add(readOrder(order));
                 }
             }
         }
     }
 
-    private static VenueOrder readOrder(final JsonDecoder.JsonObject order, final String listingSide) {
+    private static OrderFields readOrder(final JsonDecoder.JsonObject order) {
         final OrderFields fields = new OrderFields();
         while (order.hasNextKey()) {
             try (var field = order.nextKey()) {
                 fields.read(field.getName(), field);
             }
         }
-        return fields.toVenueOrder(listingSide);
+        return fields;
     }
 
     private static final class OrderFields {
@@ -164,6 +199,8 @@ public final class KalshiVenueOrderQuery implements VenueOrderQuery {
         String venueId = "";
         String status = "";
         String outcomeSide = "";
+        String ticker = "";
+        long createdNanos = Rfc3339.INVALID;
         long filled;
         long cost;
         long fees;
@@ -177,6 +214,10 @@ public final class KalshiVenueOrderQuery implements VenueOrderQuery {
                 status = field.asString().toString();
             } else if (name.equals("outcome_side")) {
                 outcomeSide = field.asString().toString();
+            } else if (name.equals("ticker")) {
+                ticker = field.asString().toString();
+            } else if (name.equals("created_time")) {
+                createdNanos = Rfc3339.toEpochNanos(field.asString());
             } else {
                 readAmount(name, field);
             }
@@ -190,6 +231,11 @@ public final class KalshiVenueOrderQuery implements VenueOrderQuery {
             } else if (name.equals("taker_fees_dollars") || name.equals("maker_fees_dollars")) {
                 fees += field.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR);
             }
+        }
+
+        /** 0 if Kalshi didn't say. */
+        long createdMillis() {
+            return createdNanos == Rfc3339.INVALID ? 0 : createdNanos / NANOS_PER_MILLI;
         }
 
         VenueOrder toVenueOrder(final String listingSide) {

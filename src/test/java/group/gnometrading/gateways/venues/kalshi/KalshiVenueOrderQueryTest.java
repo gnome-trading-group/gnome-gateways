@@ -12,6 +12,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import group.gnometrading.gateways.orders.recovery.AccountOrder;
 import group.gnometrading.gateways.orders.recovery.VenueOrder;
 import group.gnometrading.networking.http.HTTPClient;
 import group.gnometrading.networking.http.HTTPResponse;
@@ -21,6 +22,7 @@ import group.gnometrading.sm.Security;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -233,6 +235,79 @@ class KalshiVenueOrderQueryTest {
         final VenueOrder order = new VenueOrder("4071-501-3", "k-1", 0, 0, 0, false);
         assertTrue(query.cancel(NO_LISTING, order));
         assertEquals("DELETE /trade-api/v2/portfolio/events/orders/k-1?market_ticker=KXT-26", paths.get(1));
+    }
+
+    @Test
+    void listAllOpenOrders_ReadsEveryPageOfTheAccountsRestingOrders_WithoutATicker() throws IOException {
+        respond(200, "{\"orders\":[" + capturedOrder("no", "0.660000") + "],\"cursor\":\"c2\"}");
+        respond(
+                200,
+                "{\"orders\":["
+                        + order("manual", "k-2", "resting", "0.00", "1.00").replace("}", accountFields("KXU-26"))
+                        + "],\"cursor\":\"\"}");
+
+        final List<AccountOrder> orders = query.listAllOpenOrders();
+
+        assertEquals("/trade-api/v2/portfolio/orders?limit=200&status=resting", paths.get(0));
+        assertTrue(paths.get(1).endsWith("&cursor=c2"), paths.toString());
+        assertEquals(2, paths.size(), paths.toString());
+        final AccountOrder first = orders.get(0);
+        assertEquals("KXT-26", first.market());
+        assertEquals("smokemuyajfmxyes-13", first.order().exchangeOrderId());
+        assertEquals("01a11715-b120-7628-a6e4-85048df0c327", first.order().venueId());
+        assertEquals(1_000_000, first.order().filledQty());
+        assertEquals(15_800_000L, first.order().fees());
+        assertEquals(Instant.parse("2026-10-07T15:57:40.3591Z").toEpochMilli(), first.createdMillis());
+        assertEquals("KXU-26", orders.get(1).market());
+        assertEquals(
+                Instant.parse("2026-11-08T14:00:00Z").toEpochMilli(),
+                orders.get(1).createdMillis());
+    }
+
+    @Test
+    void listAllOpenOrders_NotionalIsWhatTheSideItBoughtPaid() throws IOException {
+        // Sold YES into a 0.34 bid: with no listing to value it in, the 0.66 the NO side cost is kept.
+        respond(200, "{\"orders\":[" + capturedOrder("no", "0.660000") + "],\"cursor\":\"\"}");
+
+        assertEquals(660_000_000L, query.listAllOpenOrders().get(0).order().filledNotional());
+    }
+
+    @Test
+    void listAllOpenOrders_AFailedPageIsAnError() {
+        respond(503, "");
+        assertThrows(IOException.class, () -> query.listAllOpenOrders());
+    }
+
+    @Test
+    void cancelAccountOrder_RoutesToItsTickersShard_LookedUpOnce() throws IOException {
+        respond(200, "{\"market\":{\"ticker\":\"KXU-26\",\"exchange_index\":1}}");
+        respond(200, "{\"order_id\":\"k-9\",\"reduced_by\":\"1.00\"}");
+        respond(200, "{}");
+
+        assertTrue(query.cancel(new AccountOrder(new VenueOrder("4071-501-9", "k-9", 0, 0, 0, false), "KXU-26", 0)));
+        assertTrue(query.cancel(new AccountOrder(new VenueOrder("manual", "k-8", 0, 0, 0, false), "KXU-26", 0)));
+
+        assertEquals("/trade-api/v2/markets/KXU-26", paths.get(0));
+        assertEquals(
+                List.of(
+                        "DELETE /trade-api/v2/portfolio/events/orders/k-9?market_ticker=KXU-26&exchange_index=1",
+                        "DELETE /trade-api/v2/portfolio/events/orders/k-8?market_ticker=KXU-26&exchange_index=1"),
+                paths.subList(1, paths.size()));
+        verify(signer).sign(anyLong(), eq("DELETE"), eq("/trade-api/v2/portfolio/events/orders/k-9"));
+    }
+
+    @Test
+    void cancelAccountOrder_ShardLookupFails_RoutesByTickerAlone_AndRefusalIsFalse() throws IOException {
+        respond(500, "{}");
+        respond(404, "{\"error\":{\"code\":\"not_found\"}}");
+
+        assertFalse(query.cancel(new AccountOrder(new VenueOrder("manual", "k-7", 0, 0, 0, false), "KXU-26", 0)));
+
+        assertEquals("DELETE /trade-api/v2/portfolio/events/orders/k-7?market_ticker=KXU-26", paths.get(1));
+    }
+
+    private static String accountFields(final String ticker) {
+        return ",\"ticker\":\"" + ticker + "\",\"created_time\":\"2026-11-08T14:00:00Z\"}";
     }
 
     @Test
