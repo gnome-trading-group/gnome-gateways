@@ -157,7 +157,8 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
   book" means it is marked `EMPTY` and rechecked every 15 minutes. The prober logs mismatches against the venue's REST
   book. A shard's `HEARTBEAT` lines and a session's heartbeat (`reconnecting`, `resyncsLast5m` per listing) show it.
 - Rejected orders: `ORDER_REJECTED_BY_VENUE` carries the venue's own text. Kalshi 503 while its shard isn't trading
-  maps to MARKET_CLOSED; Kalshi 409 is a duplicate client id. Polymarket Intl 503 means trading disabled, cancel-only
+  maps to MARKET_CLOSED; Kalshi 409 is a duplicate client id; Kalshi 404 `insufficient_shard_balance` (no cash on
+  the exchange index the market trades on) maps to INSUFFICIENT_FUNDS. Polymarket Intl 503 means trading disabled, cancel-only
   or post-only. Polymarket US refusals are all reported as plain venue rejects (no captured texts yet).
 - Rate limits: `VENUE_RATE_LIMITED` (venue 429), `RATE_LIMIT_THROTTLING` / `RATE_LIMIT_RECOVERED` (local budget).
   Other processes on the same account share the venue budget.

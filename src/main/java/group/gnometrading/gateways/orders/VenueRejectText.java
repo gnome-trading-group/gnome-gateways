@@ -14,6 +14,8 @@ import java.util.Locale;
 public final class VenueRejectText {
 
     private static final byte[] KALSHI_INSUFFICIENT_BALANCE = lowercase("insufficient_balance");
+    // Kalshi holds cash per exchange index (shard); an order on a shard with none is answered 404 with this code.
+    private static final byte[] KALSHI_INSUFFICIENT_SHARD_BALANCE = lowercase("insufficient_shard_balance");
     // Kalshi answers a crossing post-only order as {"code":"invalid_order",...,"details":"post only cross"}.
     private static final byte[] KALSHI_POST_ONLY_CROSS = lowercase("post only cross");
 
@@ -22,8 +24,10 @@ public final class VenueRejectText {
     private static final byte[] POLYMARKET_CANCEL_ONLY = lowercase("cancel-only");
 
     public static final VenueRejectText KALSHI = new VenueRejectText(
-            new byte[][] {KALSHI_INSUFFICIENT_BALANCE, KALSHI_POST_ONLY_CROSS},
-            new RejectReason[] {RejectReason.INSUFFICIENT_FUNDS, RejectReason.POST_ONLY_WOULD_CROSS});
+            new byte[][] {KALSHI_INSUFFICIENT_SHARD_BALANCE, KALSHI_INSUFFICIENT_BALANCE, KALSHI_POST_ONLY_CROSS},
+            new RejectReason[] {
+                RejectReason.INSUFFICIENT_FUNDS, RejectReason.INSUFFICIENT_FUNDS, RejectReason.POST_ONLY_WOULD_CROSS
+            });
 
     public static final VenueRejectText POLYMARKET_INTL = new VenueRejectText(
             new byte[][] {POLYMARKET_NOT_ENOUGH_BALANCE, POLYMARKET_CROSSES_BOOK, POLYMARKET_CANCEL_ONLY},
