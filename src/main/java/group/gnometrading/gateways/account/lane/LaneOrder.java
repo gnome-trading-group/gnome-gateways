@@ -1,22 +1,26 @@
 package group.gnometrading.gateways.account.lane;
 
+import group.gnometrading.gateways.account.admission.AdmissionEntry;
 import group.gnometrading.gateways.orders.OrderContext;
 import java.nio.charset.StandardCharsets;
 
-/** One order an {@link AccountLane} holds: its context, its prepared submit, and where it stands. Pooled. */
-final class LaneOrder {
+/**
+ * One order an {@link AccountLane} holds: its context, its prepared submit, and where it stands; queued for its session
+ * in the account's fair share as an {@link AdmissionEntry}. Pooled.
+ */
+final class LaneOrder extends AdmissionEntry {
 
     // The generation's bits an entry keeps: with the slot index's 16 and a request kind's 3, a tag fits a long.
     static final int GENERATION_MASK = (1 << 29) - 1;
     static final int INDEX_BITS = 16;
 
-    /** Requests an order can have on the wire, at most one at a time. */
-    static final int NONE = 0;
+    /** Requests an order can have on the wire, at most one at a time; a submit or amend is also what it queues for. */
+    static final int NONE = AdmissionEntry.NONE;
 
-    static final int SUBMIT = 1;
+    static final int SUBMIT = AdmissionEntry.SUBMIT;
     static final int LOOKUP = 2;
     static final int CANCEL = 3;
-    static final int AMEND = 4;
+    static final int AMEND = AdmissionEntry.AMEND;
 
     /** Where its submit stands. */
     static final int QUEUED = 0;
@@ -24,7 +28,6 @@ final class LaneOrder {
     static final int RESOLVING = 1;
     static final int SETTLED = 2;
 
-    final int index;
     // Advanced each time the slot is reused, so an answer or queue entry for the order before is recognised as stale.
     int generation;
     final OrderContext ctx = new OrderContext();
@@ -45,15 +48,6 @@ final class LaneOrder {
     boolean amendPostOnly;
     // The reader ended the order while a request was still on the wire: freed when that answer comes.
     boolean releaseWanted;
-    // When it was queued in its session's list (its submit, or an amend); one that can't go out soon is refused rather
-    // than sent late. Unlinked while in neither list.
-    long queuedAtNanos;
-    LaneSession queuedIn;
-    int queuedKind;
-    int prevQueued = LaneSession.NO_ORDER;
-    int nextQueued = LaneSession.NO_ORDER;
-    // Whether the budget has held its queued request yet, which is told once.
-    boolean heldTold;
     // When its cancel was queued, for how long cancels wait.
     long cancelQueuedAtNanos;
     // A cancel the venue failed to answer, sent again: how many times so far, since when, and when next.
@@ -65,8 +59,13 @@ final class LaneOrder {
     long nextSweepNanos;
 
     LaneOrder(final int index, final int maxBodyLength) {
-        this.index = index;
+        super(index);
         this.body = new byte[maxBodyLength];
+    }
+
+    @Override
+    public long sessionSlot() {
+        return this.ctx.sessionSlot;
     }
 
     /** A queue entry naming this order as it is now. */
@@ -75,7 +74,8 @@ final class LaneOrder {
     }
 
     /** Whether a queued request still stands: a submit not yet sent, or an amend not overtaken by a cancel. */
-    boolean stillQueued(final int kind) {
+    @Override
+    public boolean stillQueued(final int kind) {
         if (this.inFlight != NONE) {
             return false;
         }
@@ -127,12 +127,7 @@ final class LaneOrder {
         this.amendSize = 0;
         this.amendPostOnly = false;
         this.releaseWanted = false;
-        this.queuedAtNanos = 0;
-        this.queuedIn = null;
-        this.queuedKind = NONE;
-        this.prevQueued = LaneSession.NO_ORDER;
-        this.nextQueued = LaneSession.NO_ORDER;
-        this.heldTold = false;
+        resetQueueing();
         this.cancelQueuedAtNanos = 0;
         this.cancelRetries = 0;
         this.cancelFailedSinceNanos = 0;

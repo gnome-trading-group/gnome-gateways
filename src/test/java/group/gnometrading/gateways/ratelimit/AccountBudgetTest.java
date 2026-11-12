@@ -33,6 +33,22 @@ class AccountBudgetTest {
     }
 
     @Test
+    void aCallerWithNoRequestFindsTheRuleItsKindOfRequestFallsUnder() {
+        assertEquals(order, budget.ruleFor(RequestClass.NEW), "the order rule, as a POST to orders classifies");
+        assertEquals(RequestClass.AMEND, budget.type(budget.ruleFor(RequestClass.AMEND)));
+        final AccountBudget unlimited = new AccountBudget(
+                VenueRateLimits.of(
+                        "Test",
+                        List.of(new VenueRateLimits.Bucket("all", 100, 100, 0.2)),
+                        List.of(
+                                new VenueRateLimits.Rule(HTTPMethod.DELETE, "/", null, "all", 1, RequestClass.CANCEL),
+                                new VenueRateLimits.Rule(null, "", null, "all", 1, RequestClass.BACKGROUND)),
+                        List.of()),
+                0);
+        assertEquals(-1, unlimited.ruleFor(RequestClass.NEW), "a venue that limits no new order has no rule for one");
+    }
+
+    @Test
     void itStartsEmptyAndFillsAtTheVenuesRate() {
         assertFalse(budget.tryAcquire(order, 0), "the last process may just have drained the venue's bucket");
         assertEquals(

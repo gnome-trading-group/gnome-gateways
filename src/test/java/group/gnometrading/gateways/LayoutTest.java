@@ -37,6 +37,18 @@ class LayoutTest {
     }
 
     @Test
+    void admissionUsesNoOtherPartOfTheAccountPath() {
+        // The order gateway's simulated accounts admit orders with it too, without a lane or a reader.
+        noClasses()
+                .that()
+                .resideInAPackage("..gateways.account.admission..")
+                .should()
+                .dependOnClassesThat()
+                .resideInAnyPackage("..gateways.account.lane..", "..gateways.account.reader..", "..gateways.venues..")
+                .check(CLASSES);
+    }
+
+    @Test
     void theSharedLayersDontUseTheAccountPath() {
         noClasses()
                 .that()

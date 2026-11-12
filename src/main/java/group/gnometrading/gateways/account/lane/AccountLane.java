@@ -4,6 +4,9 @@ import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
 import group.gnometrading.collections.buffer.MessageConsumer;
 import group.gnometrading.concurrent.GnomeAgent;
 import group.gnometrading.concurrent.ThreadProfile;
+import group.gnometrading.gateways.account.admission.AdmissionSession;
+import group.gnometrading.gateways.account.admission.FairQueue;
+import group.gnometrading.gateways.account.admission.FairShareTrace;
 import group.gnometrading.gateways.orders.CancelResult;
 import group.gnometrading.gateways.orders.LookupResult;
 import group.gnometrading.gateways.orders.OrderContext;
@@ -152,7 +155,7 @@ public final class AccountLane<M> implements GnomeAgent {
     }
 
     /** The most sessions an account serves: a bound against a leak, far above what its budget can serve. */
-    public static final int MAX_SESSIONS = 1024;
+    public static final int MAX_SESSIONS = FairQueue.MAX_SESSIONS;
 
     static final int MAX_CANCEL_RETRIES = 3;
     static final long CANCEL_RETRY_WINDOW_NANOS = TimeUnit.SECONDS.toNanos(2);
@@ -209,7 +212,7 @@ public final class AccountLane<M> implements GnomeAgent {
     private final long[] cancelRetries;
     private int cancelRetryCount;
 
-    private final FairQueue fair;
+    private final FairQueue<LaneOrder> fair;
     // What the request just sent cost, in thousandths of a token.
     private long lastCost;
 
@@ -308,7 +311,7 @@ public final class AccountLane<M> implements GnomeAgent {
         this.resends = new LongArrayQueue(2 * maxOrders, -1);
         this.lookups = new LongArrayQueue(2 * maxOrders, -1);
         this.cancelRetries = new long[maxOrders];
-        this.fair = new FairQueue(
+        this.fair = new FairQueue<>(
                 this.orders,
                 timing.maxQueueDelayNanos(),
                 nanoClock,
@@ -728,7 +731,7 @@ public final class AccountLane<M> implements GnomeAgent {
         if (order.submitState == LaneOrder.QUEUED && order.inFlight == LaneOrder.NONE) {
             refuseWanted(order);
             this.notices.canceledUnsent(order.ctx);
-            decided(order, RequestClass.NEW, AdmissionAction.DROPPED_CONFLATED, order.queuedAtNanos, -1);
+            decided(order, RequestClass.NEW, AdmissionAction.DROPPED_CONFLATED, order.queuedAtNanos(), -1);
             free(order);
             return;
         }
@@ -798,7 +801,7 @@ public final class AccountLane<M> implements GnomeAgent {
                 this.fair.unqueue(order);
                 this.notices.cancelReject(order.ctx, RejectReason.GATEWAY_REJECTED);
             }
-        } else if (order.amendWanted && order.queuedIn == null) {
+        } else if (order.amendWanted && !order.queued()) {
             if (this.venue.venueIdKnown(order.ctx)) {
                 this.fair.enqueue(order, LaneOrder.AMEND);
             } else {
@@ -829,12 +832,12 @@ public final class AccountLane<M> implements GnomeAgent {
         this.blocked = false;
         int sent = 0;
         while (!this.blocked) {
-            final LaneSession session = this.fair.leastServed();
+            final AdmissionSession session = this.fair.leastServed();
             if (session == null) {
                 break;
             }
             final LaneOrder order = this.orders[session.head()];
-            final int kind = order.queuedKind;
+            final int kind = order.queuedKind();
             if (order.stillQueued(kind)) {
                 sent += serveOne(order, kind, session);
             } else {
@@ -847,7 +850,7 @@ public final class AccountLane<M> implements GnomeAgent {
         return sent;
     }
 
-    private int serveOne(final LaneOrder order, final int kind, final LaneSession session) {
+    private int serveOne(final LaneOrder order, final int kind, final AdmissionSession session) {
         if (kind == LaneOrder.SUBMIT && batchesSubmits()) {
             if (this.filling == null && !openSubmitBatch(order)) {
                 this.blocked = true;
@@ -871,7 +874,7 @@ public final class AccountLane<M> implements GnomeAgent {
 
     /** A queued amend or new order that waited too long: refused, or dropped if it no longer stands. */
     private void expire(final LaneOrder order) {
-        final int kind = order.queuedKind;
+        final int kind = order.queuedKind();
         this.fair.unqueue(order);
         if (!order.stillQueued(kind)) {
             return;
@@ -881,10 +884,10 @@ public final class AccountLane<M> implements GnomeAgent {
             this.admissions.refusedWithoutConnection();
         }
         if (kind == LaneOrder.SUBMIT) {
-            decided(order, RequestClass.NEW, AdmissionAction.REJECTED_RATE_LIMITED, order.queuedAtNanos, -1);
+            decided(order, RequestClass.NEW, AdmissionAction.REJECTED_RATE_LIMITED, order.queuedAtNanos(), -1);
             rejectAndFree(order, reason);
         } else {
-            decided(order, RequestClass.AMEND, AdmissionAction.REJECTED_RATE_LIMITED, order.queuedAtNanos, -1);
+            decided(order, RequestClass.AMEND, AdmissionAction.REJECTED_RATE_LIMITED, order.queuedAtNanos(), -1);
             order.amendWanted = false;
             this.notices.cancelReject(order.ctx, reason);
         }
@@ -941,7 +944,7 @@ public final class AccountLane<M> implements GnomeAgent {
      * Charged a full batch's share of the request while the batch fills; {@link #sendFilling} makes it up to the share
      * of the batch as sent.
      */
-    private void addToFilling(final LaneOrder order, final LaneSession session) {
+    private void addToFilling(final LaneOrder order, final AdmissionSession session) {
         final LaneBatch batch = this.filling;
         final int i = batch.count++;
         batch.entries[i] = order.entry();
@@ -1066,7 +1069,7 @@ public final class AccountLane<M> implements GnomeAgent {
                     order,
                     this.budget.type(batch.rule),
                     AdmissionAction.SENT,
-                    submits ? order.queuedAtNanos : order.cancelQueuedAtNanos,
+                    submits ? order.queuedAtNanos() : order.cancelQueuedAtNanos,
                     this.budget.tokensLeft(batch.rule, now));
         }
         if (result == AsyncHTTPConnections.SEND_FAILED) {
@@ -1252,9 +1255,9 @@ public final class AccountLane<M> implements GnomeAgent {
 
     /** A queued amend or new order the budget holds: told once, however many passes it waits. */
     private void tellHeld(final LaneOrder order, final int rule) {
-        if (!order.heldTold && order.queuedIn != null) {
-            order.heldTold = true;
-            decided(order, this.budget.type(rule), AdmissionAction.HELD, order.queuedAtNanos, -1);
+        if (!order.heldTold() && order.queued()) {
+            order.markHeldTold();
+            decided(order, this.budget.type(rule), AdmissionAction.HELD, order.queuedAtNanos(), -1);
         }
     }
 
@@ -1263,7 +1266,7 @@ public final class AccountLane<M> implements GnomeAgent {
         if (kind == LaneOrder.CANCEL) {
             since = order.cancelQueuedAtNanos;
         } else {
-            since = order.queuedIn != null ? order.queuedAtNanos : 0;
+            since = order.queued() ? order.queuedAtNanos() : 0;
         }
         decided(order, this.budget.type(rule), AdmissionAction.SENT, since, this.budget.tokensLeft(rule, now));
     }
@@ -1684,7 +1687,7 @@ public final class AccountLane<M> implements GnomeAgent {
         if (this.fair.fenced(command.sessionSlot)) {
             return RejectReason.GATEWAY_REJECTED;
         }
-        final LaneSession session = this.fair.session(command.sessionSlot);
+        final AdmissionSession session = this.fair.session(command.sessionSlot);
         if (session == null
                 || (this.caps.accountMaxOpenOrders() > 0 && this.table.size() >= this.caps.accountMaxOpenOrders())
                 || !session.admitNew(this.nanoClock.getAsLong())) {
@@ -1699,18 +1702,18 @@ public final class AccountLane<M> implements GnomeAgent {
         this.byCorrelation.put(correlationKey, order);
         order.held = true;
         // A recovered order's session may not be introduced yet: it takes its place now, so the order counts.
-        final LaneSession session = this.fair.session(order.ctx.sessionSlot);
+        final AdmissionSession session = this.fair.session(order.ctx.sessionSlot);
         if (session != null) {
-            session.openOrders++;
+            session.opened();
         }
     }
 
     private void free(final LaneOrder order) {
         this.fair.unqueue(order);
         if (order.held) {
-            final LaneSession session = this.fair.existing(order.ctx.sessionSlot);
-            if (session != null && session.openOrders > 0) {
-                session.openOrders--;
+            final AdmissionSession session = this.fair.existing(order.ctx.sessionSlot);
+            if (session != null) {
+                session.closed();
             }
             this.table.remove(order.ctx.sessionSlot, order.ctx.clientOidCounter);
             this.byCorrelation.remove(OrderKeys.of(order.ctx));

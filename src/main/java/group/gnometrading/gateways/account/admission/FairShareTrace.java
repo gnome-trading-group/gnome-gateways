@@ -1,4 +1,4 @@
-package group.gnometrading.gateways.account.lane;
+package group.gnometrading.gateways.account.admission;
 
 import java.io.IOException;
 import java.io.PrintWriter;
@@ -6,7 +6,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 /**
- * Every step of an {@link AccountLane}'s fair share, for a post-mortem of how it divided a saturated budget: sessions
+ * Every step of an account's fair share ({@link FairQueue}), for a post-mortem of how it divided a saturated budget: sessions
  * starting and stopping to have something queued, each order picked and what it was charged, a batch's charges made
  * up when it is sent, and orders refused for waiting. Recorded on the lane's thread into arrays sized up front, so it
  * allocates nothing; once full it records no more. Written out once the lane is quiet.

@@ -1,5 +1,6 @@
 package group.gnometrading.gateways.account.lane;
 
+import group.gnometrading.gateways.account.admission.AdmissionSession;
 import group.gnometrading.gateways.orders.CancelResult;
 import group.gnometrading.gateways.orders.OrderContext;
 import group.gnometrading.gateways.orders.SubmitResult;
@@ -20,7 +21,7 @@ final class LaneBatch {
     final CancelResult[] cancelResults;
     // The session each entry was charged to, and what it was charged, in thousandths of a token: a share of a full
     // batch while it filled, made up to its share of the batch as sent.
-    final LaneSession[] chargedTo;
+    final AdmissionSession[] chargedTo;
     final long[] charged;
 
     LaneBatch(final int index, final int maxBatch) {
@@ -31,7 +32,7 @@ final class LaneBatch {
         this.bodyLengths = new int[maxBatch];
         this.submitResults = new SubmitResult[maxBatch];
         this.cancelResults = new CancelResult[maxBatch];
-        this.chargedTo = new LaneSession[maxBatch];
+        this.chargedTo = new AdmissionSession[maxBatch];
         this.charged = new long[maxBatch];
     }
 

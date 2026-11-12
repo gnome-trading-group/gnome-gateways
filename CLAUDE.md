@@ -60,16 +60,21 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
     by `SubmitPolicy`, unknown outcomes swept and in the end given up on; cancels, resends and lookups first, then
     each session's amends and new orders as `FairQueue` decides; each queued request refused after its session's
     wait; a cancel the venue failed to answer sent again up to 3 times in 2 s; every decision told to its
-    `Admissions`. `FairQueue` is start-time fair queuing over `LaneSession`s (the queued session charged least, cost
+    `Admissions`. `FairQueue` (in `account/admission/`) is start-time fair queuing over `AdmissionSession`s (the queued session charged least, cost
     over weight, goes next; one back after over a second idle starts level; one back sooner, as when its queued
     orders all expired between two of the venue's slots, keeps its place, but never more than a second of the budget
-    behind the level), at most `AccountLane.MAX_SESSIONS` per account. A session's `CANCEL_SESSION` fences it: its new
+    behind the level), at most `FairQueue.MAX_SESSIONS` per account. A session's `CANCEL_SESSION` fences it: its new
     orders are refused until its next `SESSION`, so none queued behind the cancel reaches the venue. A kill's
     `CANCEL_ORDERS` cancels a session's orders (all, or on one listing) without fencing it. `AccountLane.Caps` caps
     what each session may hold at once and send a second (a one-second token bucket) and what the account may hold;
     a session's `SESSION` may ask for less than the defaults, never more; past a cap a new order is refused
     `SESSION_CAP`, and cancels and amends are never capped. `LaneVenue` per venue; `FairShareTrace` records the
     fair share for a post-mortem.
+  - `account/admission/`: what decides which session's amend or new order goes next and what each session may
+    hold, apart from how a request is sent, so the order gateway's simulated (paper) accounts admit orders with the
+    same code as the lane: `FairQueue` over `AdmissionEntry`s (the queue links live in the entry; `LaneOrder` is
+    one), `AdmissionSession` (weight, charges, wait limit, fencing, caps and their one-second bucket),
+    `FairShareTrace`. The caller charges each request its rule's cost from its own `AccountBudget`.
   - `account/reader/`: `AccountReader` + `AccountConnection` (one account-wide event socket, catch-up over REST
     fetched beside the reader and repeated once the venue's reads settle) with an `AccountProtocol` per venue.
   - `orders/OrderReports` holds the order state and builds every report for this reader.
@@ -85,8 +90,8 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
   `account/reader/TextAccountProtocol`), so keep them public and stable.
 - Tests mirror the code: generic tests under `feed/`, `orders/` and `account/{lane,reader}/` (whole
   account path tests, which use both halves, in `account/`), each venue's under `venues/<venue>/`.
-- `LayoutTest` (ArchUnit) keeps the layers apart: lane and reader use neither each other, `orders/` and `ratelimit/`
-  don't use `account/`, nothing outside `venues/` uses it, and `feed/` uses no order code.
+- `LayoutTest` (ArchUnit) keeps the layers apart: lane and reader use neither each other, `account/admission/` uses
+  neither nor any venue, `orders/` and `ratelimit/` don't use `account/`, nothing outside `venues/` uses it, and `feed/` uses no order code.
 - `venues/polymarket/intl/PolymarketIntlCaptureReplay` is a `main()` tool, not a test.
 
 ## Conventions and invariants

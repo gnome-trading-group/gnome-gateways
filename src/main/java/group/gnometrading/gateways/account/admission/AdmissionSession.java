@@ -1,13 +1,13 @@
-package group.gnometrading.gateways.account.lane;
+package group.gnometrading.gateways.account.admission;
 
 /**
- * One session's place in an {@link AccountLane}'s fair share: its weight, how long its orders may wait, what it has
- * been charged for what it sent, and its queued amends and new orders, each a list linked through the orders
- * themselves. Pooled; a session with something queued is on the lane's ring of sessions to serve.
+ * One session's place in an account's fair share ({@link FairQueue}): its weight, how long its orders may wait, what
+ * it has been charged for what it sent, its caps, and its queued amends and new orders, each a list linked through the
+ * entries themselves. Pooled; a session with something queued is on the queue's ring of sessions to serve.
  */
-final class LaneSession {
+public final class AdmissionSession {
 
-    static final int NO_ORDER = -1;
+    static final int NO_ORDER = AdmissionEntry.NO_ENTRY;
     static final long NEVER = Long.MIN_VALUE;
     private static final long MILLI = 1_000;
     // How long a thousandth of an order takes to refill at one order a second.
@@ -29,8 +29,8 @@ final class LaneSession {
 
     // The ring of sessions with something queued.
     boolean active;
-    LaneSession prev;
-    LaneSession next;
+    AdmissionSession prev;
+    AdmissionSession next;
     // The gateway is done with the session: forgotten once nothing of it is queued.
     boolean endWanted;
     // When it last had nothing queued; NEVER until it first has. How long it was away decides whether it comes back
@@ -47,8 +47,24 @@ final class LaneSession {
     long newTokensMilli;
     long newRefilledAtNanos = NEVER;
 
-    LaneSession(final int index) {
+    AdmissionSession(final int index) {
         this.index = index;
+    }
+
+    public long slot() {
+        return this.slot;
+    }
+
+    /** One more of its orders is held, for its open-orders cap. */
+    public void opened() {
+        this.openOrders++;
+    }
+
+    /** One of its held orders ended. */
+    public void closed() {
+        if (this.openOrders > 0) {
+            this.openOrders--;
+        }
     }
 
     boolean empty() {
@@ -56,7 +72,7 @@ final class LaneSession {
     }
 
     /** Amends first: they change quotes already resting, which a new order of the same session can wait behind. */
-    int head() {
+    public int head() {
         return this.amendHead != NO_ORDER ? this.amendHead : this.newHead;
     }
 
@@ -86,7 +102,7 @@ final class LaneSession {
      * Whether a new order is within the session's caps, taking it from the rate bucket if so. The bucket starts full
      * and refills continuously, so a session may send a second's worth at once and then its rate.
      */
-    boolean admitNew(final long nowNanos) {
+    public boolean admitNew(final long nowNanos) {
         if (this.maxOpenOrders > 0 && this.openOrders >= this.maxOpenOrders) {
             return false;
         }

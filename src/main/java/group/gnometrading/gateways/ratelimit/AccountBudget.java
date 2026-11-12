@@ -88,6 +88,19 @@ public final class AccountBudget {
         return this.rules.type(rule);
     }
 
+    /**
+     * The first rule a request of {@code type} falls under, for a caller that sends no HTTP request and so has no path
+     * to classify (an account simulating its venue); -1 if the venue limits no such request.
+     */
+    public int ruleFor(final RequestClass type) {
+        for (int rule = 0; rule < this.rules.size(); rule++) {
+            if (this.rules.type(rule) == type && this.rules.bucket(rule) != RequestRules.NO_BUCKET) {
+                return rule;
+            }
+        }
+        return -1;
+    }
+
     /** The tokens a request of {@code rule} takes; 0 if its venue doesn't limit it. */
     public long cost(final int rule) {
         return this.rules.bucket(rule) == RequestRules.NO_BUCKET ? 0 : this.rules.cost(rule);

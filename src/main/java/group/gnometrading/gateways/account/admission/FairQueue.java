@@ -1,4 +1,4 @@
-package group.gnometrading.gateways.account.lane;
+package group.gnometrading.gateways.account.admission;
 
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
@@ -6,7 +6,7 @@ import java.util.function.LongSupplier;
 import org.agrona.collections.Long2ObjectHashMap;
 
 /**
- * How an {@link AccountLane} shares what its budget leaves after cancels and lookups between sessions: start-time fair
+ * How an account's lane shares what its budget leaves after cancels and lookups between sessions: start-time fair
  * queuing over each session's queued amends and new orders. Each request sent charges its session what it cost divided
  * by the session's weight, and the session with something queued that has been charged least goes next, its amends
  * before its new orders.
@@ -24,28 +24,31 @@ import org.agrona.collections.Long2ObjectHashMap;
  *
  * <p>The lists link through the orders themselves, so nothing here allocates once built. On the lane's thread only.
  */
-final class FairQueue {
+public final class FairQueue<E extends AdmissionEntry> {
+
+    /** The most sessions an account serves: a bound against a leak, far above what its budget can serve. */
+    public static final int MAX_SESSIONS = 1024;
 
     // Away longer than this, a session comes back level with the rest; sooner, it keeps its place. Long enough to span
     // the gaps between a slow venue's slots.
     static final long IDLE_LEVEL_NANOS = TimeUnit.SECONDS.toNanos(1);
 
-    private final LaneOrder[] orders;
+    private final E[] orders;
     private final long defaultMaxQueueNanos;
     private int defaultMaxOpenOrders;
     private long defaultNewPerSecond;
     private final LongSupplier nanoClock;
     // Refuses a queued request that waited too long, or drops one that no longer stands; it must unqueue the order.
-    private final Consumer<LaneOrder> expire;
+    private final Consumer<? super E> expire;
     // The most a session back within IDLE_LEVEL_NANOS may stay behind the level, in thousandths of a token at weight 1.
     private final long maxCreditMilliTokens;
 
-    private final LaneSession[] sessions;
+    private final AdmissionSession[] sessions;
     private final int[] freeSessions;
     private int freeSessionCount;
-    private final Long2ObjectHashMap<LaneSession> sessionsBySlot;
+    private final Long2ObjectHashMap<AdmissionSession> sessionsBySlot;
     // A session on the ring of sessions with something queued; null if none has.
-    private LaneSession ring;
+    private AdmissionSession ring;
     // What the session served last had been charged before it: where a session that comes back starts.
     private long servedFrom;
     // Submits queued in sessions' lists.
@@ -56,32 +59,32 @@ final class FairQueue {
      * @param maxCreditMilliTokens a second of the budget, in thousandths of a token: the most a session that keeps its
      *     place may be owed
      */
-    FairQueue(
-            final LaneOrder[] orders,
+    public FairQueue(
+            final E[] orders,
             final long defaultMaxQueueNanos,
             final LongSupplier nanoClock,
-            final Consumer<LaneOrder> expire,
+            final Consumer<? super E> expire,
             final long maxCreditMilliTokens) {
         this.orders = orders;
         this.defaultMaxQueueNanos = defaultMaxQueueNanos;
         this.nanoClock = nanoClock;
         this.expire = expire;
         this.maxCreditMilliTokens = maxCreditMilliTokens;
-        this.sessions = new LaneSession[AccountLane.MAX_SESSIONS];
-        this.freeSessions = new int[AccountLane.MAX_SESSIONS];
-        for (int i = 0; i < AccountLane.MAX_SESSIONS; i++) {
-            this.sessions[i] = new LaneSession(i);
-            this.freeSessions[i] = AccountLane.MAX_SESSIONS - 1 - i;
+        this.sessions = new AdmissionSession[MAX_SESSIONS];
+        this.freeSessions = new int[MAX_SESSIONS];
+        for (int i = 0; i < MAX_SESSIONS; i++) {
+            this.sessions[i] = new AdmissionSession(i);
+            this.freeSessions[i] = MAX_SESSIONS - 1 - i;
         }
-        this.freeSessionCount = AccountLane.MAX_SESSIONS;
-        this.sessionsBySlot = new Long2ObjectHashMap<>(AccountLane.MAX_SESSIONS * 2, 0.5f);
+        this.freeSessionCount = MAX_SESSIONS;
+        this.sessionsBySlot = new Long2ObjectHashMap<>(MAX_SESSIONS * 2, 0.5f);
     }
 
     // ----- sessions -----
 
     /** The session in {@code slot}, introduced with the defaults if it wasn't; null if the account has no room. */
-    LaneSession session(final long slot) {
-        LaneSession session = this.sessionsBySlot.get(slot);
+    public AdmissionSession session(final long slot) {
+        AdmissionSession session = this.sessionsBySlot.get(slot);
         if (session == null) {
             if (this.freeSessionCount == 0) {
                 return null;
@@ -99,7 +102,7 @@ final class FairQueue {
     }
 
     /** The caps a session gets until the gateway says otherwise; 0 for none. */
-    void defaultCaps(final int maxOpenOrders, final long newPerSecond) {
+    public void defaultCaps(final int maxOpenOrders, final long newPerSecond) {
         this.defaultMaxOpenOrders = maxOpenOrders;
         this.defaultNewPerSecond = newPerSecond;
     }
@@ -108,8 +111,8 @@ final class FairQueue {
      * A session's own caps, as it asked for them: it may ask for less than the default, never more. 0 keeps the
      * default.
      */
-    void caps(final long slot, final int maxOpenOrders, final long newPerSecond) {
-        final LaneSession session = session(slot);
+    public void caps(final long slot, final int maxOpenOrders, final long newPerSecond) {
+        final AdmissionSession session = session(slot);
         if (session == null) {
             return;
         }
@@ -126,7 +129,7 @@ final class FairQueue {
     }
 
     /** The session in {@code slot} if the queue holds one; never takes a place for it. */
-    LaneSession existing(final long slot) {
+    public AdmissionSession existing(final long slot) {
         return this.sessionsBySlot.get(slot);
     }
 
@@ -135,8 +138,8 @@ final class FairQueue {
      *
      * @param maxQueueNanos how long its queued requests may wait
      */
-    void configure(final long slot, final long weight, final long maxQueueNanos) {
-        final LaneSession session = session(slot);
+    public void configure(final long slot, final long weight, final long maxQueueNanos) {
+        final AdmissionSession session = session(slot);
         if (session == null) {
             return;
         }
@@ -151,21 +154,21 @@ final class FairQueue {
     }
 
     /** The session's orders are all being cancelled: its new orders are refused until it is configured again. */
-    void fence(final long slot) {
-        final LaneSession session = session(slot);
+    public void fence(final long slot) {
+        final AdmissionSession session = session(slot);
         if (session != null) {
             session.fenced = true;
         }
     }
 
-    boolean fenced(final long slot) {
-        final LaneSession session = this.sessionsBySlot.get(slot);
+    public boolean fenced(final long slot) {
+        final AdmissionSession session = this.sessionsBySlot.get(slot);
         return session != null && session.fenced;
     }
 
     /** The gateway is done with the session: forgotten now, or once nothing of it is queued. */
-    void ended(final long slot) {
-        final LaneSession session = this.sessionsBySlot.get(slot);
+    public void ended(final long slot) {
+        final AdmissionSession session = this.sessionsBySlot.get(slot);
         if (session == null) {
             return;
         }
@@ -176,21 +179,35 @@ final class FairQueue {
         }
     }
 
-    private void forget(final LaneSession session) {
+    private void forget(final AdmissionSession session) {
         this.sessionsBySlot.remove(session.slot);
         session.reset();
         this.freeSessions[this.freeSessionCount++] = session.index;
     }
 
+    /** The first session with something queued, to walk them all with {@link #nextQueued}; null if none has. */
+    public AdmissionSession firstQueued() {
+        return this.ring;
+    }
+
+    /**
+     * The session after {@code session} among those with something queued; null once back at the first. For a caller
+     * that budgets each session on its own, so serves whichever can go rather than the one charged least.
+     */
+    public AdmissionSession nextQueued(final AdmissionSession session) {
+        final AdmissionSession next = session.next;
+        return next == null || next == this.ring ? null : next;
+    }
+
     // ----- choosing and charging -----
 
     /** The session with something queued that has been charged least; null if none has anything queued. */
-    LaneSession leastServed() {
-        LaneSession least = this.ring;
+    public AdmissionSession leastServed() {
+        AdmissionSession least = this.ring;
         if (least == null) {
             return null;
         }
-        for (LaneSession session = least.next; session != this.ring; session = session.next) {
+        for (AdmissionSession session = least.next; session != this.ring; session = session.next) {
             if (session.served - least.served < 0) {
                 least = session;
             }
@@ -199,7 +216,7 @@ final class FairQueue {
     }
 
     /** Charges the session for what it sent, {@code milliTokens} at its weight. */
-    void charge(final LaneSession session, final long milliTokens) {
+    public void charge(final AdmissionSession session, final long milliTokens) {
         this.servedFrom = session.served;
         session.served += milliTokens / session.weight;
         traced(FairShareTrace.PICKED, session, milliTokens / session.weight);
@@ -209,7 +226,7 @@ final class FairQueue {
      * Makes up what an order in a batch was charged to what it cost once the batch went, unless its session has been
      * forgotten and its place reused since.
      */
-    void topUp(final LaneSession session, final long slot, final long milliTokens) {
+    public void topUp(final AdmissionSession session, final long slot, final long milliTokens) {
         if (session.slot == slot) {
             session.served += milliTokens / session.weight;
             traced(FairShareTrace.TOPPED_UP, session, milliTokens / session.weight);
@@ -218,19 +235,19 @@ final class FairQueue {
 
     // ----- sessions' lists -----
 
-    void enqueue(final LaneOrder order, final int kind) {
-        final LaneSession session = this.sessionsBySlot.get(order.ctx.sessionSlot);
+    public void enqueue(final E order, final int kind) {
+        final AdmissionSession session = this.sessionsBySlot.get(order.sessionSlot());
         order.queuedIn = session;
         order.queuedKind = kind;
-        if (kind == LaneOrder.SUBMIT) {
+        if (kind == AdmissionEntry.SUBMIT) {
             this.queuedSubmits++;
         }
         order.queuedAtNanos = this.nanoClock.getAsLong();
         order.heldTold = false;
-        order.nextQueued = LaneSession.NO_ORDER;
-        if (kind == LaneOrder.AMEND) {
+        order.nextQueued = AdmissionSession.NO_ORDER;
+        if (kind == AdmissionEntry.AMEND) {
             order.prevQueued = session.amendTail;
-            if (session.amendTail == LaneSession.NO_ORDER) {
+            if (session.amendTail == AdmissionSession.NO_ORDER) {
                 session.amendHead = order.index;
             } else {
                 this.orders[session.amendTail].nextQueued = order.index;
@@ -238,7 +255,7 @@ final class FairQueue {
             session.amendTail = order.index;
         } else {
             order.prevQueued = session.newTail;
-            if (session.newTail == LaneSession.NO_ORDER) {
+            if (session.newTail == AdmissionSession.NO_ORDER) {
                 session.newHead = order.index;
             } else {
                 this.orders[session.newTail].nextQueued = order.index;
@@ -254,17 +271,17 @@ final class FairQueue {
      *
      * @return false if its session is gone and the account has no room to introduce it again
      */
-    boolean requeueSubmit(final LaneOrder order) {
-        final LaneSession session = session(order.ctx.sessionSlot);
+    public boolean requeueSubmit(final E order) {
+        final AdmissionSession session = session(order.sessionSlot());
         if (session == null) {
             return false;
         }
         order.queuedIn = session;
-        order.queuedKind = LaneOrder.SUBMIT;
+        order.queuedKind = AdmissionEntry.SUBMIT;
         this.queuedSubmits++;
-        order.prevQueued = LaneSession.NO_ORDER;
+        order.prevQueued = AdmissionSession.NO_ORDER;
         order.nextQueued = session.newHead;
-        if (session.newHead == LaneSession.NO_ORDER) {
+        if (session.newHead == AdmissionSession.NO_ORDER) {
             session.newTail = order.index;
         } else {
             this.orders[session.newHead].prevQueued = order.index;
@@ -275,16 +292,16 @@ final class FairQueue {
     }
 
     /** Takes the order out of its session's list, if it is in one; a session left with nothing queued leaves the ring. */
-    void unqueue(final LaneOrder order) {
-        final LaneSession session = order.queuedIn;
+    public void unqueue(final E order) {
+        final AdmissionSession session = order.queuedIn;
         if (session == null) {
             return;
         }
-        final boolean amend = order.queuedKind == LaneOrder.AMEND;
+        final boolean amend = order.queuedKind == AdmissionEntry.AMEND;
         if (!amend) {
             this.queuedSubmits--;
         }
-        if (order.prevQueued == LaneSession.NO_ORDER) {
+        if (order.prevQueued == AdmissionSession.NO_ORDER) {
             if (amend) {
                 session.amendHead = order.nextQueued;
             } else {
@@ -293,7 +310,7 @@ final class FairQueue {
         } else {
             this.orders[order.prevQueued].nextQueued = order.nextQueued;
         }
-        if (order.nextQueued == LaneSession.NO_ORDER) {
+        if (order.nextQueued == AdmissionSession.NO_ORDER) {
             if (amend) {
                 session.amendTail = order.prevQueued;
             } else {
@@ -303,21 +320,21 @@ final class FairQueue {
             this.orders[order.nextQueued].prevQueued = order.prevQueued;
         }
         order.queuedIn = null;
-        order.queuedKind = LaneOrder.NONE;
-        order.prevQueued = LaneSession.NO_ORDER;
-        order.nextQueued = LaneSession.NO_ORDER;
+        order.queuedKind = AdmissionEntry.NONE;
+        order.prevQueued = AdmissionSession.NO_ORDER;
+        order.nextQueued = AdmissionSession.NO_ORDER;
         if (session.empty()) {
             deactivate(session);
         }
     }
 
-    private void activate(final LaneSession session) {
+    private void activate(final AdmissionSession session) {
         if (session.active) {
             return;
         }
         session.active = true;
         if (session.served - this.servedFrom < 0) {
-            final boolean wasIdle = session.emptiedAtNanos == LaneSession.NEVER
+            final boolean wasIdle = session.emptiedAtNanos == AdmissionSession.NEVER
                     || this.nanoClock.getAsLong() - session.emptiedAtNanos > IDLE_LEVEL_NANOS;
             final long floor = wasIdle ? this.servedFrom : this.servedFrom - this.maxCreditMilliTokens / session.weight;
             if (session.served - floor < 0) {
@@ -337,7 +354,7 @@ final class FairQueue {
         this.ring.prev = session;
     }
 
-    private void deactivate(final LaneSession session) {
+    private void deactivate(final AdmissionSession session) {
         if (!session.active) {
             return;
         }
@@ -366,11 +383,11 @@ final class FairQueue {
      * Hands each queued amend and new order that has waited longer than its session allows, or no longer stands, to
      * the expiry. Each list is in arrival order, so only its head can be due.
      */
-    void expireDue() {
+    public void expireDue() {
         final long now = this.nanoClock.getAsLong();
-        LaneSession session = this.ring;
-        for (int visited = 0; visited < AccountLane.MAX_SESSIONS && session != null; visited++) {
-            final LaneSession next = session.next;
+        AdmissionSession session = this.ring;
+        for (int visited = 0; visited < MAX_SESSIONS && session != null; visited++) {
+            final AdmissionSession next = session.next;
             final boolean last = next == this.ring;
             expireHead(session, session.amendHead, now);
             expireHead(session, session.newHead, now);
@@ -381,10 +398,10 @@ final class FairQueue {
         }
     }
 
-    private void expireHead(final LaneSession session, final int head, final long now) {
+    private void expireHead(final AdmissionSession session, final int head, final long now) {
         int index = head;
-        while (index != LaneSession.NO_ORDER) {
-            final LaneOrder order = this.orders[index];
+        while (index != AdmissionSession.NO_ORDER) {
+            final E order = this.orders[index];
             final int next = order.nextQueued;
             if (order.stillQueued(order.queuedKind) && now - order.queuedAtNanos <= session.maxQueueNanos) {
                 return;
@@ -397,20 +414,20 @@ final class FairQueue {
 
     // ----- for status, batching and post-mortems -----
 
-    boolean anyQueued() {
+    public boolean anyQueued() {
         return this.ring != null;
     }
 
     /** Submits queued in sessions' lists. */
-    int queuedSubmits() {
+    public int queuedSubmits() {
         return this.queuedSubmits;
     }
 
     /** Amends and new orders waiting for a connection or the budget. */
-    int queuedRequests() {
+    public int queuedRequests() {
         int queued = 0;
-        LaneSession session = this.ring;
-        for (int i = 0; session != null && i < AccountLane.MAX_SESSIONS; i++) {
+        AdmissionSession session = this.ring;
+        for (int i = 0; session != null && i < MAX_SESSIONS; i++) {
             queued += count(session.amendHead) + count(session.newHead);
             session = session.next;
             if (session == this.ring) {
@@ -422,24 +439,24 @@ final class FairQueue {
 
     private int count(final int head) {
         int count = 0;
-        for (int index = head; index != LaneSession.NO_ORDER; index = this.orders[index].nextQueued) {
+        for (int index = head; index != AdmissionSession.NO_ORDER; index = this.orders[index].nextQueued) {
             count++;
         }
         return count;
     }
 
-    FairShareTrace trace(final int capacity) {
+    public FairShareTrace trace(final int capacity) {
         this.trace = new FairShareTrace(capacity);
         return this.trace;
     }
 
-    void batchOpened() {
+    public void batchOpened() {
         if (this.trace != null) {
             this.trace.record(FairShareTrace.BATCH_OPENED, this.nanoClock.getAsLong(), 0, 0, 0, this.queuedSubmits);
         }
     }
 
-    private void traced(final int kind, final LaneSession session, final long value) {
+    private void traced(final int kind, final AdmissionSession session, final long value) {
         if (this.trace != null) {
             this.trace.record(kind, this.nanoClock.getAsLong(), session.slot, session.weight, session.served, value);
         }
