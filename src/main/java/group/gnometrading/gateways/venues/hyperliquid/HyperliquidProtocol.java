@@ -13,33 +13,46 @@ import group.gnometrading.schemas.book.Mbp10Encoder;
 import group.gnometrading.schemas.book.Side;
 import group.gnometrading.strings.GnomeString;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import org.agrona.concurrent.EpochClock;
+import org.agrona.collections.Object2LongHashMap;
 
 /**
  * Hyperliquid's websocket, many coins per connection: an {@code l2Book} and a {@code trades} subscription per coin,
  * each subscribed and unsubscribed on its own. Every {@code l2Book} message is the coin's whole book (20 levels a
- * side), so there is nothing to resync: the next message repairs anything. A new trades subscription first replays
- * recent trades: those from before it was subscribed are skipped (trade ids are hashes, so time is what tells them). Kept alive with JSON pings: Hyperliquid closes a connection it hasn't heard from
- * for 60 seconds.
+ * side), so there is nothing to resync: the next message repairs anything. Books are asked for {@code fast}: without
+ * it Hyperliquid sends a coin's book only every ten seconds or so, with it about every half second; an unsubscribe has
+ * to name it too, or it matches nothing and the book keeps coming.
+ *
+ * <p>A trades subscription is answered with a {@code subscriptionResponse} and, straight after, one frame replaying the
+ * coin's last 30 trades however old: that frame is never published. Its ids are kept, as its last block can come again
+ * as the first live trades, and a trade whose id was just seen is skipped. (Not by time: a live trade can arrive a
+ * second after its venue time, later than a subscribe sent meanwhile.) Kept alive with JSON pings: Hyperliquid closes a
+ * connection it hasn't heard from for 60 seconds.
  */
 public final class HyperliquidProtocol implements VenueProtocol<WebSocketChannel> {
 
     private static final long NANOS_PER_MILLI = 1_000_000L;
     private static final long UNREADABLE = -1L;
     private static final long NO_SEQUENCE = Mbp10Encoder.sequenceNullValue();
+    private static final long NO_ID = -1L;
+    // More than a block's trades come again: the replay's last block, at most a few dozen.
+    static final int RECENT_TRADE_IDS = 64;
 
     private final SubjectTable table;
-    private final EpochClock clock;
-    // When each coin's trades were subscribed, in venue milliseconds; a trade before that is the replay. Keyed by the
-    // coin so it carries over when a roll swaps the market. Written by the supervisor, read by the reader.
-    private final Map<String, Long> subscribedAtMillis = new ConcurrentHashMap<>();
+    // Each coin's last trade ids seen. Made by the supervisor as the coin is first subscribed, then only the reader
+    // touches one.
+    private final Map<String, RecentIds> seenIds = new ConcurrentHashMap<>();
+    // Reader thread: coins whose trades subscription was answered, their replay still to come.
+    private final List<Subject> replaysDue = new ArrayList<>();
+    // Reader thread: each coin's last book's time, in nanoseconds, by key.
+    private final Object2LongHashMap<String> bookTimes = new Object2LongHashMap<>(Long.MIN_VALUE);
 
-    public HyperliquidProtocol(final SubjectTable table, final EpochClock clock) {
+    public HyperliquidProtocol(final SubjectTable table) {
         this.table = table;
-        this.clock = clock;
     }
 
     @Override
@@ -59,15 +72,16 @@ public final class HyperliquidProtocol implements VenueProtocol<WebSocketChannel
         return 1;
     }
 
+    /** Called with the reader paused, so it may clear the reader's list. */
     @Override
     public void onConnected() {
-        subscribedAtMillis.clear();
+        replaysDue.clear();
     }
 
     @Override
     public void subscribe(final WebSocketChannel channel, final List<Subject> subjects) {
         for (Subject subject : subjects) {
-            subscribedAtMillis.put(subject.key(), clock.time());
+            seenIds.computeIfAbsent(subject.key(), coin -> new RecentIds(RECENT_TRADE_IDS));
             send(channel.writer(), "subscribe", "l2Book", subject.key());
             send(channel.writer(), "subscribe", "trades", subject.key());
         }
@@ -76,7 +90,6 @@ public final class HyperliquidProtocol implements VenueProtocol<WebSocketChannel
     @Override
     public void unsubscribe(final WebSocketChannel channel, final List<Subject> subjects) {
         for (Subject subject : subjects) {
-            subscribedAtMillis.remove(subject.key());
             send(channel.writer(), "unsubscribe", "l2Book", subject.key());
             send(channel.writer(), "unsubscribe", "trades", subject.key());
         }
@@ -109,6 +122,10 @@ public final class HyperliquidProtocol implements VenueProtocol<WebSocketChannel
         json.writeObjectEntry("type", type);
         json.writeComma();
         json.writeObjectEntry("coin", coin);
+        if (type.equals("l2Book")) {
+            json.writeComma();
+            json.writeObjectEntry("fast", true);
+        }
         json.writeObjectEnd();
         json.writeObjectEnd();
         writer.sendJson();
@@ -119,6 +136,7 @@ public final class HyperliquidProtocol implements VenueProtocol<WebSocketChannel
     private enum Channel {
         BOOK,
         TRADES,
+        RESPONSE,
         OTHER
     }
 
@@ -143,6 +161,8 @@ public final class HyperliquidProtocol implements VenueProtocol<WebSocketChannel
                             book(key);
                         } else if (channel == Channel.TRADES) {
                             trades(key);
+                        } else if (channel == Channel.RESPONSE) {
+                            response(key);
                         }
                     }
                 }
@@ -154,14 +174,67 @@ public final class HyperliquidProtocol implements VenueProtocol<WebSocketChannel
         if (name.equals("l2Book")) {
             return Channel.BOOK;
         }
-        return name.equals("trades") ? Channel.TRADES : Channel.OTHER;
+        if (name.equals("trades")) {
+            return Channel.TRADES;
+        }
+        return name.equals("subscriptionResponse") ? Channel.RESPONSE : Channel.OTHER;
     }
 
-    /** {"coin":"ETH","time":ms,"levels":[[bids…],[asks…]]}; every message is the coin's whole book. */
+    // The response being read.
+    private boolean subscribed;
+    private boolean tradesSubscription;
+    private Subject respondedFor;
+
+    /** {"method":"subscribe","subscription":{"type":"trades","coin":"BTC",…}}: that coin's replay comes next. */
+    private void response(final JsonDecoder.JsonNode data) {
+        subscribed = false;
+        tradesSubscription = false;
+        respondedFor = null;
+        try (var object = data.asObject()) {
+            while (object.hasNextKey()) {
+                try (var key = object.nextKey()) {
+                    if (key.getName().equals("method")) {
+                        subscribed = key.asString().equals("subscribe");
+                    } else if (key.getName().equals("subscription")) {
+                        subscription(key);
+                    }
+                }
+            }
+        }
+        if (subscribed && tradesSubscription && respondedFor != null && !replaysDue.contains(respondedFor)) {
+            replaysDue.add(respondedFor);
+        }
+    }
+
+    private void subscription(final JsonDecoder.JsonNode node) {
+        try (var object = node.asObject()) {
+            while (object.hasNextKey()) {
+                try (var key = object.nextKey()) {
+                    if (key.getName().equals("type")) {
+                        tradesSubscription = key.asString().equals("trades");
+                    } else if (key.getName().equals("coin")) {
+                        respondedFor = table.get(key.asString());
+                    }
+                }
+            }
+        }
+    }
+
+    // The book being read: whether it is one already had, and whether its levels were read.
+    private boolean repeatBook;
+    private boolean levelsRead;
+
+    /**
+     * {"coin":"ETH","time":ms,"levels":[[bids…],[asks…]]}; every message is the coin's whole book. A live coin's book
+     * no newer than the last is skipped: right after a subscribe, the next book often repeats the one sent with it,
+     * which a connection subscribed earlier never got, and a roll counts on both connections seeing the same books.
+     */
     private void book(final JsonDecoder.JsonNode data) {
         current = null;
         timestamp = Mbp10Encoder.timestampEventNullValue();
         unreadable = false;
+        repeatBook = false;
+        levelsRead = false;
         try (var object = data.asObject()) {
             while (object.hasNextKey()) {
                 try (var key = object.nextKey()) {
@@ -169,14 +242,18 @@ public final class HyperliquidProtocol implements VenueProtocol<WebSocketChannel
                 }
             }
         }
-        if (current == null) {
+        if (current == null || repeatBook) {
             return;
+        }
+        if (!levelsRead) {
+            current.beginSnapshot();
         }
         // Not published half-read; the next message is the whole book again.
         if (unreadable) {
             current.stale(GapReason.UNREADABLE, receiveNanos);
             return;
         }
+        bookTimes.put(current.key(), timestamp);
         current.endSnapshot(timestamp, receiveNanos, NO_SEQUENCE);
     }
 
@@ -184,14 +261,19 @@ public final class HyperliquidProtocol implements VenueProtocol<WebSocketChannel
         final GnomeString name = key.getName();
         if (name.equals("coin")) {
             current = table.get(key.asString());
-            if (current != null) {
-                current.beginSnapshot();
-            }
         } else if (current == null) {
             return;
         } else if (name.equals("time")) {
             timestamp = key.asLong() * NANOS_PER_MILLI;
         } else if (name.equals("levels")) {
+            repeatBook = current.state().trusted()
+                    && timestamp != Mbp10Encoder.timestampEventNullValue()
+                    && timestamp <= bookTimes.getValue(current.key());
+            if (repeatBook) {
+                return;
+            }
+            levelsRead = true;
+            current.beginSnapshot();
             try (var sides = key.asArray()) {
                 side(sides, Side.Bid);
                 side(sides, Side.Ask);
@@ -237,9 +319,15 @@ public final class HyperliquidProtocol implements VenueProtocol<WebSocketChannel
         current.level(side, price, size, orders);
     }
 
+    // Whether the trades frame being read is a subscription's replay, and whether its coin is known yet.
+    private boolean replay;
+    private boolean placed;
+
     /** [{"coin","side":"A"|"B","px","sz","time","tid"…}, …], all one coin's. */
     private void trades(final JsonDecoder.JsonNode data) {
         current = null;
+        replay = false;
+        placed = false;
         try (var trades = data.asArray()) {
             while (trades.hasNextItem()) {
                 try (var tradeNode = trades.nextItem()) {
@@ -247,6 +335,16 @@ public final class HyperliquidProtocol implements VenueProtocol<WebSocketChannel
                 }
             }
         }
+        // An empty replay names no coin; replays come in the order their subscriptions were answered.
+        if (!placed && !replaysDue.isEmpty()) {
+            replaysDue.remove(0);
+        }
+    }
+
+    /** Once the frame's coin is known: whether it is the replay that coin's subscription was answered with. */
+    private void place() {
+        placed = true;
+        replay = replaysDue.remove(current);
     }
 
     // The trade being read.
@@ -254,12 +352,14 @@ public final class HyperliquidProtocol implements VenueProtocol<WebSocketChannel
     private long tradePrice;
     private long tradeSize;
     private long tradeTime;
+    private long tradeId;
 
     private void trade(final JsonDecoder.JsonNode tradeNode) {
         tradeSide = Side.None;
         tradePrice = UNREADABLE;
         tradeSize = UNREADABLE;
         tradeTime = Mbp10Encoder.timestampEventNullValue();
+        tradeId = NO_ID;
         try (var trade = tradeNode.asObject()) {
             while (trade.hasNextKey()) {
                 try (var key = trade.nextKey()) {
@@ -267,8 +367,21 @@ public final class HyperliquidProtocol implements VenueProtocol<WebSocketChannel
                 }
             }
         }
+        if (current == null) {
+            return;
+        }
+        if (!placed) {
+            place();
+        }
+        final RecentIds seen = seenIds.get(current.key());
+        if (seen != null && tradeId != NO_ID) {
+            if (seen.contains(tradeId)) {
+                return;
+            }
+            seen.add(tradeId);
+        }
         // A trade with a price or size that can't be read isn't published: it would read as a real trade.
-        if (current != null && !replayed() && tradePrice != UNREADABLE && tradeSize != UNREADABLE) {
+        if (!replay && tradePrice != UNREADABLE && tradeSize != UNREADABLE) {
             current.trade(tradePrice, tradeSize, tradeSide, tradeTime, receiveNanos);
         }
     }
@@ -285,12 +398,33 @@ public final class HyperliquidProtocol implements VenueProtocol<WebSocketChannel
             tradeSize = key.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR, UNREADABLE);
         } else if (name.equals("time")) {
             tradeTime = key.asLong() * NANOS_PER_MILLI;
+        } else if (name.equals("tid")) {
+            tradeId = key.asLong();
         }
     }
 
-    /** Whether the trade being read happened before its coin's trades were subscribed: replayed, already seen. */
-    private boolean replayed() {
-        final Long subscribedAt = subscribedAtMillis.get(current.key());
-        return subscribedAt != null && tradeTime < subscribedAt * NANOS_PER_MILLI;
+    /** The last few ids added, oldest overwritten first. */
+    static final class RecentIds {
+        private final long[] ids;
+        private int next;
+
+        RecentIds(final int capacity) {
+            ids = new long[capacity];
+            Arrays.fill(ids, NO_ID);
+        }
+
+        boolean contains(final long id) {
+            for (long held : ids) {
+                if (held == id) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        void add(final long id) {
+            ids[next] = id;
+            next = next + 1 == ids.length ? 0 : next + 1;
+        }
     }
 }

@@ -20,17 +20,21 @@ class HyperliquidProtocolTest {
     private final VenueTestKit kit = new VenueTestKit();
     private final VenueTestKit.Stream eth = kit.market("ETH");
     private final VenueTestKit.Stream btc = kit.market("BTC");
-    // Subscriptions happen 0.4 s after the books' time, between the test trades' times.
-    private final HyperliquidProtocol protocol = new HyperliquidProtocol(kit.table, () -> 1_700_000_000_400L);
+    private final HyperliquidProtocol protocol = new HyperliquidProtocol(kit.table);
     private long receive = 1_000;
 
     private void frame(final String json) {
         protocol.onFrame(VenueTestKit.frame(json), receive++);
     }
 
-    private static String book(final String coin, final String bid, final String ask) {
+    // Each book a block later than the last, as Hyperliquid sends them.
+    private long bookTime = 1_700_000_000_000L;
+
+    private String book(final String coin, final String bid, final String ask) {
+        final long time = bookTime;
+        bookTime += 500;
         return "{\"channel\":\"l2Book\",\"data\":{\"coin\":\"" + coin
-                + "\",\"time\":1700000000000,\"levels\":[[{\"px\":\""
+                + "\",\"time\":" + time + ",\"levels\":[[{\"px\":\""
                 + bid + "\",\"sz\":\"1.5\",\"n\":3},{\"px\":\"1.0\",\"sz\":\"2\",\"n\":1}],[{\"px\":\"" + ask
                 + "\",\"sz\":\"0.25\",\"n\":2}]]}}";
     }
@@ -40,8 +44,13 @@ class HyperliquidProtocolTest {
     }
 
     private static String trades(final String coin, final String side, final String px, final long time) {
-        return "{\"channel\":\"trades\",\"data\":[{\"coin\":\"" + coin + "\",\"side\":\"" + side + "\",\"px\":\"" + px
-                + "\",\"sz\":\"0.5\",\"time\":" + time + ",\"tid\":7}]}";
+        return "{\"channel\":\"trades\",\"data\":[" + trade(coin, side, px, time, 7) + "]}";
+    }
+
+    private static String trade(
+            final String coin, final String side, final String px, final long time, final long tid) {
+        return "{\"coin\":\"" + coin + "\",\"side\":\"" + side + "\",\"px\":\"" + px + "\",\"sz\":\"0.5\",\"time\":"
+                + time + ",\"tid\":" + tid + "}";
     }
 
     @Test
@@ -57,7 +66,7 @@ class HyperliquidProtocolTest {
         assertEquals(price("2301"), record.decoder.askPrice0());
         assertEquals(1700000000000L * 1_000_000L, record.decoder.timestampEvent());
 
-        frame("{\"channel\":\"l2Book\",\"data\":{\"coin\":\"ETH\",\"time\":1,\"levels\":[[],[]]}}");
+        frame("{\"channel\":\"l2Book\",\"data\":{\"coin\":\"ETH\",\"time\":1700000001000,\"levels\":[[],[]]}}");
         assertEquals(0, kit.table.get("ETH").book().bids().depth(), "the next message replaces the book whole");
     }
 
@@ -87,22 +96,6 @@ class HyperliquidProtocolTest {
     }
 
     @Test
-    void theReplayANewTradesSubscriptionOpensWithIsSkipped() throws Exception {
-        protocol.subscribe(kit.channel, List.of(kit.table.get("ETH")));
-        frame(book("ETH", "2300", "2301"));
-        frame(trades("ETH", "B", "2300.5", 1_700_000_000_300L));
-        int afterReplay = eth.drain().size();
-        frame(trades("ETH", "A", "2300.25"));
-
-        assertEquals(1, afterReplay, "only the book");
-        Mbp10Schema print = eth.last();
-        assertEquals(Action.Trade, print.decoder.action());
-        assertEquals(Side.Ask, print.decoder.side());
-        assertEquals(price("2300.25"), print.decoder.price());
-        assertEquals(size("0.5"), print.decoder.size());
-    }
-
-    @Test
     void eachCoinIsSubscribedAndUnsubscribedOnItsOwn() {
         protocol.subscribe(kit.channel, List.of(kit.table.get("ETH")));
         protocol.unsubscribe(kit.channel, List.of(kit.table.get("ETH")));
@@ -110,9 +103,9 @@ class HyperliquidProtocolTest {
 
         assertEquals(
                 List.of(
-                        "{\"method\":\"subscribe\",\"subscription\":{\"type\":\"l2Book\",\"coin\":\"ETH\"}}",
+                        "{\"method\":\"subscribe\",\"subscription\":{\"type\":\"l2Book\",\"coin\":\"ETH\",\"fast\":true}}",
                         "{\"method\":\"subscribe\",\"subscription\":{\"type\":\"trades\",\"coin\":\"ETH\"}}",
-                        "{\"method\":\"unsubscribe\",\"subscription\":{\"type\":\"l2Book\",\"coin\":\"ETH\"}}",
+                        "{\"method\":\"unsubscribe\",\"subscription\":{\"type\":\"l2Book\",\"coin\":\"ETH\",\"fast\":true}}",
                         "{\"method\":\"unsubscribe\",\"subscription\":{\"type\":\"trades\",\"coin\":\"ETH\"}}",
                         "{\"method\":\"ping\"}"),
                 kit.sent);
@@ -126,12 +119,151 @@ class HyperliquidProtocolTest {
     }
 
     @Test
-    void anEmptyReplayDoesntSwallowTheFirstRealTrades() throws Exception {
+    void distinctTradesInOneMillisecondAreAllPublished() throws Exception {
         protocol.subscribe(kit.channel, List.of(kit.table.get("ETH")));
         frame(book("ETH", "2300", "2301"));
+        eth.drain().clear();
+        frame("{\"channel\":\"trades\",\"data\":[" + trade("ETH", "B", "2300.5", 1_700_000_000_500L, 11) + ","
+                + trade("ETH", "B", "2300.5", 1_700_000_000_500L, 12) + "]}");
+        frame("{\"channel\":\"trades\",\"data\":[" + trade("ETH", "B", "2300.5", 1_700_000_000_500L, 13) + "]}");
+
+        assertEquals(3, eth.drain().size());
+    }
+
+    @Test
+    void anIdIsForgottenOnlyOnceManyNewerOnesFollow() throws Exception {
+        protocol.subscribe(kit.channel, List.of(kit.table.get("ETH")));
+        frame(book("ETH", "2300", "2301"));
+        eth.drain().clear();
+        for (int tid = 1; tid <= HyperliquidProtocol.RECENT_TRADE_IDS; tid++) {
+            frame("{\"channel\":\"trades\",\"data\":[" + trade("ETH", "B", "2300.5", 1_700_000_000_500L, tid) + "]}");
+        }
+        frame("{\"channel\":\"trades\",\"data\":[" + trade("ETH", "B", "2300.5", 1_700_000_000_500L, 1) + "]}");
+        frame("{\"channel\":\"trades\",\"data\":[" + trade("ETH", "B", "2300.5", 1_700_000_000_500L, 2) + "]}");
+
+        assertEquals(HyperliquidProtocol.RECENT_TRADE_IDS, eth.drain().size(), "64 ids held: 1 and 2 are still known");
+    }
+
+    /** How Hyperliquid answers a subscription, as captured. */
+    private static String answer(final String type, final String coin) {
+        return "{\"channel\":\"subscriptionResponse\",\"data\":{\"method\":\"subscribe\",\"subscription\":{\"type\":\""
+                + type + "\",\"coin\":\"" + coin + "\",\"nSigFigs\":null,\"mantissa\":null,\"fast\":true}}}";
+    }
+
+    private static String tradesOf(final String... trades) {
+        return "{\"channel\":\"trades\",\"data\":[" + String.join(",", trades) + "]}";
+    }
+
+    private void live() throws Exception {
+        protocol.subscribe(kit.channel, List.of(kit.table.get("ETH")));
+        frame(book("ETH", "2300", "2301"));
+        eth.drain().clear();
+    }
+
+    @Test
+    void theReplayATradesSubscriptionIsAnsweredWithIsNotPublished() throws Exception {
+        live();
+        frame(answer("trades", "ETH"));
+        frame(tradesOf(
+                trade("ETH", "B", "2300.5", 1_700_000_000_300L, 1),
+                trade("ETH", "B", "2300.6", 1_800_000_000_000L, 2)));
+        frame(tradesOf(trade("ETH", "A", "2300.25", 1_700_000_000_500L, 3)));
+
+        List<Mbp10Schema> prints = eth.drain();
+        assertEquals(1, prints.size(), "however new its times, the replay isn't published");
+        assertEquals(Action.Trade, prints.get(0).decoder.action());
+        assertEquals(Side.Ask, prints.get(0).decoder.side());
+        assertEquals(price("2300.25"), prints.get(0).decoder.price());
+        assertEquals(size("0.5"), prints.get(0).decoder.size());
+    }
+
+    @Test
+    void aLiveTradeOlderThanTheSubscribeIsStillPublished() throws Exception {
+        live();
+        frame(answer("trades", "ETH"));
+        frame(tradesOf(trade("ETH", "B", "2300.5", 1_700_000_000_300L, 1)));
+        // Hyperliquid can deliver a trade a second after its time, after a subscribe sent in between.
+        frame(tradesOf(trade("ETH", "B", "2300.75", 1_000L, 2)));
+
+        assertEquals(1, eth.drain().size());
+    }
+
+    @Test
+    void theReplaysLastBlockSentAgainLiveIsPublishedOnce() throws Exception {
+        live();
+        frame(answer("trades", "ETH"));
+        frame(tradesOf(
+                trade("ETH", "B", "2300.5", 1_700_000_000_400L, 1),
+                trade("ETH", "B", "2300.5", 1_700_000_000_400L, 2),
+                trade("ETH", "B", "2300.75", 1_700_000_000_400L, 3)));
+        frame(tradesOf(
+                trade("ETH", "B", "2300.5", 1_700_000_000_400L, 2),
+                trade("ETH", "B", "2300.75", 1_700_000_000_400L, 3)));
+        frame(tradesOf(trade("ETH", "A", "2300.25", 1_700_000_000_500L, 4)));
+
+        List<Mbp10Schema> prints = eth.drain();
+        assertEquals(1, prints.size(), "2 and 3 came in the replay; only 4 is new");
+        assertEquals(price("2300.25"), prints.get(0).decoder.price());
+    }
+
+    @Test
+    void anEmptyReplayDoesntSwallowTheFirstRealTrades() throws Exception {
+        live();
+        frame(answer("trades", "ETH"));
         frame("{\"channel\":\"trades\",\"data\":[]}");
         frame(trades("ETH", "A", "2300.25"));
 
         assertEquals(Action.Trade, eth.last().decoder.action());
+    }
+
+    @Test
+    void anotherCoinsTradesBetweenAnAnswerAndItsReplayArePublished() throws Exception {
+        live();
+        protocol.subscribe(kit.channel, List.of(kit.table.get("BTC")));
+        frame(book("BTC", "80000", "80001"));
+        btc.drain().clear();
+        frame(answer("trades", "ETH"));
+        frame(tradesOf(trade("BTC", "B", "80000.5", 1_700_000_000_500L, 9)));
+        frame(tradesOf(trade("ETH", "B", "2300.5", 1_700_000_000_300L, 1)));
+        frame(tradesOf(trade("ETH", "B", "2300.75", 1_700_000_000_600L, 2)));
+
+        assertEquals(1, btc.drain().size());
+        assertEquals(1, eth.drain().size(), "the ETH replay was the frame after the BTC trades");
+    }
+
+    @Test
+    void aBookSubscriptionsAnswerIsFollowedByNoReplay() throws Exception {
+        live();
+        frame(answer("l2Book", "ETH"));
+        frame(tradesOf(trade("ETH", "B", "2300.5", 1_700_000_000_500L, 1)));
+
+        assertEquals(1, eth.drain().size());
+    }
+
+    private static String book(final String coin, final String bid, final long time) {
+        return "{\"channel\":\"l2Book\",\"data\":{\"coin\":\"" + coin + "\",\"time\":" + time
+                + ",\"levels\":[[{\"px\":\"" + bid
+                + "\",\"sz\":\"1.5\",\"n\":3}],[{\"px\":\"2400\",\"sz\":\"1\",\"n\":1}]]}}";
+    }
+
+    @Test
+    void aLiveCoinsBookNoNewerThanTheLastIsSkipped() throws Exception {
+        frame(book("ETH", "2300", 1_700_000_000_000L));
+        frame(book("ETH", "2300", 1_700_000_000_000L));
+        frame(book("ETH", "2299", 1_699_999_999_000L));
+        frame(book("ETH", "2301", 1_700_000_000_500L));
+
+        List<Mbp10Schema> books = eth.drain();
+        assertEquals(2, books.size(), "the repeat and the older one skipped");
+        assertEquals(price("2301"), books.get(1).decoder.bidPrice0());
+    }
+
+    @Test
+    void aSnapshotAfterAReconnectIsTakenThoughNoNewer() throws Exception {
+        frame(book("ETH", "2300", 1_700_000_000_000L));
+        kit.table.get("ETH").disconnected(5);
+        frame(book("ETH", "2300", 1_700_000_000_000L));
+
+        assertEquals(SubjectState.LIVE, kit.table.get("ETH").state());
     }
 }

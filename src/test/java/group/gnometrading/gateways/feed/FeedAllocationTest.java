@@ -118,7 +118,7 @@ class FeedAllocationTest {
                     + ",\"levels\":[[{\"px\":\"2300.5\",\"sz\":\"" + (i % 2 == 0 ? "1.5" : "2.5") + "\",\"n\":3}],"
                     + "[{\"px\":\"2301\",\"sz\":\"0.25\",\"n\":1}]]}}");
         }
-        assertNoAllocation(messages, "ETH", table -> new HyperliquidProtocol(table, () -> 0), Projection.IDENTITY);
+        assertNoAllocation(messages, "ETH", table -> new HyperliquidProtocol(table), Projection.IDENTITY);
     }
 
     @Test

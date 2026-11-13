@@ -11,7 +11,7 @@ import group.gnometrading.gateways.feed.book.Projection;
 import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.NullLogger;
 import group.gnometrading.schemas.Mbp10Schema;
-import group.gnometrading.schemas.book.Side;
+import group.gnometrading.schemas.book.Action;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -232,7 +232,7 @@ class ConnectionGroupTest {
     }
 
     @Test
-    void aRollReportsTradesOnlyItsGapLostNotThoseTheOldConnectionPublished() throws Exception {
+    void aRollPublishesNothingTwiceAndReportsWhatItReplayed() throws Exception {
         final List<String> logs = new CopyOnWriteArrayList<>();
         ConnectionGroup<FakeVenue> logged = new ConnectionGroup<>(
                 "TEST",
@@ -253,8 +253,8 @@ class ConnectionGroupTest {
             logged.add(a, 0);
             await(() -> a.state() == SubjectState.LIVE);
             venues.get(0).frames.add("T A 44");
-            await(() -> a.trades() == 1);
-            // The replacement's stand-in takes a trade before its book, so before the old connection lets go.
+            await(() -> a.records() == 2);
+            // The replacement's stand-in takes that same trade, the venue's next record, before its book.
             opener.tradeBeforeBook = true;
 
             logged.tick(13 * HOUR);
@@ -263,19 +263,16 @@ class ConnectionGroupTest {
             assertTrue(
                     logs.stream()
                             .anyMatch(line -> line.matches("TEST: rolled TEST-0 to TEST-1 with 1 markets in \\d+ us, "
-                                    + "0 trades unpublished")),
+                                    + "0 records replayed, 0 markets short of some")),
                     logs.toString());
+            assertEquals(
+                    1,
+                    streams.get(0).drain().stream()
+                            .filter(r -> r.decoder.action() == Action.Trade)
+                            .count(),
+                    "the trade went out once");
         } finally {
             logged.closeAll();
         }
-    }
-
-    @Test
-    void aMarketCountsEveryTradeEvenWithNoStreamToPublishTo() {
-        Subject standIn = new Subject("A", 16);
-        standIn.trade(45, 1, Side.Bid, 1, 1);
-        standIn.trade(46, 1, Side.Ask, 2, 2);
-
-        assertEquals(2, standIn.trades());
     }
 }

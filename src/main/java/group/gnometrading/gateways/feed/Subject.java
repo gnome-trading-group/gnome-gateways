@@ -23,6 +23,7 @@ public final class Subject {
 
     private static final long NO_SEQUENCE = Mbp10Encoder.sequenceNullValue();
     private static final long NO_TIME = Mbp10Encoder.timestampEventNullValue();
+    private static final long NO_POSITION = Long.MIN_VALUE;
     // How much of each new gap the mean takes in: about the last 16 messages' worth.
     private static final int GAP_SMOOTHING_SHIFT = 4;
     private static final VarHandle STATE;
@@ -51,14 +52,45 @@ public final class Subject {
     private volatile long meanGapNanos;
     private volatile long lastVerifiedNanos;
     private volatile long records;
-    // Every trade the venue sent for it, published or not: a roll's stand-in publishes none.
-    private volatile long trades;
     private volatile long resyncs;
 
+    // Where its latest book and trade fell in the venue's sequence on the connection carrying it: the venue's time and
+    // how many it sent at that time, counting each once whether or not it was published. Every connection sees the
+    // same sequence (measured on each venue), so a roll's replacement can tell from these what the old one published.
+    private long bookTime = NO_POSITION;
+    private int booksAtTime;
+    private long tradeTime = NO_POSITION;
+    private int tradesAtTime;
+    // After a roll whose replacement was behind the old connection: how far the old one had published. The
+    // replacement's records up to there are ones already out; they still change the book but aren't published again.
+    private long repeatBookTime = NO_POSITION;
+    private int repeatBooksAtTime;
+    private long repeatTradeTime = NO_POSITION;
+    private int repeatTradesAtTime;
+    // A roll's stand-in only: what it would have published, for the market it stands in for.
+    private final ReplayLog replay;
+    // Whether adopting this stand-in found records it should have published already overwritten.
+    private boolean replayFellShort;
+    // The book a replayed record carried; made the first time one is.
+    private Book replayed;
+
     public Subject(final String key, final int levelsPerSide, final StreamOutput... outputs) {
+        this(key, levelsPerSide, null, outputs);
+    }
+
+    private Subject(final String key, final int levelsPerSide, final ReplayLog replay, final StreamOutput... outputs) {
         this.key = key;
         this.book = new Book(levelsPerSide);
         this.outputs = outputs.clone();
+        this.replay = replay;
+    }
+
+    /**
+     * A market's stand-in on a roll's replacement connection: it publishes nowhere, but keeps its latest {@code
+     * records} so the market can publish what its old connection didn't.
+     */
+    public static Subject standIn(final String key, final int levelsPerSide, final int records) {
+        return new Subject(key, levelsPerSide, new ReplayLog(records));
     }
 
     public String key() {
@@ -97,7 +129,7 @@ public final class Subject {
     /** Reader thread: publishes the book once more, as a snapshot, if it is trusted; for a stream that just joined. */
     public void republish(final long receiveNanos) {
         if (state().trusted()) {
-            publishBook(lastEventTimestamp, receiveNanos, NO_SEQUENCE, true, false);
+            publishBook(book, lastEventTimestamp, receiveNanos, NO_SEQUENCE, true, false);
         }
     }
 
@@ -143,6 +175,7 @@ public final class Subject {
     /** The snapshot is complete: the market is live from here, and its book goes out flagged as a snapshot. */
     public void endSnapshot(final long eventTimestamp, final long receiveNanos, final long sequence) {
         received(receiveNanos);
+        final int index = nextBook(eventTimestamp);
         final SubjectState current = state();
         if (current == SubjectState.REMOVING || current == SubjectState.QUARANTINED) {
             return;
@@ -154,7 +187,15 @@ public final class Subject {
             return;
         }
         moveTo(SubjectState.LIVE);
-        publishBook(eventTimestamp, receiveNanos, sequence, true, false);
+        if (repeatsBook(eventTimestamp, index)) {
+            lastEventTimestamp = eventTimestamp;
+            top.update(book);
+            return;
+        }
+        publishBook(book, eventTimestamp, receiveNanos, sequence, true, false);
+        if (replay != null) {
+            replay.book(eventTimestamp, index, book, receiveNanos, sequence, true);
+        }
     }
 
     /** Whether updates apply now: not while a snapshot is awaited, so a stale book isn't patched. */
@@ -177,6 +218,7 @@ public final class Subject {
     /** One message's updates are applied: publish the book. */
     public void endUpdate(final long eventTimestamp, final long receiveNanos, final long sequence) {
         received(receiveNanos);
+        final int index = nextBook(eventTimestamp);
         if (!accepting()) {
             return;
         }
@@ -189,7 +231,14 @@ public final class Subject {
         if (state == SubjectState.SUSPECT.ordinal()) {
             transition(SubjectState.SUSPECT, SubjectState.LIVE);
         }
-        publishBook(eventTimestamp, receiveNanos, sequence, false, false);
+        if (repeatsBook(eventTimestamp, index)) {
+            top.update(book);
+            return;
+        }
+        publishBook(book, eventTimestamp, receiveNanos, sequence, false, false);
+        if (replay != null) {
+            replay.book(eventTimestamp, index, book, receiveNanos, sequence, false);
+        }
     }
 
     /**
@@ -212,12 +261,28 @@ public final class Subject {
             final long eventTimestamp,
             final long receiveNanos) {
         received(receiveNanos);
-        trades++;
+        final int index = nextTrade(eventTimestamp);
         final SubjectState current = state();
         if (current == SubjectState.REMOVING || current == SubjectState.QUARANTINED) {
             return;
         }
-        final boolean trusted = current.trusted();
+        if (repeatsTrade(eventTimestamp, index)) {
+            return;
+        }
+        publishTrade(price, size, aggressor, eventTimestamp, receiveNanos, current.trusted(), book);
+        if (replay != null) {
+            replay.trade(eventTimestamp, index, price, size, aggressor, receiveNanos);
+        }
+    }
+
+    private void publishTrade(
+            final long price,
+            final long size,
+            final Side aggressor,
+            final long eventTimestamp,
+            final long receiveNanos,
+            final boolean trusted,
+            final Book with) {
         for (StreamOutput output : outputs) {
             final Mbp10Schema schema = output.ring().claim();
             final Mbp10Encoder encoder = schema.encoder;
@@ -226,10 +291,57 @@ public final class Subject {
             encoder.size(size);
             encoder.action(Action.Trade);
             encoder.side(output.projection().side(aggressor));
-            writer.write(book, output.projection(), encoder);
+            writer.write(with, output.projection(), encoder);
             output.ring().publish();
         }
         records++;
+    }
+
+    // ----- where records fall in the venue's sequence -----
+
+    private int nextBook(final long time) {
+        if (time == bookTime) {
+            return booksAtTime++;
+        }
+        bookTime = time;
+        booksAtTime = 1;
+        return 0;
+    }
+
+    private int nextTrade(final long time) {
+        if (time == tradeTime) {
+            return tradesAtTime++;
+        }
+        tradeTime = time;
+        tradesAtTime = 1;
+        return 0;
+    }
+
+    /** Whether the record at {@code time}, {@code index} comes after the {@code count} records sent up to {@code at}. */
+    private static boolean after(final long time, final int index, final long at, final int count) {
+        return at == NO_POSITION || time > at || (time == at && index >= count);
+    }
+
+    private boolean repeatsBook(final long time, final int index) {
+        if (repeatBookTime == NO_POSITION) {
+            return false;
+        }
+        if (after(time, index, repeatBookTime, repeatBooksAtTime)) {
+            repeatBookTime = NO_POSITION;
+            return false;
+        }
+        return true;
+    }
+
+    private boolean repeatsTrade(final long time, final int index) {
+        if (repeatTradeTime == NO_POSITION) {
+            return false;
+        }
+        if (after(time, index, repeatTradeTime, repeatTradesAtTime)) {
+            repeatTradeTime = NO_POSITION;
+            return false;
+        }
+        return true;
     }
 
     /**
@@ -250,25 +362,116 @@ public final class Subject {
     }
 
     /**
-     * A replacement connection built this market's book on {@code shadow}; it takes that book and goes on from it,
-     * publishing it once as a snapshot. A stand-in with no trusted book (the venue had none) leaves the market flagged:
-     * its last good book goes out once more as badData, so readers don't take it as current. Called on the
-     * replacement's supervisor with its reader paused, after the old connection let the market go, so it is the only
-     * producer.
+     * A replacement connection built this market's book on {@code shadow}; it takes that book and goes on from it.
+     * Called on the replacement's supervisor with its reader paused, after the old connection let the market go, so it
+     * is the only producer.
+     *
+     * <p>A trusted market carries on as if one connection had carried it throughout: whatever the stand-in took after
+     * the last record the old connection published goes out now, in order; if the stand-in was behind instead, its
+     * next records, already published by the old connection, aren't published again. A market that wasn't trusted
+     * publishes the stand-in's book once as a snapshot. A stand-in with no trusted book (the venue had none) leaves the
+     * market flagged: its last good book goes out once more as badData, so readers don't take it as current.
+     *
+     * @return how many records went out that the old connection never published
      */
-    public void adoptFrom(final Subject shadow, final long receiveNanos) {
+    public int adoptFrom(final Subject shadow, final long receiveNanos) {
         final SubjectState shadowState = shadow.state();
         if (!shadowState.trusted()) {
             if (state().trusted()) {
                 publishBad(receiveNanos);
             }
             moveTo(shadowState);
-            return;
+            return 0;
+        }
+        int published = 0;
+        if (state().trusted() && shadow.replay != null) {
+            published = replayFrom(shadow);
+            repeatUpTo(shadow);
+        } else {
+            publishBook(shadow.book, shadow.lastEventTimestamp, receiveNanos, NO_SEQUENCE, true, false);
         }
         book.copyFrom(shadow.book);
-        lastEventTimestamp = shadow.lastEventTimestamp;
+        top.update(book);
+        lastEventTimestamp = Math.max(lastEventTimestamp, shadow.lastEventTimestamp);
+        bookTime = shadow.bookTime;
+        booksAtTime = shadow.booksAtTime;
+        tradeTime = shadow.tradeTime;
+        tradesAtTime = shadow.tradesAtTime;
         moveTo(SubjectState.LIVE);
-        publishBook(lastEventTimestamp, receiveNanos, NO_SEQUENCE, true, false);
+        return published;
+    }
+
+    /** Whether adopting this stand-in found some of what it should have published already overwritten. */
+    public boolean replayFellShort() {
+        return replayFellShort;
+    }
+
+    /** Publishes the stand-in's records that come after this market's last book and trade, in the order it took them. */
+    private int replayFrom(final Subject shadow) {
+        final ReplayLog log = shadow.replay;
+        boolean bookCovered = !log.wrapped();
+        boolean tradeCovered = !log.wrapped();
+        Book with = book;
+        int published = 0;
+        for (int nth = 0; nth < log.held(); nth++) {
+            final int slot = log.slot(nth);
+            final boolean isBook = log.isBook(slot);
+            if (isBook
+                    ? after(log.time(slot), log.index(slot), bookTime, booksAtTime)
+                    : after(log.time(slot), log.index(slot), tradeTime, tradesAtTime)) {
+                with = replay(log, slot, with);
+                published++;
+            } else if (isBook) {
+                bookCovered = true;
+            } else {
+                tradeCovered = true;
+            }
+        }
+        // Records past this market's last ones exist but the oldest of them kept is already past it: some were lost.
+        shadow.replayFellShort = (!bookCovered && shadow.tookBooksAfter(bookTime, booksAtTime))
+                || (!tradeCovered && shadow.tookTradesAfter(tradeTime, tradesAtTime));
+        return published;
+    }
+
+    /** Publishes one of a stand-in's records; returns the book a trade after it goes out with. */
+    private Book replay(final ReplayLog log, final int slot, final Book with) {
+        if (!log.isBook(slot)) {
+            publishTrade(
+                    log.tradePrice(slot),
+                    log.tradeSize(slot),
+                    log.tradeSide(slot),
+                    log.time(slot),
+                    log.receive(slot),
+                    true,
+                    with);
+            return with;
+        }
+        if (replayed == null) {
+            replayed = new Book(Mbp10Writer.LEVELS);
+        }
+        log.bookInto(slot, replayed);
+        publishBook(replayed, log.time(slot), log.receive(slot), log.sequence(slot), log.snapshot(slot), false);
+        return replayed;
+    }
+
+    private boolean tookBooksAfter(final long at, final int count) {
+        return bookTime != NO_POSITION && after(bookTime, booksAtTime - 1, at, count);
+    }
+
+    private boolean tookTradesAfter(final long at, final int count) {
+        return tradeTime != NO_POSITION && after(tradeTime, tradesAtTime - 1, at, count);
+    }
+
+    /** A stand-in still short of what the old connection published: its records up to there are repeats. */
+    private void repeatUpTo(final Subject shadow) {
+        if (bookTime != NO_POSITION && !shadow.tookBooksAfter(bookTime, booksAtTime)) {
+            repeatBookTime = bookTime;
+            repeatBooksAtTime = booksAtTime;
+        }
+        if (tradeTime != NO_POSITION && !shadow.tookTradesAfter(tradeTime, tradesAtTime)) {
+            repeatTradeTime = tradeTime;
+            repeatTradesAtTime = tradesAtTime;
+        }
     }
 
     /**
@@ -291,10 +494,11 @@ public final class Subject {
      * a quiet market, and a replay would show the book bad from then.
      */
     private void publishBad(final long receiveNanos) {
-        publishBook(Math.max(lastEventTimestamp, receiveNanos), receiveNanos, NO_SEQUENCE, false, true);
+        publishBook(book, Math.max(lastEventTimestamp, receiveNanos), receiveNanos, NO_SEQUENCE, false, true);
     }
 
     private void publishBook(
+            final Book from,
             final long eventTimestamp,
             final long receiveNanos,
             final long sequence,
@@ -309,10 +513,10 @@ public final class Subject {
             encoder.size(Mbp10Encoder.sizeNullValue());
             encoder.action(Action.Modify);
             encoder.side(Side.None);
-            writer.write(book, output.projection(), encoder);
+            writer.write(from, output.projection(), encoder);
             output.ring().publish();
         }
-        top.update(book);
+        top.update(from);
         records++;
     }
 
@@ -370,9 +574,5 @@ public final class Subject {
 
     public long resyncs() {
         return resyncs;
-    }
-
-    public long trades() {
-        return trades;
     }
 }

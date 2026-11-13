@@ -16,9 +16,12 @@ import java.util.concurrent.TimeUnit;
  * {@link #EMPTY_CLOSE_NANOS}.
  *
  * <p>Each connection is replaced on a schedule, make before break: a new connection subscribes stand-ins for its
- * markets and waits until each has its book, then, with both readers paused, each market moves to the new connection
- * taking the book built there, and the old connection is closed. Nothing is missed and every stream keeps a single
- * producer. A replacement that doesn't get every book in time is closed and tried again later, the old one untouched.
+ * markets and waits until each has its book, then each market lets go of the old connection and moves to the new one,
+ * taking the book built there, and the old connection is closed. Every stream keeps a single producer. Between the old
+ * connection letting go and the new one taking over, a stand-in keeps what came in; the market publishes whatever of
+ * it the old connection hadn't, so the stream reads as if one connection had carried it (see {@link
+ * Subject#adoptFrom}). A replacement that doesn't get every book in time is closed and tried again later, the old one
+ * untouched.
  *
  * <p>Its methods are called from one thread, the runtime's.
  */
@@ -29,6 +32,9 @@ public final class ConnectionGroup<C> {
     static final long HANDOVER_TIMEOUT_NANOS = TimeUnit.SECONDS.toNanos(10);
     static final long ROLL_RETRY_NANOS = TimeUnit.MINUTES.toNanos(10);
     private static final int UNSYNCED_NAMED = 5;
+    // Records a stand-in keeps for its market to publish: the hand-over takes from milliseconds to a second, so this
+    // is several times what a busy market sends in that time.
+    static final int STAND_IN_RECORDS = 128;
 
     /** Opens a connection to the source: its transport, protocol and threads. */
     public interface Opener<C> {
@@ -263,7 +269,7 @@ public final class ConnectionGroup<C> {
         final Map<Subject, Subject> shadows = new IdentityHashMap<>();
         for (Subject market : markets) {
             final Subject shadow =
-                    new Subject(market.key(), market.book().bids().capacity());
+                    Subject.standIn(market.key(), market.book().bids().capacity(), STAND_IN_RECORDS);
             shadows.put(market, shadow);
             next.add(shadow);
         }
@@ -290,24 +296,16 @@ public final class ConnectionGroup<C> {
         next.carryMarkets();
         final List<Subject> handed = released.handed();
         final List<Subject> standIns = new ArrayList<>(handed.size());
-        // Trades a stand-in takes from here until it is adopted reach no stream: the old connection no longer
-        // publishes the market and the stand-in never does. Counted, to see whether the gap ever loses any.
-        long tradesBefore = 0;
         for (Subject market : handed) {
-            final Subject standIn = shadows.remove(market);
-            standIns.add(standIn);
-            tradesBefore += standIn.trades();
+            standIns.add(shadows.remove(market));
         }
         // Markets the old connection no longer carried (quarantined meanwhile) are the feeds' to place again.
         for (Subject leftOver : shadows.values()) {
             next.remove(leftOver);
         }
-        awaitAdopt(next, next.adopt(handed, standIns));
+        final FeedConnection.Handover adopted = next.adopt(handed, standIns);
+        awaitAdopt(next, adopted);
         final long gapMicros = TimeUnit.NANOSECONDS.toMicros(System.nanoTime() - releaseNanos);
-        long tradesAfter = 0;
-        for (Subject standIn : standIns) {
-            tradesAfter += standIn.trades();
-        }
         final Slot<C> slot = new Slot<>(replacement, nextRoll(now));
         slots.add(slot);
         for (Subject market : handed) {
@@ -318,13 +316,14 @@ public final class ConnectionGroup<C> {
         close(old);
         logger.logf(
                 LogMessage.DEBUG,
-                "%s: rolled %s to %s with %d markets in %d us, %d trades unpublished",
+                "%s: rolled %s to %s with %d markets in %d us, %d records replayed, %d markets short of some",
                 source,
                 old.connection().name(),
                 next.name(),
                 handed.size(),
                 gapMicros,
-                tradesAfter - tradesBefore);
+                adopted.replayed(),
+                adopted.fellShort());
         return true;
     }
 

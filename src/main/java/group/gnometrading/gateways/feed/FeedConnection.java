@@ -86,6 +86,9 @@ public final class FeedConnection<C> implements SubjectHost {
         private final CountDownLatch finished = new CountDownLatch(1);
         // Filled by a release: the markets it handed over, those still on the connection.
         private final List<Subject> handed = new ArrayList<>();
+        // Filled by an adopt: records published that the old connection never did, and markets missing some.
+        private int replayed;
+        private int fellShort;
 
         /** Waits for it; false if it timed out and was cancelled, so it will never run. */
         public boolean await(final long timeout, final TimeUnit unit) throws InterruptedException {
@@ -108,6 +111,16 @@ public final class FeedConnection<C> implements SubjectHost {
         /** The markets a finished release handed over. */
         public List<Subject> handed() {
             return handed;
+        }
+
+        /** Of a finished adopt: the records its markets published that their old connection never did. */
+        public int replayed() {
+            return replayed;
+        }
+
+        /** Of a finished adopt: the markets with some of those records lost, overwritten before they could go out. */
+        public int fellShort() {
+            return fellShort;
         }
 
         private boolean start() {
@@ -509,7 +522,10 @@ public final class FeedConnection<C> implements SubjectHost {
                 put(real);
                 continue;
             }
-            real.adoptFrom(shadow, now);
+            adopt.handover().replayed += real.adoptFrom(shadow, now);
+            if (shadow.replayFellShort()) {
+                adopt.handover().fellShort++;
+            }
             table.put(real);
             final boolean subscribePending = toSubscribe.contains(shadow);
             final boolean resyncPending = toResync.contains(shadow);

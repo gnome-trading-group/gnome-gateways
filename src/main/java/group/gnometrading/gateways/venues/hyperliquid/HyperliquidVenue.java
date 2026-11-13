@@ -15,7 +15,8 @@ public final class HyperliquidVenue {
             32,
             new GatewayConfig.Builder().build(),
             "hyperliquid.ws.url",
-            1 << 19,
+            // Hyperliquid sends frames past half a megabyte.
+            1 << 22,
             // Whole books every message: nothing to probe.
             0,
             // It closes a connection as expired (1000) after about three hours.

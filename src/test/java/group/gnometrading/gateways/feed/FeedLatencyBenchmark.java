@@ -156,7 +156,7 @@ class FeedLatencyBenchmark {
                 50,
                 m -> "C" + m,
                 50,
-                table -> new HyperliquidProtocol(table, () -> 0),
+                table -> new HyperliquidProtocol(table),
                 Projection.IDENTITY);
     }
 

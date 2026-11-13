@@ -260,4 +260,203 @@ class SubjectTest {
         assertTrue(flagged.decoder.flags().badData());
         assertEquals(px(0.40), flagged.decoder.bidPrice0(), "its last book, not the stand-in's empty one");
     }
+
+    // ----- a roll: the market moves to a stand-in's connection -----
+
+    /** The venue's book at {@code bid} on one connection's market: a snapshot first, then updates. */
+    private static void book(final Subject on, final boolean snapshot, final double bid, final long time) {
+        if (snapshot) {
+            on.beginSnapshot();
+            on.level(Side.Bid, px(bid), 10, 1);
+            on.level(Side.Ask, px(0.90), 20, 1);
+            on.endSnapshot(time, time, 7);
+        } else {
+            on.set(Side.Bid, px(bid), 10, 1);
+            on.endUpdate(time, time, 8);
+        }
+    }
+
+    private static void trade(final Subject on, final double price, final long time) {
+        on.trade(px(price), 5, Side.Bid, time, time);
+    }
+
+    /** What a stream read: B for a book with its best bid, T for a trade at its price, each with its venue time. */
+    private static List<String> read(final List<Mbp10Schema> records) {
+        List<String> read = new ArrayList<>();
+        for (Mbp10Schema r : records) {
+            boolean isTrade = r.decoder.action() == Action.Trade;
+            double price =
+                    (isTrade ? r.decoder.price() : r.decoder.bidPrice0()) / (double) Statics.PRICE_SCALING_FACTOR;
+            read.add((isTrade ? "T" : "B") + price + "@" + r.decoder.timestampEvent());
+        }
+        return read;
+    }
+
+    @Test
+    void aStandInAheadOfTheOldConnectionHasItsLaterRecordsPublishedInOrder() throws Exception {
+        Subject standIn = Subject.standIn("TICKER", 64, 128);
+        book(subject, true, 0.40, 1);
+        book(standIn, true, 0.40, 1);
+        for (Subject on : List.of(subject, standIn)) {
+            book(on, false, 0.41, 2);
+            trade(on, 0.45, 2);
+        }
+        // The old connection lets go here; the stand-in's connection goes on.
+        book(standIn, false, 0.42, 3);
+        trade(standIn, 0.46, 3);
+        book(standIn, false, 0.43, 4);
+        yes.drain().clear();
+
+        int replayed = subject.adoptFrom(standIn, 9);
+
+        assertEquals(3, replayed);
+        assertEquals(List.of("B0.42@3", "T0.46@3", "B0.43@4"), read(yes.drain()));
+        assertFalse(standIn.replayFellShort());
+        assertEquals(SubjectState.LIVE, subject.state());
+        book(subject, false, 0.44, 5);
+        assertEquals("B0.44@5", read(yes.drain()).get(3), "and it goes on from the stand-in's book");
+    }
+
+    @Test
+    void recordsSharingAVenueTimeAreToldApartByHowManyCameBefore() throws Exception {
+        Subject standIn = Subject.standIn("TICKER", 64, 128);
+        book(subject, true, 0.40, 1);
+        book(standIn, true, 0.40, 1);
+        for (Subject on : List.of(subject, standIn)) {
+            book(on, false, 0.41, 5);
+            book(on, false, 0.42, 5);
+            trade(on, 0.45, 5);
+        }
+        book(standIn, false, 0.43, 5);
+        trade(standIn, 0.46, 5);
+        yes.drain().clear();
+
+        subject.adoptFrom(standIn, 9);
+
+        assertEquals(List.of("B0.43@5", "T0.46@5"), read(yes.drain()), "the third book and second trade at 5 only");
+    }
+
+    @Test
+    void aStandInBehindTheOldConnectionDoesntPublishWhatTheOldOneAlreadyDid() throws Exception {
+        Subject standIn = Subject.standIn("TICKER", 64, 128);
+        book(subject, true, 0.40, 1);
+        book(standIn, true, 0.40, 1);
+        // The old connection got these before letting go; the stand-in hadn't yet.
+        book(subject, false, 0.41, 2);
+        trade(subject, 0.45, 2);
+        book(subject, false, 0.42, 3);
+        yes.drain().clear();
+
+        assertEquals(0, subject.adoptFrom(standIn, 9));
+        // Now on the stand-in's connection, they arrive.
+        book(subject, false, 0.41, 2);
+        trade(subject, 0.45, 2);
+        book(subject, false, 0.42, 3);
+        book(subject, false, 0.43, 4);
+        trade(subject, 0.46, 4);
+
+        assertEquals(List.of("B0.43@4", "T0.46@4"), read(yes.drain()));
+        assertEquals(px(0.43), subject.book().bids().price(0), "the repeats still built the book");
+    }
+
+    @Test
+    void aStandInThatOverwroteRecordsTheMarketNeededSaysSo() throws Exception {
+        Subject standIn = Subject.standIn("TICKER", 64, 2);
+        book(subject, true, 0.40, 1);
+        book(standIn, true, 0.40, 1);
+        for (int t = 2; t <= 5; t++) {
+            book(standIn, false, 0.40 + t / 100.0, t);
+        }
+        yes.drain().clear();
+
+        assertEquals(2, subject.adoptFrom(standIn, 9));
+
+        assertTrue(standIn.replayFellShort(), "2 and 3 were overwritten");
+        assertEquals(List.of("B0.44@4", "B0.45@5"), read(yes.drain()));
+    }
+
+    @Test
+    void aStandInThatKeptEverythingAfterTheCutDoesntFallShortThoughItWrapped() throws Exception {
+        Subject standIn = Subject.standIn("TICKER", 64, 2);
+        book(standIn, true, 0.40, 1);
+        for (int t = 2; t <= 4; t++) {
+            book(standIn, false, 0.40 + t / 100.0, t);
+        }
+        book(subject, true, 0.40, 1);
+        for (int t = 2; t <= 3; t++) {
+            book(subject, false, 0.40 + t / 100.0, t);
+        }
+        yes.drain().clear();
+
+        assertEquals(1, subject.adoptFrom(standIn, 9));
+
+        assertFalse(standIn.replayFellShort(), "it still holds 3, the last the old connection published");
+        assertEquals(List.of("B0.44@4"), read(yes.drain()));
+    }
+
+    @Test
+    void aSecondRollPicksUpWhereTheFirstReplacementLeftOff() throws Exception {
+        Subject first = Subject.standIn("TICKER", 64, 128);
+        book(subject, true, 0.40, 1);
+        book(first, true, 0.40, 1);
+        book(subject, false, 0.41, 5);
+        book(first, false, 0.41, 5);
+        book(first, false, 0.42, 5);
+        subject.adoptFrom(first, 9);
+        // On the first replacement's connection, the third book at 5; a second roll's stand-in has seen all three.
+        Subject second = Subject.standIn("TICKER", 64, 128);
+        book(second, true, 0.40, 1);
+        book(second, false, 0.41, 5);
+        book(second, false, 0.42, 5);
+        book(subject, false, 0.43, 5);
+        book(second, false, 0.43, 5);
+        book(second, false, 0.44, 6);
+        yes.drain().clear();
+
+        subject.adoptFrom(second, 10);
+
+        assertEquals(List.of("B0.44@6"), read(yes.drain()), "the third book at 5 went out once, before the roll");
+    }
+
+    @Test
+    void aMarketThatNeverTradedTakesEveryTradeTheStandInHad() throws Exception {
+        Subject standIn = Subject.standIn("TICKER", 64, 128);
+        book(subject, true, 0.40, 1);
+        book(standIn, true, 0.40, 1);
+        trade(standIn, 0.45, 2);
+        yes.drain().clear();
+
+        subject.adoptFrom(standIn, 9);
+
+        assertEquals(List.of("T0.45@2"), read(yes.drain()));
+    }
+
+    @Test
+    void replayedBooksReachEachStreamAsItsProjectionSeesThem() throws Exception {
+        Subject standIn = Subject.standIn("TICKER", 64, 128);
+        book(subject, true, 0.40, 1);
+        book(standIn, true, 0.40, 1);
+        book(standIn, false, 0.42, 2);
+        no.drain().clear();
+
+        subject.adoptFrom(standIn, 9);
+
+        Mbp10Schema complement = no.drain().get(0);
+        assertEquals(px(0.58), complement.decoder.askPrice0(), "the yes bid is the no ask");
+        assertEquals(px(0.10), complement.decoder.bidPrice0());
+    }
+
+    @Test
+    void aMarketThatWasntTrustedTakesTheStandInsBookAsASnapshot() throws Exception {
+        Subject standIn = Subject.standIn("TICKER", 64, 128);
+        book(standIn, true, 0.40, 1);
+        book(standIn, false, 0.42, 2);
+
+        assertEquals(0, subject.adoptFrom(standIn, 9));
+
+        List<Mbp10Schema> records = yes.drain();
+        assertEquals(1, records.size());
+        assertTrue(records.get(0).decoder.flags().snapshot());
+        assertEquals(px(0.42), records.get(0).decoder.bidPrice0());
+    }
 }

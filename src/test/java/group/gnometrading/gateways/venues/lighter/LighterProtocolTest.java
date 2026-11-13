@@ -141,6 +141,49 @@ class LighterProtocolTest {
     }
 
     @Test
+    void theTradesASubscribeAnswersWithAreNotPublished() throws Exception {
+        snapshotEth();
+        eth.drain().clear();
+        // As Lighter sends it: the type, which says these are the market's last trades, comes after them.
+        frame("{\"channel\":\"trade:0\",\"trades\":[" + trade("4212.50", 1761585003200L) + ","
+                + trade("4212.75", 1761585003300L) + "],\"type\":\"subscribed/trade\"}");
+
+        assertTrue(eth.drain().isEmpty());
+    }
+
+    @Test
+    void anUpdatesTradesAreEachPublishedInOrder() throws Exception {
+        snapshotEth();
+        eth.drain().clear();
+        frame("{\"channel\":\"trade:0\",\"trades\":[" + trade("4212.50", 1761585003200L) + ","
+                + trade("n/a", 1761585003250L) + "," + trade("4212.75", 1761585003300L)
+                + "],\"type\":\"update/trade\"}");
+
+        List<Mbp10Schema> prints = eth.drain();
+        assertEquals(2, prints.size(), "the unreadable one left out");
+        assertEquals(price("4212.5"), prints.get(0).decoder.price());
+        assertEquals(1761585003200L * 1_000_000L, prints.get(0).decoder.timestampEvent());
+        assertEquals(price("4212.75"), prints.get(1).decoder.price());
+    }
+
+    @Test
+    void anUpdateWithMoreTradesThanItFirstHoldsKeepsThemAll() throws Exception {
+        snapshotEth();
+        eth.drain().clear();
+        StringBuilder many = new StringBuilder();
+        for (int i = 0; i < 100; i++) {
+            many.append(i == 0 ? "" : ",").append(trade("4212.50", 1761585003200L + i));
+        }
+        frame("{\"channel\":\"trade:0\",\"trades\":[" + many + "],\"type\":\"update/trade\"}");
+
+        assertEquals(100, eth.drain().size());
+    }
+
+    private static String trade(final String price, final long time) {
+        return "{\"price\":\"" + price + "\",\"size\":\"0.1\",\"timestamp\":" + time + ",\"is_maker_ask\":true}";
+    }
+
+    @Test
     void itsPingsAreAnsweredAndItsOwnKeepAliveIsAPing() {
         frame("{\"type\":\"ping\"}");
         protocol.keepAlive(kit.channel);

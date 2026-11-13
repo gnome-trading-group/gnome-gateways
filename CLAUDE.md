@@ -42,8 +42,13 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
     `books()`: CHANGES (Kalshi, Lighter, Polymarket Intl; probed) or WHOLE (Hyperliquid, Polymarket US; not probed).
   - `ConnectionGroup`: a source's connections in a process, packed up to `max_per_connection`, closed when empty for
     5 minutes, rolled make-before-break every `VenueFeed.rollEvery` (± a 24th): under any age at which the venue
-    closes connections itself (Polymarket US 30 min, Hyperliquid 2 h, others 12 h). `Feeds`: streams to markets
-    (shared subjects), groups, the prober, quarantine retries.
+    closes connections itself (Polymarket US 30 min, Hyperliquid 2 h, others 12 h). A roll loses and repeats nothing:
+    each `Subject` tracks where its last book and trade fell in the venue's sequence (venue time, and how many came at
+    that time; every connection gets the same sequence, measured on all five venues), a stand-in keeps its last 128
+    records in a `ReplayLog`, and `Subject.adoptFrom` publishes those past the old connection's last ones, or, if the
+    stand-in was behind, holds back its next records up to there. Hyperliquid and Polymarket US sample whole books per
+    connection, so there "nothing lost" means no hole, not every state. `Feeds`: streams to markets (shared subjects),
+    groups, the prober, quarantine retries.
   - `probe/`: `BookProber` (REST check of the top 5 levels, silence -> `SUSPECT`), `BookProbeClient`, `JsonLevels`.
   - `VenueFeed`: what a venue tells the feed about itself (market mapping, depth, URL property, probe budget, roll
     interval).
@@ -125,6 +130,11 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
   resyncs all its markets, hence 250 per connection), Lighter each market's nonce chain, Polymarket Intl the venue's
   best bid/ask against the book (wrong only when two completed matches in a row disagree). Hyperliquid and Polymarket
   US send whole books. The REST probe catches the rest.
+- Trades a subscribe replays are never published: Lighter answers with its last 50 (`subscribed/trade`, dropped once
+  the frame's type, which comes last, is known), Hyperliquid with its last 30 (the trades frame right after a trades
+  `subscriptionResponse`; its `tid`s are kept, since its last block can come again live). Never by time: Hyperliquid
+  can deliver a live trade a second after its time. Kalshi and both Polymarkets replay nothing. Hyperliquid books are asked
+  for `fast` (about every half second instead of every ten); its unsubscribe must say `fast` too or it matches nothing.
 - Kalshi: `:yes`/`:no` listings share one subject (the ticker); a `:no` listing's book and trades are its complement
   (price `1 - p`, sides flipped), as are its orders. Market orders are refused (Kalshi needs a price; the OMS sends
   priced IOCs).
@@ -161,9 +171,10 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
 - Disconnect: `SOCKET_DISCONNECTED` then `SOCKET_RECONNECTING`/`SOCKET_CONNECTED` is normal self-healing. A close
   frame's code and reason are in the line (`VenueClosedException`): Polymarket US sends `1001: server shutting down`
   (rolling restarts) and `1001: max connection age`, Hyperliquid `1000: Expired`; a drop with no close frame says so.
-- Roll: "<source>: rolled <old> to <new> with N markets in T us, M trades unpublished". M counts trades that reached
-  only a stand-in between the old connection letting go and the new one taking over, which no stream got; books are
-  unaffected. A replacement that "didn't sync" leaves the old connection in place and retries in 10 minutes.
+- Roll: "<source>: rolled <old> to <new> with N markets in T us, R records replayed, S markets short of some". R is
+  books and trades the new connection published that the old one never did; S counts markets whose stand-in had
+  already overwritten some of them (a gap; should stay 0). A replacement that "didn't sync" leaves the old connection
+  in place and retries in 10 minutes.
   `SOCKET_CONNECT_FAILED` logs the cause chain; a 401/403 on Kalshi or Polymarket US usually means a bad or revoked key
   in the secret. `GatewayConnectFailedException` means all connect cycles failed; check venue status and credentials.
 - Stale book: `SOCKET_SILENCE_TIMED_OUT` forces a reconnect after a connection's silence. "resyncing <market> (<reason>)"

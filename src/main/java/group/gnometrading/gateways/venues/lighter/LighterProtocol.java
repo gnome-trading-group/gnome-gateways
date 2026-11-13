@@ -24,8 +24,10 @@ import org.agrona.collections.Object2LongHashMap;
  * and later messages ({@code update/order_book}) change levels to absolute sizes ("0" removes one). The type comes after
  * the levels, so a frame's levels are collected first and applied once it is known. Each update's {@code begin_nonce}
  * must be the market's previous {@code nonce}: any other value means updates were lost, and the market alone is
- * resubscribed. ({@code offset} is the API server's and isn't contiguous.) Lighter pings inside its own messages and expects a JSON pong; it drops a client
- * silent for two minutes, and limits a whole IP to 200 client messages a minute.
+ * resubscribed. ({@code offset} is the API server's and isn't contiguous.) A trade subscribe answers with the market's
+ * last 50 trades ({@code subscribed/trade}), up to half an hour old and already published by whichever connection
+ * carried the market then; only {@code update/trade} trades are published. Lighter pings inside its own messages and
+ * expects a JSON pong; it drops a client silent for two minutes, and limits a whole IP to 200 client messages a minute.
  */
 public final class LighterProtocol implements VenueProtocol<WebSocketChannel> {
 
@@ -114,6 +116,7 @@ public final class LighterProtocol implements VenueProtocol<WebSocketChannel> {
     // ----- decoding, on the reader thread -----
 
     private static final int INITIAL_LEVELS = 1 << 10;
+    private static final int INITIAL_TRADES = 64;
 
     private final JsonDecoder decoder = new JsonDecoder();
     private long receiveNanos;
@@ -129,6 +132,13 @@ public final class LighterProtocol implements VenueProtocol<WebSocketChannel> {
     private long nonce;
     private long beginNonce;
     private long timestamp;
+    // The frame's trades, held until its type says whether they are new or the subscribe's replay.
+    private Side[] tradeSides = new Side[INITIAL_TRADES];
+    private long[] tradePrices = new long[INITIAL_TRADES];
+    private long[] tradeSizes = new long[INITIAL_TRADES];
+    private long[] tradeTimes = new long[INITIAL_TRADES];
+    private int trades;
+    private boolean tradeReplay;
 
     @Override
     public void onFrame(final ByteBuffer frame, final long receive) {
@@ -141,6 +151,8 @@ public final class LighterProtocol implements VenueProtocol<WebSocketChannel> {
         nonce = NO_NONCE;
         beginNonce = NO_NONCE;
         timestamp = Mbp10Encoder.timestampEventNullValue();
+        trades = 0;
+        tradeReplay = false;
         try (var node = decoder.wrap(frame);
                 var object = node.asObject()) {
             while (object.hasNextKey()) {
@@ -152,6 +164,11 @@ public final class LighterProtocol implements VenueProtocol<WebSocketChannel> {
         if (book) {
             finishBook();
         }
+        if (!tradeReplay) {
+            for (int i = 0; i < trades; i++) {
+                current.trade(tradePrices[i], tradeSizes[i], tradeSides[i], tradeTimes[i], receiveNanos);
+            }
+        }
     }
 
     private void frameField(final JsonDecoder.JsonNode key) {
@@ -162,17 +179,22 @@ public final class LighterProtocol implements VenueProtocol<WebSocketChannel> {
             book = true;
             orderBook(key);
         } else if (name.equals("trades") && current != null) {
-            trades(key);
+            readTrades(key);
         } else if (name.equals("timestamp")) {
             timestamp = key.asLong() * NANOS_PER_MILLI;
         } else if (name.equals("type")) {
-            final GnomeString type = key.asString();
-            if (type.equals("ping")) {
-                pong.rewind();
-                channel.writer().sendText(pong, true);
-            } else if (type.equals("subscribed/order_book")) {
-                snapshot = true;
-            }
+            frameType(key.asString());
+        }
+    }
+
+    private void frameType(final GnomeString type) {
+        if (type.equals("ping")) {
+            pong.rewind();
+            channel.writer().sendText(pong, true);
+        } else if (type.equals("subscribed/order_book")) {
+            snapshot = true;
+        } else if (type.equals("subscribed/trade")) {
+            tradeReplay = true;
         }
     }
 
@@ -277,7 +299,7 @@ public final class LighterProtocol implements VenueProtocol<WebSocketChannel> {
         levels++;
     }
 
-    private void trades(final JsonDecoder.JsonNode node) {
+    private void readTrades(final JsonDecoder.JsonNode node) {
         try (var array = node.asArray()) {
             while (array.hasNextItem()) {
                 try (var item = array.nextItem()) {
@@ -306,9 +328,20 @@ public final class LighterProtocol implements VenueProtocol<WebSocketChannel> {
             }
         }
         // A trade with a price or size that can't be read isn't published: it would read as a real trade.
-        if (tradePrice != UNREADABLE && tradeSize != UNREADABLE) {
-            current.trade(tradePrice, tradeSize, tradeSide, tradeTime, receiveNanos);
+        if (tradePrice == UNREADABLE || tradeSize == UNREADABLE) {
+            return;
         }
+        if (trades == tradePrices.length) {
+            tradeSides = Arrays.copyOf(tradeSides, trades * 2);
+            tradePrices = Arrays.copyOf(tradePrices, trades * 2);
+            tradeSizes = Arrays.copyOf(tradeSizes, trades * 2);
+            tradeTimes = Arrays.copyOf(tradeTimes, trades * 2);
+        }
+        tradeSides[trades] = tradeSide;
+        tradePrices[trades] = tradePrice;
+        tradeSizes[trades] = tradeSize;
+        tradeTimes[trades] = tradeTime;
+        trades++;
     }
 
     private void tradeField(final JsonDecoder.JsonNode key) {
