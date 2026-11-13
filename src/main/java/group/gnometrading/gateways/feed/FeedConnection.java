@@ -527,6 +527,7 @@ public final class FeedConnection<C> implements SubjectHost {
                 adopt.handover().fellShort++;
             }
             table.put(real);
+            protocol.adopted(shadow, real);
             final boolean subscribePending = toSubscribe.contains(shadow);
             final boolean resyncPending = toResync.contains(shadow);
             untrack(shadow);

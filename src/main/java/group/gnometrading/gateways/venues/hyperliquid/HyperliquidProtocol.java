@@ -96,6 +96,14 @@ public final class HyperliquidProtocol implements VenueProtocol<WebSocketChannel
     }
 
     @Override
+    public void adopted(final Subject standIn, final Subject real) {
+        final int at = replaysDue.indexOf(standIn);
+        if (at >= 0) {
+            replaysDue.set(at, real);
+        }
+    }
+
+    @Override
     public void resync(final WebSocketChannel channel, final List<Subject> subjects) {
         // The next l2Book message is the whole book.
     }

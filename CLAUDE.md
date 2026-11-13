@@ -40,15 +40,17 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
     3 resyncs in 10 minutes (the probe's don't count: those are updates the venue skipped, which a snapshot fixes); a
     roll's release and adopt run on its supervisor. Each `VenueProtocol` declares
     `books()`: CHANGES (Kalshi, Lighter, Polymarket Intl; probed) or WHOLE (Hyperliquid, Polymarket US; not probed).
-  - `ConnectionGroup`: a source's connections in a process, packed up to `max_per_connection`, closed when empty for
-    5 minutes, rolled make-before-break every `VenueFeed.rollEvery` (± a 24th): under any age at which the venue
-    closes connections itself (Polymarket US 30 min, Hyperliquid 2 h, others 12 h). A roll loses and repeats nothing:
-    each `Subject` tracks where its last book and trade fell in the venue's sequence (venue time, and how many came at
-    that time; every connection gets the same sequence, measured on all five venues), a stand-in keeps its last 128
-    records in a `ReplayLog`, and `Subject.adoptFrom` publishes those past the old connection's last ones, or, if the
-    stand-in was behind, holds back its next records up to there. Hyperliquid and Polymarket US sample whole books per
-    connection, so there "nothing lost" means no hole, not every state. `Feeds`: streams to markets (shared subjects),
-    groups, the prober, quarantine retries.
+  - `ConnectionGroup`: a source's connections in a process, packed up to `max_per_connection`, closed when empty for 5
+    minutes, rolled make-before-break every `VenueFeed.rollEvery` (± a 24th): under any age at which the venue closes
+    connections itself (Polymarket US 30 min, Hyperliquid 2 h, others 12 h). A roll loses and repeats nothing: each
+    `Subject` tracks where its last book and trade fell in the venue's sequence (venue time, and how many came at that
+    time; every connection gets the same sequence, measured on all five venues), a stand-in keeps its last 128 records
+    in a `ReplayLog`, and `Subject.adoptFrom` publishes those past the old connection's last ones, or, if the stand-in
+    was behind, holds back its next records up to there. The new connection's protocol subscribed the stand-in, so
+    `VenueProtocol.adopted` hands it the real market: a protocol that keeps markets between commands (Polymarket US's
+    groups, Hyperliquid's due replays) swaps it, or a later unsubscribe would miss it. Hyperliquid and Polymarket US
+    sample whole books per connection, so there "nothing lost" means no hole, not every state. `Feeds`: streams to
+    markets (shared subjects), groups, the prober, quarantine retries.
   - `probe/`: `BookProber` (REST check of the top 5 levels, silence -> `SUSPECT`), `BookProbeClient`, `JsonLevels`.
   - `VenueFeed`: what a venue tells the feed about itself (market mapping, depth, URL property, probe budget, roll
     interval).

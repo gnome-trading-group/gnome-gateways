@@ -136,6 +136,18 @@ public final class PolymarketUsProtocol implements VenueProtocol<WebSocketChanne
         replaceChanged(channel.writer());
     }
 
+    @Override
+    public void adopted(final Subject standIn, final Subject real) {
+        for (Group group : groups) {
+            final int at = group.markets.indexOf(standIn);
+            if (at >= 0) {
+                // The same market under the same subscription: nothing to send.
+                group.markets.set(at, real);
+                return;
+            }
+        }
+    }
+
     /** The fullest group with room, so adds land on as few groups as possible and each replacement touches few. */
     private Group roomFor() {
         Group best = null;

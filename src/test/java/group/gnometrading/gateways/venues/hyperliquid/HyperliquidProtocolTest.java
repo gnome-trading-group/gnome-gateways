@@ -178,6 +178,22 @@ class HyperliquidProtocolTest {
     }
 
     @Test
+    void aReplayStillDueWhenARollHandsTheCoinOverIsNotPublished() throws Exception {
+        live();
+        Subject real = kit.table.get("ETH");
+        Subject standIn = Subject.standIn("ETH", 64, 16);
+        kit.table.put(standIn);
+        frame(answer("trades", "ETH"));
+        kit.table.put(real);
+        protocol.adopted(standIn, real);
+
+        frame(tradesOf(trade("ETH", "B", "2300.5", 1_700_000_000_300L, 1)));
+        assertTrue(eth.drain().isEmpty(), "the replay the stand-in's subscription was answered with");
+        frame(tradesOf(trade("ETH", "A", "2300.25", 1_700_000_000_500L, 2)));
+        assertEquals(1, eth.drain().size());
+    }
+
+    @Test
     void aLiveTradeOlderThanTheSubscribeIsStillPublished() throws Exception {
         live();
         frame(answer("trades", "ETH"));

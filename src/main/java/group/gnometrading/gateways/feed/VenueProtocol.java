@@ -44,6 +44,12 @@ public interface VenueProtocol<C> {
 
     void unsubscribe(C channel, List<Subject> subjects) throws IOException;
 
+    /**
+     * A roll handed this connection {@code real} in place of {@code standIn}, which subscribed it here: anything kept
+     * per market moves to {@code real}, which every later command names. Supervisor thread, the reader paused.
+     */
+    default void adopted(Subject standIn, Subject real) {}
+
     /** Gets each market a fresh snapshot without disturbing the others. */
     void resync(C channel, List<Subject> subjects) throws IOException;
 

@@ -15,6 +15,7 @@ import group.gnometrading.schemas.book.Action;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
@@ -105,6 +106,22 @@ class ConnectionGroupTest {
 
         venues.get(1).frames.add("U A 45");
         await(() -> a.book().bids().depth() > 0 && a.book().bids().price(0) == 45);
+    }
+
+    @Test
+    void aMarketRemovedAfterARollIsTheOneItsVenueDrops() throws Exception {
+        Subject a = market("A");
+        Subject b = market("B");
+        group.add(a, 0);
+        group.add(b, 0);
+        await(() -> a.state() == SubjectState.LIVE && b.state() == SubjectState.LIVE);
+        group.tick(13 * HOUR);
+        FakeVenue rolled = venues.get(1);
+        assertEquals(Set.of(a, b), rolled.held, "the markets themselves, not their stand-ins");
+
+        group.remove(a, 13 * HOUR);
+        await(() -> !rolled.held.contains(a));
+        assertEquals(Set.of(b), rolled.held);
     }
 
     @Test

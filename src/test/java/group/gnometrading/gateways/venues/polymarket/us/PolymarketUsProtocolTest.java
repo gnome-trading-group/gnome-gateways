@@ -3,6 +3,7 @@ package group.gnometrading.gateways.venues.polymarket.us;
 import static group.gnometrading.gateways.feed.VenueTestKit.price;
 import static group.gnometrading.gateways.feed.VenueTestKit.size;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -216,6 +217,32 @@ class PolymarketUsProtocolTest {
         assertEquals(PolymarketUsProtocol.GROUPS * 2, kit.sent.size(), "each group subscribed once, full");
         assertThrows(
                 IllegalStateException.class, () -> protocol.subscribe(kit.channel, markets.subList(total, total + 1)));
+    }
+
+    @Test
+    void aMarketARollHandedOverIsTheOneUnsubscribedAndItsPlaceFreed() {
+        List<Subject> standIns = new ArrayList<>();
+        List<Subject> markets = new ArrayList<>();
+        int total = PolymarketUsProtocol.GROUPS * PolymarketUsProtocol.MARKETS_PER_GROUP;
+        for (int i = 0; i < total + 1; i++) {
+            kit.market("m-" + i);
+            markets.add(kit.table.get("m-" + i));
+            standIns.add(Subject.standIn("m-" + i, 64, 16));
+        }
+        for (int from = 0; from < total; from += PolymarketUsProtocol.MARKETS_PER_GROUP) {
+            protocol.subscribe(kit.channel, standIns.subList(from, from + PolymarketUsProtocol.MARKETS_PER_GROUP));
+        }
+        for (int i = 0; i < total; i++) {
+            protocol.adopted(standIns.get(i), markets.get(i));
+        }
+        kit.sent.clear();
+
+        protocol.unsubscribe(kit.channel, List.of(markets.get(0)));
+        protocol.subscribe(kit.channel, List.of(markets.get(total)));
+
+        String last = kit.sent.get(kit.sent.size() - 1);
+        assertTrue(last.contains("\"m-" + total + "\""), last);
+        assertFalse(last.contains("\"m-0\""), "the market that left is in no subscription: " + last);
     }
 
     @Test

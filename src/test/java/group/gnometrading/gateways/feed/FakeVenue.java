@@ -21,6 +21,8 @@ public final class FakeVenue implements Transport<FakeVenue>, VenueProtocol<Fake
     final ConcurrentLinkedQueue<String> frames = new ConcurrentLinkedQueue<>();
     // Every market subscribed or resynced, in order.
     final List<String> subscribed = new CopyOnWriteArrayList<>();
+    // The markets it holds, by identity, as a venue protocol that keeps its own subscriptions does.
+    final Set<Subject> held = ConcurrentHashMap.newKeySet();
     final SubjectTable table;
     volatile long bid = 40;
     // Off: subscribes go unanswered, as for a market the venue has no book for.
@@ -99,6 +101,7 @@ public final class FakeVenue implements Transport<FakeVenue>, VenueProtocol<Fake
     public void subscribe(final FakeVenue channel, final List<Subject> subjects) {
         for (Subject subject : subjects) {
             subscribed.add(subject.key());
+            held.add(subject);
             if (!answers || bookless.contains(subject.key())) {
                 continue;
             }
@@ -110,7 +113,16 @@ public final class FakeVenue implements Transport<FakeVenue>, VenueProtocol<Fake
     }
 
     @Override
-    public void unsubscribe(final FakeVenue channel, final List<Subject> subjects) {}
+    public void unsubscribe(final FakeVenue channel, final List<Subject> subjects) {
+        subjects.forEach(held::remove);
+    }
+
+    @Override
+    public void adopted(final Subject standIn, final Subject real) {
+        if (held.remove(standIn)) {
+            held.add(real);
+        }
+    }
 
     @Override
     public void resync(final FakeVenue channel, final List<Subject> subjects) {
