@@ -10,6 +10,7 @@ import group.gnometrading.gateways.feed.book.Projection;
 import group.gnometrading.logging.NullLogger;
 import group.gnometrading.schemas.Mbp10Schema;
 import group.gnometrading.schemas.Statics;
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
@@ -36,7 +37,8 @@ class FeedsTest {
                                 id.endsWith(":no") ? Projection.COMPLEMENT : Projection.IDENTITY),
                         16,
                         null,
-                        RateBudget.UNLIMITED),
+                        RateBudget.UNLIMITED,
+                        Duration.ofHours(12)),
                 10,
                 opener);
     }

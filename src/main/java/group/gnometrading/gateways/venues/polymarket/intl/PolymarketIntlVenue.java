@@ -25,7 +25,8 @@ public final class PolymarketIntlVenue {
             "polymarket.intl.ws.url",
             // A subscribe of 100 tokens is answered with one array of their books.
             1 << 22,
-            300);
+            300,
+            Duration.ofHours(12));
 
     private PolymarketIntlVenue() {}
 

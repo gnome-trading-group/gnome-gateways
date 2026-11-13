@@ -24,7 +24,9 @@ public final class PolymarketUsVenue {
             "polymarket.us.ws.url",
             1 << 18,
             // Whole books every message: nothing to probe.
-            0);
+            0,
+            // It closes a connection at its max connection age (1001), seen anywhere from 50 to 57 minutes.
+            Duration.ofMinutes(30));
 
     private PolymarketUsVenue() {}
 

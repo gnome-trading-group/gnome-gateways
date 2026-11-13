@@ -33,9 +33,7 @@ class GatewaySupervisorTest {
                 .withInitialBackoff(Duration.ofMillis(10))
                 .withMaxReconnectAttempts(0)
                 .withMaxConnectCycles(3)
-                .withReconnectInterval(Duration.ofMillis(1000))
                 .withKeepAliveInterval(Duration.ofMillis(500))
-                .withSanityCheckInterval(Duration.ofMillis(2000))
                 .withMaxSilentInterval(Duration.ofMillis(1500))
                 .withReadTimeout(Duration.ofMillis(500))
                 .withSocketConnectTimeout(Duration.ofSeconds(2))
@@ -59,7 +57,6 @@ class GatewaySupervisorTest {
 
         assertEquals(0, supervisor.disconnectCallCount);
         assertEquals(0, supervisor.keepAliveCallCount);
-        assertEquals(0, supervisor.sanityCheckCallCount);
     }
 
     // ========== Failed connects ==========
@@ -136,7 +133,7 @@ class GatewaySupervisorTest {
         supervisor.onStart();
         connectable.failNextConnects = 1;
 
-        clock.advance(1001);
+        supervisor.forceReconnect();
         assertDoesNotThrow(() -> supervisor.doWork());
         supervisor.doWork();
 
@@ -164,14 +161,14 @@ class GatewaySupervisorTest {
     // ========== doWork — schedule firing ==========
 
     @Test
-    void doWork_PastReconnectInterval_FiresReconnect() throws Exception {
+    void doWork_NeverReconnectsOnASchedule() throws Exception {
         supervisor.onStart();
 
-        clock.advance(1001);
+        clock.advance(Duration.ofDays(30).toMillis());
         supervisor.doWork();
 
-        assertEquals(1, supervisor.disconnectCallCount);
-        assertEquals(2, connectable.connectCallCount); // 1 from onStart + 1 from reconnect
+        assertEquals(0, supervisor.disconnectCallCount);
+        assertEquals(1, connectable.connectCallCount);
     }
 
     @Test
@@ -185,26 +182,13 @@ class GatewaySupervisorTest {
     }
 
     @Test
-    void doWork_PastSanityCheckInterval_FiresSanityCheck() throws Exception {
-        supervisor.onStart();
-
-        clock.advance(2001);
-        supervisor.doWork();
-
-        assertEquals(1, supervisor.sanityCheckCallCount);
-    }
-
-    @Test
     void doWork_ScheduleDoesNotFireBeforeInterval() throws Exception {
         supervisor.onStart();
 
-        clock.advance(999);
+        clock.advance(499);
         supervisor.doWork();
 
-        // keepAlive interval is 500ms, so it fires at 999ms
-        assertEquals(1, supervisor.keepAliveCallCount);
-        // reconnect interval is 1000ms, so it has NOT fired yet
-        assertEquals(0, supervisor.disconnectCallCount);
+        assertEquals(0, supervisor.keepAliveCallCount);
     }
 
     // ========== doWork — silence detection ==========
@@ -246,7 +230,7 @@ class GatewaySupervisorTest {
         supervisor.doWork();
         verify(logger).log(LogMessage.SOCKET_SILENCE_TIMED_OUT);
 
-        // Second doWork: reconnect schedule fires
+        // Second doWork: the requested reconnect runs
         supervisor.doWork();
         assertEquals(1, supervisor.disconnectCallCount);
     }
@@ -388,42 +372,6 @@ class GatewaySupervisorTest {
         order.verifyNoMoreInteractions();
     }
 
-    // ========== reconnect schedule after a forced reconnect ==========
-
-    @Test
-    void forcedReconnectJustBeforeTheInterval_RestartsTheReconnectSchedule() throws Exception {
-        supervisor.onStart();
-        clock.advance(990);
-        supervisor.forceReconnect();
-        supervisor.doWork();
-
-        clock.advance(20);
-        supervisor.doWork();
-
-        assertEquals(1, supervisor.disconnectCallCount, "the new socket isn't torn down by the old interval");
-        assertEquals(2, connectable.connectCallCount);
-
-        clock.advance(1000);
-        supervisor.doWork();
-        assertEquals(2, supervisor.disconnectCallCount, "a full interval after the reconnect, the schedule fires");
-    }
-
-    @Test
-    void forcedReconnectWhoseRetryConnectsPastTheInterval_RestartsTheScheduleFromTheRetry() throws Exception {
-        supervisor.onStart();
-        clock.advance(990);
-        connectable.failNextConnects = 1;
-        supervisor.forceReconnect();
-        supervisor.doWork();
-
-        clock.advance(20);
-        supervisor.doWork();
-        supervisor.doWork();
-
-        assertEquals(1, supervisor.disconnectCallCount, "the retry's socket isn't torn down by the old interval");
-        assertEquals(3, connectable.connectCallCount);
-    }
-
     // ========== forceReconnect / forceKeepAlive ==========
 
     @Test
@@ -563,7 +511,6 @@ class GatewaySupervisorTest {
     static class TestGatewaySupervisor extends GatewaySupervisor {
         int disconnectCallCount = 0;
         int keepAliveCallCount = 0;
-        int sanityCheckCallCount = 0;
         volatile long testRecvTimestamp = 0;
         Exception disconnectException = null;
         private final CallTrackingConnectable connectable;
@@ -595,11 +542,6 @@ class GatewaySupervisorTest {
         @Override
         protected long recvTimestamp() {
             return testRecvTimestamp;
-        }
-
-        @Override
-        protected void doSanityCheck() {
-            sanityCheckCallCount++;
         }
     }
 }

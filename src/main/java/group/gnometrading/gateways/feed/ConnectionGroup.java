@@ -2,6 +2,7 @@ package group.gnometrading.gateways.feed;
 
 import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.Logger;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
@@ -24,8 +25,6 @@ import java.util.concurrent.TimeUnit;
 public final class ConnectionGroup<C> {
 
     static final long EMPTY_CLOSE_NANOS = TimeUnit.MINUTES.toNanos(5);
-    static final long ROLL_INTERVAL_NANOS = TimeUnit.HOURS.toNanos(12);
-    static final long ROLL_JITTER_NANOS = TimeUnit.MINUTES.toNanos(30);
     static final long ROLL_SYNC_TIMEOUT_NANOS = TimeUnit.SECONDS.toNanos(60);
     static final long HANDOVER_TIMEOUT_NANOS = TimeUnit.SECONDS.toNanos(10);
     static final long ROLL_RETRY_NANOS = TimeUnit.MINUTES.toNanos(10);
@@ -62,30 +61,49 @@ public final class ConnectionGroup<C> {
     private final Logger logger;
     private final List<Slot<C>> slots = new ArrayList<>();
     private final Map<Subject, Slot<C>> placed = new IdentityHashMap<>();
+    private final long rollEveryNanos;
+    // Spread so connections opened together don't all roll together.
+    private final long rollJitterNanos;
     private final long syncTimeoutNanos;
     private final long handoverTimeoutNanos;
     private int opened;
 
+    /** @param rollEvery how long a connection lives before it is replaced, under any age limit the venue enforces */
     public ConnectionGroup(
             final String source,
             final int maxPerConnection,
+            final Duration rollEvery,
             final Opener<C> opener,
             final FeedListener listener,
             final Logger logger) {
-        this(source, maxPerConnection, opener, listener, logger, ROLL_SYNC_TIMEOUT_NANOS, HANDOVER_TIMEOUT_NANOS);
+        this(
+                source,
+                maxPerConnection,
+                rollEvery,
+                opener,
+                listener,
+                logger,
+                ROLL_SYNC_TIMEOUT_NANOS,
+                HANDOVER_TIMEOUT_NANOS);
     }
 
     /** With shorter roll timeouts, for tests of a roll that fails. */
     ConnectionGroup(
             final String source,
             final int maxPerConnection,
+            final Duration rollEvery,
             final Opener<C> opener,
             final FeedListener listener,
             final Logger logger,
             final long syncTimeoutNanos,
             final long handoverTimeoutNanos) {
+        if (rollEvery.isZero() || rollEvery.isNegative()) {
+            throw new IllegalArgumentException("rollEvery must be positive: " + rollEvery);
+        }
         this.source = source;
         this.maxPerConnection = maxPerConnection;
+        this.rollEveryNanos = rollEvery.toNanos();
+        this.rollJitterNanos = rollEveryNanos / 24;
         this.opener = opener;
         this.listener = listener;
         this.logger = logger;
@@ -158,13 +176,13 @@ public final class ConnectionGroup<C> {
     private Slot<C> openSlot(final long now) throws Exception {
         final Open<C> open = opener.open(source + "-" + opened++, new SubjectTable(), listener);
         open.connection().carryMarkets();
-        final Slot<C> slot = new Slot<>(open, now + ROLL_INTERVAL_NANOS + jitter());
+        final Slot<C> slot = new Slot<>(open, nextRoll(now));
         slots.add(slot);
         return slot;
     }
 
-    private static long jitter() {
-        return ThreadLocalRandom.current().nextLong(-ROLL_JITTER_NANOS, ROLL_JITTER_NANOS + 1);
+    private long nextRoll(final long now) {
+        return now + rollEveryNanos + ThreadLocalRandom.current().nextLong(-rollJitterNanos, rollJitterNanos + 1);
     }
 
     /** Closes connections left empty and rolls any whose time has come; allocates nothing unless it does either. */
@@ -279,7 +297,7 @@ public final class ConnectionGroup<C> {
             next.remove(leftOver);
         }
         awaitAdopt(next, next.adopt(handed, standIns));
-        final Slot<C> slot = new Slot<>(replacement, now + ROLL_INTERVAL_NANOS + jitter());
+        final Slot<C> slot = new Slot<>(replacement, nextRoll(now));
         slots.add(slot);
         for (Subject market : handed) {
             placed.put(market, slot);

@@ -1,6 +1,7 @@
 package group.gnometrading.gateways.feed;
 
 import group.gnometrading.gateways.GatewayConfig;
+import java.time.Duration;
 import java.util.function.Function;
 
 /**
@@ -13,6 +14,8 @@ import java.util.function.Function;
  * @param readBufferBytes large enough for its biggest frame
  * @param probesPerMinute the REST reads its probe may make, well inside the venue's public limit; 0 for a venue that
  *     sends whole books, which isn't probed
+ * @param rollEvery how long a connection lives before it is replaced, make before break; under any age at which the
+ *     venue closes connections itself, which would drop every book on it
  */
 public record VenueFeed(
         Function<String, SubjectRef> subjects,
@@ -20,4 +23,5 @@ public record VenueFeed(
         GatewayConfig gatewayConfig,
         String urlProperty,
         int readBufferBytes,
-        double probesPerMinute) {}
+        double probesPerMinute,
+        Duration rollEvery) {}

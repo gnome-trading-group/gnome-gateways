@@ -6,6 +6,7 @@ import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.Logger;
 import group.gnometrading.schemas.Mbp10Schema;
 import group.gnometrading.sequencer.SequencedRingBuffer;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
@@ -34,13 +35,17 @@ public final class Feeds {
     };
     static final long RECOVERED_NANOS = TimeUnit.MINUTES.toNanos(60);
 
-    /** How a source's listings map to its markets, how deep its books are, and how it may be probed. */
+    /**
+     * How a source's listings map to its markets, how deep its books are, how it may be probed, and how long its
+     * connections live before they are rolled.
+     */
     public record Source(
             String code,
             Function<String, SubjectRef> subjects,
             int levelsPerSide,
             BookProbeClient probe,
-            RateBudget probeBudget) {}
+            RateBudget probeBudget,
+            Duration rollEvery) {}
 
     private static final class Market {
         final Source source;
@@ -81,6 +86,7 @@ public final class Feeds {
         final ConnectionGroup<C> group = new ConnectionGroup<>(
                 source.code(),
                 maxPerConnection,
+                source.rollEvery(),
                 opener,
                 new FeedListener() {
                     @Override

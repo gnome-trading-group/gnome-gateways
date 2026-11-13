@@ -7,6 +7,7 @@ import group.gnometrading.networking.websockets.enums.Opcode;
 import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 
 /** A websocket: text and binary frames are venue data; pings are answered here, pongs only prove the link alive. */
 public final class WebSocketTransport implements Transport<WebSocketChannel> {
@@ -52,7 +53,7 @@ public final class WebSocketTransport implements Transport<WebSocketChannel> {
         final WebSocketResponse result = client.read();
         sawTraffic = false;
         if (result.isClosed()) {
-            throw new EOFException("The venue closed the websocket");
+            throw closed(result);
         }
         if (!result.isSuccess()) {
             return null;
@@ -66,6 +67,21 @@ public final class WebSocketTransport implements Transport<WebSocketChannel> {
             writer.sendPong();
         }
         return null;
+    }
+
+    /** Why the venue hung up, as far as it said: a close frame carries a status code and reason, a dropped link nothing. */
+    private static EOFException closed(final WebSocketResponse closed) {
+        if (closed.getOpcode() != Opcode.CLOSING) {
+            return new EOFException("The venue dropped the connection without a close frame");
+        }
+        final ByteBuffer payload = closed.getBody();
+        if (payload == null || payload.remaining() < 2) {
+            return new VenueClosedException(VenueClosedException.NO_STATUS, "");
+        }
+        final int code = payload.getShort(payload.position()) & 0xFFFF;
+        final byte[] reason = new byte[payload.remaining() - 2];
+        payload.get(payload.position() + 2, reason);
+        return new VenueClosedException(code, new String(reason, StandardCharsets.UTF_8));
     }
 
     @Override

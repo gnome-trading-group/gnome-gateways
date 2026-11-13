@@ -8,6 +8,7 @@ import group.gnometrading.gateways.orders.CrossMarket;
 import group.gnometrading.gateways.ratelimit.RequestClass;
 import group.gnometrading.gateways.ratelimit.VenueRateLimits;
 import group.gnometrading.networking.http.HTTPMethod;
+import java.time.Duration;
 import java.util.List;
 
 /** Kalshi: what its feed and its order entry need to know about it. */
@@ -21,7 +22,8 @@ public final class KalshiVenue {
             "kalshi.ws.url",
             1 << 18,
             // The Basic tier reads 20 a second; the probe takes a small share of one.
-            300);
+            300,
+            Duration.ofHours(12));
 
     private static final String ORDERS = "/trade-api/v2/portfolio/events/orders";
     private static final String PORTFOLIO_ORDERS = "/trade-api/v2/portfolio/orders";

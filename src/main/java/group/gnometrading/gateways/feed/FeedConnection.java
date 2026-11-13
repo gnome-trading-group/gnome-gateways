@@ -14,7 +14,6 @@ import group.gnometrading.logging.Logger;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
@@ -48,8 +47,6 @@ public final class FeedConnection<C> implements SubjectHost {
     static final long RESYNC_WINDOW_NANOS = TimeUnit.MINUTES.toNanos(10);
     // Writer slots commands leave free, for keep-alives the supervisor may send before the writer drains.
     static final int KEEP_ALIVE_SLOTS = 8;
-    // Far enough off never to come: a feed connection is replaced by its group's roll instead.
-    static final Duration NO_SCHEDULED_RECONNECT = Duration.ofDays(36_500);
 
     private sealed interface Command {}
 
@@ -264,10 +261,7 @@ public final class FeedConnection<C> implements SubjectHost {
         this.messages = messages;
         this.listener = listener;
         this.reader = new FrameReader(name, "feed-reader", logger, transport, this.pause, nanoClock, new ReaderWork());
-        // Its group replaces it every 12 h, make before break; the supervisor's own scheduled reconnect would drop
-        // every book first. It still reconnects when the socket fails or goes silent.
-        this.supervisor = new Supervisor(
-                logger, config.withReconnectInterval(NO_SCHEDULED_RECONNECT), clock, nanoClock, connects);
+        this.supervisor = new Supervisor(logger, config, clock, nanoClock, connects);
         try {
             transport.configure(config);
         } catch (IOException e) {

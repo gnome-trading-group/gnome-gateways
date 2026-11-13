@@ -41,10 +41,12 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
     roll's release and adopt run on its supervisor. Each `VenueProtocol` declares
     `books()`: CHANGES (Kalshi, Lighter, Polymarket Intl; probed) or WHOLE (Hyperliquid, Polymarket US; not probed).
   - `ConnectionGroup`: a source's connections in a process, packed up to `max_per_connection`, closed when empty for
-    5 minutes, rolled make-before-break every 12 h. `Feeds`: streams to markets (shared subjects), groups, the prober,
-    quarantine retries.
+    5 minutes, rolled make-before-break every `VenueFeed.rollEvery` (± a 24th): under any age at which the venue
+    closes connections itself (Polymarket US 30 min, Hyperliquid 2 h, others 12 h). `Feeds`: streams to markets
+    (shared subjects), groups, the prober, quarantine retries.
   - `probe/`: `BookProber` (REST check of the top 5 levels, silence -> `SUSPECT`), `BookProbeClient`, `JsonLevels`.
-  - `VenueFeed`: what a venue tells the feed about itself (market mapping, depth, URL property, probe budget).
+  - `VenueFeed`: what a venue tells the feed about itself (market mapping, depth, URL property, probe budget, roll
+    interval).
 - `transport/`: `Transport` (`WebSocketTransport` now; FIX later), `FrameReader`, `FrameWriter`/`WebSocketWriter` (MPSC
   queues), shared by feeds and the account reader.
 - `orders/`: order state and rules under the account path: `OrderContext`, `OrderReports`, `ReaderNotices`,
@@ -114,8 +116,9 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
   `SequencedRingBuffer.Producers.TAKING_TURNS`.
 - Connect: one attempt plus `maxReconnectAttempts` (5) per cycle, backoff 1s doubling to 10s; after `maxConnectCycles`
   (3) failed cycles it throws `GatewayConnectFailedException` to the error handler. Forced reconnect when nothing
-  arrives for `maxSilentInterval` (30s), and every 12h for order entry; a feed connection is rolled instead.
-  `GatewayConfig` validates timeout relationships; keep them valid.
+  arrives for `maxSilentInterval` (30s). Nothing reconnects on a schedule: a feed connection is rolled, and the
+  account socket only reconnects when it fails or goes silent (a scheduled one would open a window for missed
+  events). `GatewayConfig` validates timeout relationships; keep them valid.
 - `ConnectLimiter.forSource` spaces connects per source across the process: Kalshi 2/s, others 5/s.
 - Every venue snapshots over its socket. Gap detection: a bad book goes `STALE`, is published once flagged badData, and
   only that market is resynced on its connection. Kalshi checks `seq` over every frame of the connection (a gap
@@ -155,7 +158,9 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
 
 - No stacks or infrastructure of its own. Logs come out through the orchestrator, in the session's CloudWatch log
   group `/gnome/orchestrator/<region>`.
-- Disconnect: `SOCKET_DISCONNECTED` then `SOCKET_RECONNECTING`/`SOCKET_CONNECTED` is normal self-healing.
+- Disconnect: `SOCKET_DISCONNECTED` then `SOCKET_RECONNECTING`/`SOCKET_CONNECTED` is normal self-healing. A close
+  frame's code and reason are in the line (`VenueClosedException`): Polymarket US sends `1001: server shutting down`
+  (rolling restarts) and `1001: max connection age`, Hyperliquid `1000: Expired`; a drop with no close frame says so.
   `SOCKET_CONNECT_FAILED` logs the cause chain; a 401/403 on Kalshi or Polymarket US usually means a bad or revoked key
   in the secret. `GatewayConnectFailedException` means all connect cycles failed; check venue status and credentials.
 - Stale book: `SOCKET_SILENCE_TIMED_OUT` forces a reconnect after a connection's silence. "resyncing <market> (<reason>)"

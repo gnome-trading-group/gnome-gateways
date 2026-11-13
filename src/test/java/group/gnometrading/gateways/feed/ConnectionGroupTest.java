@@ -4,11 +4,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import group.gnometrading.gateways.feed.book.Projection;
 import group.gnometrading.logging.NullLogger;
 import group.gnometrading.schemas.Mbp10Schema;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -19,6 +21,7 @@ import org.junit.jupiter.api.Test;
 class ConnectionGroupTest {
 
     private static final long HOUR = TimeUnit.HOURS.toNanos(1);
+    private static final Duration TWELVE_HOURS = Duration.ofHours(12);
 
     private final FakeVenue.Opener opener = new FakeVenue.Opener();
     private final List<FakeVenue> venues = opener.venues;
@@ -27,6 +30,7 @@ class ConnectionGroupTest {
     private final ConnectionGroup<FakeVenue> group = new ConnectionGroup<>(
             "TEST",
             2,
+            TWELVE_HOURS,
             opener,
             FeedListener.NONE,
             new NullLogger(),
@@ -106,6 +110,7 @@ class ConnectionGroupTest {
         ConnectionGroup<FakeVenue> patient = new ConnectionGroup<>(
                 "TEST",
                 2,
+                TWELVE_HOURS,
                 opener,
                 FeedListener.NONE,
                 new NullLogger(),
@@ -186,5 +191,40 @@ class ConnectionGroupTest {
         assertEquals(2, opener.attempts);
         assertEquals(1, group.connections().size());
         assertEquals(SubjectState.LIVE, a.state());
+    }
+
+    @Test
+    void aSourceRollsOnItsOwnIntervalWithinItsSpread() throws Exception {
+        ConnectionGroup<FakeVenue> quick = new ConnectionGroup<>(
+                "QUICK",
+                2,
+                Duration.ofMinutes(24),
+                opener,
+                FeedListener.NONE,
+                new NullLogger(),
+                TimeUnit.SECONDS.toNanos(2),
+                ConnectionGroup.HANDOVER_TIMEOUT_NANOS);
+        try {
+            Subject a = market("A");
+            quick.add(a, 0);
+            await(() -> a.state() == SubjectState.LIVE);
+            FeedConnection<FakeVenue> first = opened.get(0);
+
+            // A twenty-fourth either side: 24 minutes rolls between 23 and 25.
+            quick.tick(TimeUnit.MINUTES.toNanos(23) - 1);
+            assertSame(first, a.host(), "not before its spread");
+            quick.tick(TimeUnit.MINUTES.toNanos(25));
+            assertNotSame(first, a.host(), "rolled by the end of its spread");
+            assertEquals(SubjectState.LIVE, a.state());
+        } finally {
+            quick.closeAll();
+        }
+    }
+
+    @Test
+    void aRollIntervalMustBePositive() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new ConnectionGroup<>("TEST", 2, Duration.ZERO, opener, FeedListener.NONE, new NullLogger()));
     }
 }

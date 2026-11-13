@@ -23,9 +23,7 @@ import java.time.Duration;
  *     The read timeout then no longer applies; a silent connection is still caught by {@code maxSilentInterval}.
  */
 public record GatewayConfig(
-        Duration reconnectInterval,
         Duration keepAliveInterval,
-        Duration sanityCheckInterval,
         int maxReconnectAttempts,
         int maxConnectCycles,
         Duration maxSilentInterval,
@@ -70,9 +68,7 @@ public record GatewayConfig(
     /** A copy that spins or blocks on reads; set by whoever knows the reader's core placement, not per exchange. */
     public GatewayConfig withSpinReads(final boolean spin) {
         return new GatewayConfig(
-                reconnectInterval,
                 keepAliveInterval,
-                sanityCheckInterval,
                 maxReconnectAttempts,
                 maxConnectCycles,
                 maxSilentInterval,
@@ -85,26 +81,6 @@ public record GatewayConfig(
                 tcpKeepAliveInterval,
                 tcpKeepAliveProbes,
                 spin);
-    }
-
-    /** A copy that reconnects on its own at {@code interval}, besides when silent or failing. */
-    public GatewayConfig withReconnectInterval(final Duration interval) {
-        return new GatewayConfig(
-                interval,
-                keepAliveInterval,
-                sanityCheckInterval,
-                maxReconnectAttempts,
-                maxConnectCycles,
-                maxSilentInterval,
-                initialBackoff,
-                connectTimeout,
-                socketConnectTimeout,
-                handshakeTimeout,
-                readTimeout,
-                tcpKeepAliveIdle,
-                tcpKeepAliveInterval,
-                tcpKeepAliveProbes,
-                spinReads);
     }
 
     /** Applies these socket settings to a WebSocket client, which keeps them for every connection it makes. */
@@ -133,9 +109,7 @@ public record GatewayConfig(
         }
     }
 
-    static final Duration DEFAULT_RECONNECT_INTERVAL = Duration.ofHours(12);
     static final Duration DEFAULT_KEEP_ALIVE_INTERVAL = Duration.ofSeconds(10);
-    static final Duration DEFAULT_SANITY_CHECK_INTERVAL = Duration.ofHours(1);
     static final int DEFAULT_MAX_RECONNECT_ATTEMPTS = 5;
     static final int DEFAULT_MAX_CONNECT_CYCLES = 3;
     static final Duration DEFAULT_MAX_SILENT_INTERVAL = Duration.ofSeconds(30);
@@ -151,9 +125,7 @@ public record GatewayConfig(
 
     public static final class Builder implements group.gnometrading.utils.Builder<GatewayConfig> {
 
-        private Duration reconnectInterval = DEFAULT_RECONNECT_INTERVAL;
         private Duration keepAliveInterval = DEFAULT_KEEP_ALIVE_INTERVAL;
-        private Duration sanityCheckInterval = DEFAULT_SANITY_CHECK_INTERVAL;
         private int maxReconnectAttempts = DEFAULT_MAX_RECONNECT_ATTEMPTS;
         private int maxConnectCycles = DEFAULT_MAX_CONNECT_CYCLES;
         private Duration maxSilentInterval = DEFAULT_MAX_SILENT_INTERVAL;
@@ -198,18 +170,8 @@ public record GatewayConfig(
             return this;
         }
 
-        public Builder withReconnectInterval(Duration reconnectInterval) {
-            this.reconnectInterval = reconnectInterval;
-            return this;
-        }
-
         public Builder withKeepAliveInterval(Duration keepAliveInterval) {
             this.keepAliveInterval = keepAliveInterval;
-            return this;
-        }
-
-        public Builder withSanityCheckInterval(Duration sanityCheckInterval) {
-            this.sanityCheckInterval = sanityCheckInterval;
             return this;
         }
 
@@ -231,9 +193,7 @@ public record GatewayConfig(
         @Override
         public GatewayConfig build() {
             return new GatewayConfig(
-                    this.reconnectInterval,
                     this.keepAliveInterval,
-                    this.sanityCheckInterval,
                     this.maxReconnectAttempts,
                     this.maxConnectCycles,
                     this.maxSilentInterval,

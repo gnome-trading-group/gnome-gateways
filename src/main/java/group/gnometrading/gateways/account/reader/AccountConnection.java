@@ -13,7 +13,6 @@ import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.Logger;
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.time.Duration;
 import java.util.List;
 import org.agrona.concurrent.EpochClock;
 import org.agrona.concurrent.EpochNanoClock;
@@ -34,8 +33,6 @@ import org.agrona.concurrent.EpochNanoClock;
  */
 public final class AccountConnection<C> {
 
-    // Far enough off never to come: a scheduled reconnect would only open a window for missed events.
-    private static final Duration NO_SCHEDULED_RECONNECT = Duration.ofDays(36_500);
     private static final long NANOS_PER_MILLI = 1_000_000L;
 
     private final String name;
@@ -72,7 +69,7 @@ public final class AccountConnection<C> {
         this.accountReader = accountReader;
         this.nanoClock = nanoClock;
         this.reader = new FrameReader(name, "account-reader", logger, transport, this.pause, nanoClock, accountReader);
-        this.supervisor = new Supervisor(logger, config.withReconnectInterval(NO_SCHEDULED_RECONNECT), clock, connects);
+        this.supervisor = new Supervisor(logger, config, clock, connects);
         this.createdAtNanos = nanoClock.nanoTime();
         this.readSettleNanos = readSettleNanos;
         try {

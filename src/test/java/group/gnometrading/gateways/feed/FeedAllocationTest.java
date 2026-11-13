@@ -38,6 +38,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.KeyPairGenerator;
 import java.security.PrivateKey;
 import java.security.interfaces.EdECPrivateKey;
+import java.time.Duration;
 import java.util.Base64;
 import java.util.List;
 import java.util.function.Function;
@@ -328,7 +329,13 @@ class FeedAllocationTest {
     void aFeedsTickDoesNotAllocate() throws Exception {
         final Feeds feeds = new Feeds(new NullLogger(), null);
         feeds.addSource(
-                new Feeds.Source("TEST", id -> new SubjectRef(id, Projection.IDENTITY), 16, null, RateBudget.UNLIMITED),
+                new Feeds.Source(
+                        "TEST",
+                        id -> new SubjectRef(id, Projection.IDENTITY),
+                        16,
+                        null,
+                        RateBudget.UNLIMITED,
+                        Duration.ofHours(12)),
                 20,
                 (name, table, listener) -> {
                     final Idle idle = new Idle();

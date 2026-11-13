@@ -15,12 +15,9 @@ public abstract class GatewaySupervisor implements GnomeAgent {
     private final GatewayConfig config;
     private final EpochNanoClock nanoClock;
     private final SocketConnectController connectController;
-    private final Schedule reconnectSchedule;
     private final Schedule keepAliveSchedule;
-    private final Schedule sanityCheckSchedule;
 
-    // Set while the last connect cycle failed: retried on every pass, not through the reconnect schedule, which
-    // would overwrite a trigger set from inside its own task.
+    // Set while the last connect cycle failed: retried on every pass.
     private boolean needsConnect;
     private int failedConnectCycles;
     // Reconnects asked for (silence, or another thread via forceReconnect) are counted rather than queued on a
@@ -39,10 +36,7 @@ public abstract class GatewaySupervisor implements GnomeAgent {
         this.logger = logger;
         this.config = config;
         this.nanoClock = nanoClock;
-        this.reconnectSchedule = new Schedule(clock, config.reconnectInterval().toMillis(), this::reconnect);
         this.keepAliveSchedule = new Schedule(clock, config.keepAliveInterval().toMillis(), this::keepAlive);
-        this.sanityCheckSchedule =
-                new Schedule(clock, config.sanityCheckInterval().toMillis(), this::sanityCheck);
         this.connectController = new SocketConnectController(
                 logger,
                 connectable,
@@ -58,8 +52,6 @@ public abstract class GatewaySupervisor implements GnomeAgent {
 
     protected abstract long recvTimestamp();
 
-    protected void doSanityCheck() {}
-
     /**
      * Work the gateway does on the supervisor's thread, e.g. a feed adding or removing markets: on every pass, connected
      * or not, so a connection that keeps failing to connect still answers what other threads wait on.
@@ -70,9 +62,7 @@ public abstract class GatewaySupervisor implements GnomeAgent {
 
     @Override
     public final void onStart() throws Exception {
-        this.reconnectSchedule.start();
         this.keepAliveSchedule.start();
-        this.sanityCheckSchedule.start();
         connect();
     }
 
@@ -84,14 +74,11 @@ public abstract class GatewaySupervisor implements GnomeAgent {
         }
         if (this.reconnectsRequested.get() != this.reconnectsAnswered) {
             reconnect();
-        } else {
-            this.reconnectSchedule.check();
         }
         if (this.needsConnect) {
             return 1 + doControl();
         }
         this.keepAliveSchedule.check();
-        this.sanityCheckSchedule.check();
         final int controlled = doControl();
 
         final long recvTs = recvTimestamp();
@@ -162,9 +149,6 @@ public abstract class GatewaySupervisor implements GnomeAgent {
         this.needsConnect = false;
         this.failedConnectCycles = 0;
         this.reconnectsAnswered = requested;
-        // The periodic reconnect counts from the newest socket, however it was opened; otherwise one forced near the
-        // end of the interval is torn down again as soon as it connects.
-        this.reconnectSchedule.start();
     }
 
     private void keepAlive() {
@@ -173,9 +157,5 @@ public abstract class GatewaySupervisor implements GnomeAgent {
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
-    }
-
-    private void sanityCheck() {
-        doSanityCheck();
     }
 }
