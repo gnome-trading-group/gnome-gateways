@@ -276,6 +276,7 @@ public final class ConnectionGroup<C> {
                     unsynced(shadows));
             return false;
         }
+        final long releaseNanos = System.nanoTime();
         final FeedConnection.Handover released = old.connection().release(markets);
         if (!released.await(handoverTimeoutNanos, TimeUnit.NANOSECONDS)) {
             logger.logf(
@@ -289,14 +290,24 @@ public final class ConnectionGroup<C> {
         next.carryMarkets();
         final List<Subject> handed = released.handed();
         final List<Subject> standIns = new ArrayList<>(handed.size());
+        // Trades a stand-in takes from here until it is adopted reach no stream: the old connection no longer
+        // publishes the market and the stand-in never does. Counted, to see whether the gap ever loses any.
+        long tradesBefore = 0;
         for (Subject market : handed) {
-            standIns.add(shadows.remove(market));
+            final Subject standIn = shadows.remove(market);
+            standIns.add(standIn);
+            tradesBefore += standIn.trades();
         }
         // Markets the old connection no longer carried (quarantined meanwhile) are the feeds' to place again.
         for (Subject leftOver : shadows.values()) {
             next.remove(leftOver);
         }
         awaitAdopt(next, next.adopt(handed, standIns));
+        final long gapMicros = TimeUnit.NANOSECONDS.toMicros(System.nanoTime() - releaseNanos);
+        long tradesAfter = 0;
+        for (Subject standIn : standIns) {
+            tradesAfter += standIn.trades();
+        }
         final Slot<C> slot = new Slot<>(replacement, nextRoll(now));
         slots.add(slot);
         for (Subject market : handed) {
@@ -307,11 +318,13 @@ public final class ConnectionGroup<C> {
         close(old);
         logger.logf(
                 LogMessage.DEBUG,
-                "%s: rolled %s to %s with %d markets",
+                "%s: rolled %s to %s with %d markets in %d us, %d trades unpublished",
                 source,
                 old.connection().name(),
                 next.name(),
-                handed.size());
+                handed.size(),
+                gapMicros,
+                tradesAfter - tradesBefore);
         return true;
     }
 

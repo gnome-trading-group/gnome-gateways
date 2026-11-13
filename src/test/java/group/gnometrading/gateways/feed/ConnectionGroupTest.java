@@ -8,11 +8,14 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import group.gnometrading.gateways.feed.book.Projection;
+import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.NullLogger;
 import group.gnometrading.schemas.Mbp10Schema;
+import group.gnometrading.schemas.book.Side;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 import org.junit.jupiter.api.AfterEach;
@@ -226,5 +229,53 @@ class ConnectionGroupTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> new ConnectionGroup<>("TEST", 2, Duration.ZERO, opener, FeedListener.NONE, new NullLogger()));
+    }
+
+    @Test
+    void aRollReportsTradesOnlyItsGapLostNotThoseTheOldConnectionPublished() throws Exception {
+        final List<String> logs = new CopyOnWriteArrayList<>();
+        ConnectionGroup<FakeVenue> logged = new ConnectionGroup<>(
+                "TEST",
+                2,
+                TWELVE_HOURS,
+                opener,
+                FeedListener.NONE,
+                new NullLogger() {
+                    @Override
+                    public void logf(final LogMessage message, final String format, final Object... args) {
+                        logs.add(String.format(format, args));
+                    }
+                },
+                TimeUnit.SECONDS.toNanos(2),
+                ConnectionGroup.HANDOVER_TIMEOUT_NANOS);
+        try {
+            Subject a = market("A");
+            logged.add(a, 0);
+            await(() -> a.state() == SubjectState.LIVE);
+            venues.get(0).frames.add("T A 44");
+            await(() -> a.trades() == 1);
+            // The replacement's stand-in takes a trade before its book, so before the old connection lets go.
+            opener.tradeBeforeBook = true;
+
+            logged.tick(13 * HOUR);
+
+            assertNotSame(opened.get(0), a.host());
+            assertTrue(
+                    logs.stream()
+                            .anyMatch(line -> line.matches("TEST: rolled TEST-0 to TEST-1 with 1 markets in \\d+ us, "
+                                    + "0 trades unpublished")),
+                    logs.toString());
+        } finally {
+            logged.closeAll();
+        }
+    }
+
+    @Test
+    void aMarketCountsEveryTradeEvenWithNoStreamToPublishTo() {
+        Subject standIn = new Subject("A", 16);
+        standIn.trade(45, 1, Side.Bid, 1, 1);
+        standIn.trade(46, 1, Side.Ask, 2, 2);
+
+        assertEquals(2, standIn.trades());
     }
 }

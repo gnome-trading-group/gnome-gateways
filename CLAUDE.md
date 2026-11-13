@@ -161,6 +161,9 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
 - Disconnect: `SOCKET_DISCONNECTED` then `SOCKET_RECONNECTING`/`SOCKET_CONNECTED` is normal self-healing. A close
   frame's code and reason are in the line (`VenueClosedException`): Polymarket US sends `1001: server shutting down`
   (rolling restarts) and `1001: max connection age`, Hyperliquid `1000: Expired`; a drop with no close frame says so.
+- Roll: "<source>: rolled <old> to <new> with N markets in T us, M trades unpublished". M counts trades that reached
+  only a stand-in between the old connection letting go and the new one taking over, which no stream got; books are
+  unaffected. A replacement that "didn't sync" leaves the old connection in place and retries in 10 minutes.
   `SOCKET_CONNECT_FAILED` logs the cause chain; a 401/403 on Kalshi or Polymarket US usually means a bad or revoked key
   in the secret. `GatewayConnectFailedException` means all connect cycles failed; check venue status and credentials.
 - Stale book: `SOCKET_SILENCE_TIMED_OUT` forces a reconnect after a connection's silence. "resyncing <market> (<reason>)"

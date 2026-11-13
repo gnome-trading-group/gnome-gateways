@@ -27,6 +27,7 @@ public final class FakeVenue implements Transport<FakeVenue>, VenueProtocol<Fake
     volatile boolean answers = true;
     // Markets the venue has no book for any more, e.g. closed since they were subscribed elsewhere.
     Set<String> bookless = Set.of();
+    boolean tradeBeforeBook;
     volatile boolean closed;
     private boolean traffic;
     private final FrameWriter writer = new FrameWriter(64) {
@@ -101,6 +102,9 @@ public final class FakeVenue implements Transport<FakeVenue>, VenueProtocol<Fake
             if (!answers || bookless.contains(subject.key())) {
                 continue;
             }
+            if (tradeBeforeBook) {
+                frames.add("T " + subject.key() + " " + bid);
+            }
             frames.add("S " + subject.key() + " " + bid);
         }
     }
@@ -124,7 +128,9 @@ public final class FakeVenue implements Transport<FakeVenue>, VenueProtocol<Fake
         if (subject == null) {
             return;
         }
-        if (parts[0].equals("S")) {
+        if (parts[0].equals("T")) {
+            subject.trade(Long.parseLong(parts[2]), 1, Side.Bid, 1, receiveNanos);
+        } else if (parts[0].equals("S")) {
             subject.beginSnapshot();
             subject.level(Side.Bid, Long.parseLong(parts[2]), 1, 1);
             subject.endSnapshot(1, receiveNanos, 1);
@@ -142,6 +148,8 @@ public final class FakeVenue implements Transport<FakeVenue>, VenueProtocol<Fake
         public volatile boolean silent;
         // The next open throws, as when the venue refuses the connection.
         public volatile boolean failNext;
+        // Venues opened from now on send a trade for each market before its book.
+        public volatile boolean tradeBeforeBook;
         // Venues opened from now on have no book for these markets.
         public final Set<String> bookless = ConcurrentHashMap.newKeySet();
         public int attempts;
@@ -157,6 +165,7 @@ public final class FakeVenue implements Transport<FakeVenue>, VenueProtocol<Fake
             FakeVenue venue = new FakeVenue(table);
             venue.answers = !silent;
             venue.bookless = Set.copyOf(bookless);
+            venue.tradeBeforeBook = tradeBeforeBook;
             FeedConnection<FakeVenue> connection = new FeedConnection<>(
                     name,
                     new NullLogger(),

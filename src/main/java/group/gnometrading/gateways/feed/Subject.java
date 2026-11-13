@@ -51,6 +51,8 @@ public final class Subject {
     private volatile long meanGapNanos;
     private volatile long lastVerifiedNanos;
     private volatile long records;
+    // Every trade the venue sent for it, published or not: a roll's stand-in publishes none.
+    private volatile long trades;
     private volatile long resyncs;
 
     public Subject(final String key, final int levelsPerSide, final StreamOutput... outputs) {
@@ -210,6 +212,7 @@ public final class Subject {
             final long eventTimestamp,
             final long receiveNanos) {
         received(receiveNanos);
+        trades++;
         final SubjectState current = state();
         if (current == SubjectState.REMOVING || current == SubjectState.QUARANTINED) {
             return;
@@ -367,5 +370,9 @@ public final class Subject {
 
     public long resyncs() {
         return resyncs;
+    }
+
+    public long trades() {
+        return trades;
     }
 }
