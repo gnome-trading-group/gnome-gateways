@@ -69,7 +69,9 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
     by `SubmitPolicy`, unknown outcomes swept and in the end given up on; cancels, resends and lookups first, then
     each session's amends and new orders as `FairQueue` decides; each queued request refused after its session's
     wait; a cancel the venue failed to answer sent again up to 3 times in 2 s; every decision told to its
-    `Admissions`. `FairQueue` (in `account/admission/`) is start-time fair queuing over `AdmissionSession`s (the queued session charged least, cost
+    `Admissions`, with each request's timings: how long a command stamped `LaneCommand.enqueuedNanos` (the lane's
+    monotonic clock) waited for the lane (`taken`), how long writing and signing it took (`sent`), and the venue's
+    answer (`answered`). `FairQueue` (in `account/admission/`) is start-time fair queuing over `AdmissionSession`s (the queued session charged least, cost
     over weight, goes next; one back after over a second idle starts level; one back sooner, as when its queued
     orders all expired between two of the venue's slots, keeps its place, but never more than a second of the budget
     behind the level), at most `FairQueue.MAX_SESSIONS` per account. A session's `CANCEL_SESSION` fences it: its new

@@ -147,6 +147,18 @@ public final class AccountLane<M> implements GnomeAgent {
          */
         default void answered(final RequestClass type, final long roundTripNanos, final boolean whole) {}
 
+        /**
+         * A request was taken off the lane's ring to act on, {@code waitedNanos} after it was put there (held while the
+         * lane parked it included); only for commands stamped {@link LaneCommand#enqueuedNanos}.
+         */
+        default void taken(final RequestClass type, final long waitedNanos) {}
+
+        /**
+         * A request went to the venue: {@code writeNanos} from deciding to send it to the socket write's return, its
+         * encoding and signing included (for a batch, entries written earlier, only the send).
+         */
+        default void sent(final RequestClass type, final long writeNanos) {}
+
         /** Every connection was in use when the lane had a request to send; told once until one is free again. */
         default void connectionsBusy() {}
 
@@ -526,6 +538,9 @@ public final class AccountLane<M> implements GnomeAgent {
     }
 
     private void onCommand(final LaneCommand command) {
+        if (command.enqueuedNanos != 0) {
+            tellTaken(command);
+        }
         switch (command.kind) {
             case LaneCommand.NEW -> onNew(command);
             case LaneCommand.CANCEL -> onCancel(command);
@@ -541,6 +556,19 @@ public final class AccountLane<M> implements GnomeAgent {
                     command.exchangeId,
                     command.securityId,
                     RejectReason.GATEWAY_REJECTED);
+        }
+    }
+
+    private void tellTaken(final LaneCommand command) {
+        final RequestClass type =
+                switch (command.kind) {
+                    case LaneCommand.NEW -> RequestClass.NEW;
+                    case LaneCommand.CANCEL -> RequestClass.CANCEL;
+                    case LaneCommand.AMEND -> RequestClass.AMEND;
+                    default -> null;
+                };
+        if (type != null) {
+            this.admissions.taken(type, this.nanoClock.getAsLong() - command.enqueuedNanos);
         }
     }
 
@@ -1056,6 +1084,8 @@ public final class AccountLane<M> implements GnomeAgent {
             releaseBatch(batch);
             return 0;
         }
+        this.admissions.sent(
+                batch.kind == BATCH_SUBMIT ? RequestClass.NEW : RequestClass.CANCEL, this.nanoClock.getAsLong() - now);
         final boolean submits = batch.kind == BATCH_SUBMIT;
         for (int i = 0; i < batch.count; i++) {
             final LaneOrder order = live(batch.entries[i]);
@@ -1240,6 +1270,7 @@ public final class AccountLane<M> implements GnomeAgent {
         if (result == AsyncHTTPConnections.NOT_SENT) {
             return RETRY;
         }
+        this.admissions.sent(singleClass(kind), this.nanoClock.getAsLong() - now);
         tellSent(order, kind, rule, now);
         if (kind == LaneOrder.SUBMIT) {
             // Once written, not when the pass began: the venue's reads lag from when it took the order.

@@ -204,6 +204,14 @@ public final class LaneHarness<M> implements AutoCloseable {
         send(LaneCommand.NEW, counter, command -> command.sessionSlot = slot);
     }
 
+    /** A NEW the gateway put on the lane's ring at {@code enqueuedNanos} (the lane's clock). */
+    public void submitStamped(final long slot, final long counter, final long enqueuedNanos) {
+        send(LaneCommand.NEW, counter, command -> {
+            command.sessionSlot = slot;
+            command.enqueuedNanos = enqueuedNanos;
+        });
+    }
+
     public void cancelAs(final long slot, final long counter) {
         send(LaneCommand.CANCEL, counter, command -> command.sessionSlot = slot);
     }

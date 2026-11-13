@@ -55,6 +55,11 @@ public final class LaneCommand {
     // once, and new orders a second.
     public int maxOpenOrders;
     public int maxNewPerSecond;
+    /**
+     * When the command was put on the lane's ring, on the lane's own monotonic clock; 0 when not stamped. The lane tells
+     * its {@link AccountLane.Admissions} how long a NEW, CANCEL or AMEND waited before it acted on it.
+     */
+    public long enqueuedNanos;
 
     public void reset() {
         this.kind = 0;
@@ -73,6 +78,7 @@ public final class LaneCommand {
         this.maxQueueNanos = 0;
         this.maxOpenOrders = 0;
         this.maxNewPerSecond = 0;
+        this.enqueuedNanos = 0;
     }
 
     public void copyFrom(final LaneCommand src) {
@@ -92,5 +98,6 @@ public final class LaneCommand {
         this.maxQueueNanos = src.maxQueueNanos;
         this.maxOpenOrders = src.maxOpenOrders;
         this.maxNewPerSecond = src.maxNewPerSecond;
+        this.enqueuedNanos = src.enqueuedNanos;
     }
 }

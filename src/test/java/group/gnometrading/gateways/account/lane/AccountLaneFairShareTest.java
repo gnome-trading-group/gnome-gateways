@@ -323,6 +323,34 @@ class AccountLaneFairShareTest {
     }
 
     @Test
+    void aStampedRequestsWaitForTheLaneAndItsWriteAreTold() throws Exception {
+        this.harness = harness(10_000);
+        this.harness.server.script(request -> Reply.ok("v-" + request.body()));
+        final List<String> told = new ArrayList<>();
+        final long[] waited = {-1};
+        this.harness.lane.admissions(new AccountLane.Admissions() {
+            @Override
+            public void taken(final RequestClass type, final long waitedNanos) {
+                told.add("taken " + type);
+                waited[0] = waitedNanos;
+            }
+
+            @Override
+            public void sent(final RequestClass type, final long writeNanos) {
+                told.add("sent " + type + (writeNanos >= 0 ? "" : " negative"));
+            }
+        });
+        this.harness.session(A, 1, 0);
+        this.harness.submitStamped(A, 1, System.nanoTime() - TimeUnit.MILLISECONDS.toNanos(5));
+        this.harness.submitAs(A, 2);
+
+        this.harness.runUntil(() -> posts().size() == 2 && this.harness.connections.inFlight() == 0, 3_000);
+
+        assertEquals(List.of("taken NEW", "sent NEW", "sent NEW"), told, "only the stamped command's wait is told");
+        assertTrue(waited[0] >= TimeUnit.MILLISECONDS.toNanos(5), "from its stamp: " + waited[0]);
+    }
+
+    @Test
     void everyDecisionIsTold() throws Exception {
         this.harness = harness(20);
         final List<String> told = new ArrayList<>();
