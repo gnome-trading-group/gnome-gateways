@@ -173,16 +173,18 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
 - Disconnect: `SOCKET_DISCONNECTED` then `SOCKET_RECONNECTING`/`SOCKET_CONNECTED` is normal self-healing. A close
   frame's code and reason are in the line (`VenueClosedException`): Polymarket US sends `1001: server shutting down`
   (rolling restarts) and `1001: max connection age`, Hyperliquid `1000: Expired`; a drop with no close frame says so.
+- `UNKNOWN_ERROR` means something unexpected; anything the feed handles by itself (a resync, a reconnect) is logged
+  at `DEBUG` or under its own `LogMessage`, so a shard's count of these errors stays near zero.
 - Roll: "<source>: rolled <old> to <new> with N markets in T us, R records replayed, S markets short of some". R is
   books and trades the new connection published that the old one never did; S counts markets whose stand-in had
-  already overwritten some of them (a gap; should stay 0). A replacement that "didn't sync" leaves the old connection
-  in place and retries in 10 minutes.
+  already overwritten some of them (a gap; should stay 0, and a roll with any is logged `UNKNOWN_ERROR`, otherwise
+  `DEBUG`). A replacement that "didn't sync" leaves the old connection in place and retries in 10 minutes.
   `SOCKET_CONNECT_FAILED` logs the cause chain; a 401/403 on Kalshi or Polymarket US usually means a bad or revoked key
   in the secret. `GatewayConnectFailedException` means all connect cycles failed; check venue status and credentials.
 - Stale book: `SOCKET_SILENCE_TIMED_OUT` forces a reconnect after a connection's silence. "resyncing <market> (<reason>)"
   is one market resynced; "quarantined <market> after 3 resyncs" takes it off for 5, 15, then 60 minutes; "sent no
   book" means it is marked `EMPTY` and rechecked every 15 minutes. The prober logs mismatches against the venue's REST
-  book. A shard's `HEARTBEAT` lines and a session's heartbeat (`reconnecting`, `resyncsLast5m` per listing) show it.
+  book at `DEBUG` (the resync handles them; a market that keeps drifting is quarantined). A shard's `HEARTBEAT` lines and a session's heartbeat (`reconnecting`, `resyncsLast5m` per listing) show it.
 - Rejected orders: `ORDER_REJECTED_BY_VENUE` carries the venue's own text. Kalshi 503 while its shard isn't trading
   maps to MARKET_CLOSED; Kalshi 409 is a duplicate client id; Kalshi 404 `insufficient_shard_balance` (no cash on
   the exchange index the market trades on) maps to INSUFFICIENT_FUNDS. Polymarket Intl 503 means trading disabled, cancel-only

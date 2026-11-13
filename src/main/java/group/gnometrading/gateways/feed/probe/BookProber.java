@@ -199,7 +199,10 @@ public final class BookProber implements GnomeAgent {
         mismatches++;
         target.mismatched = false;
         target.nextProbeNanos = now + settings.intervalNanos();
-        logger.logf(LogMessage.UNKNOWN_ERROR, "%s's book disagrees with the venue's twice; resyncing", subject.key());
+        // Handled, not unexpected: the market resyncs, the mismatch is counted for the heartbeat, and a market that
+        // keeps
+        // drifting is quarantined.
+        logger.logf(LogMessage.DEBUG, "%s's book disagrees with the venue's twice; resyncing", subject.key());
         final SubjectHost host = subject.host();
         if (host != null) {
             host.requestStale(subject, GapReason.PROBE_MISMATCH);

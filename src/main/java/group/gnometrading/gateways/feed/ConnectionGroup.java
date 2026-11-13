@@ -315,7 +315,7 @@ public final class ConnectionGroup<C> {
         }
         close(old);
         logger.logf(
-                LogMessage.DEBUG,
+                rolledLevel(adopted.fellShort()),
                 "%s: rolled %s to %s with %d markets in %d us, %d records replayed, %d markets short of some",
                 source,
                 old.connection().name(),
@@ -325,6 +325,11 @@ public final class ConnectionGroup<C> {
                 adopted.replayed(),
                 adopted.fellShort());
         return true;
+    }
+
+    /** A roll that left some market short of records left a hole in its stream: an error, not routine. */
+    static LogMessage rolledLevel(final int fellShort) {
+        return fellShort > 0 ? LogMessage.UNKNOWN_ERROR : LogMessage.DEBUG;
     }
 
     /** Waits through interrupts too: the markets are on no connection until the adopt is done. */

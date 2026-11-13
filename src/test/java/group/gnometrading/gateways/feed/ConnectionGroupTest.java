@@ -249,6 +249,12 @@ class ConnectionGroupTest {
     }
 
     @Test
+    void aRollThatLeftAHoleIsLoggedAsAnErrorAndOneThatDidntIsNot() {
+        assertEquals(LogMessage.DEBUG, ConnectionGroup.rolledLevel(0));
+        assertEquals(LogMessage.UNKNOWN_ERROR, ConnectionGroup.rolledLevel(1));
+    }
+
+    @Test
     void aRollPublishesNothingTwiceAndReportsWhatItReplayed() throws Exception {
         final List<String> logs = new CopyOnWriteArrayList<>();
         ConnectionGroup<FakeVenue> logged = new ConnectionGroup<>(
