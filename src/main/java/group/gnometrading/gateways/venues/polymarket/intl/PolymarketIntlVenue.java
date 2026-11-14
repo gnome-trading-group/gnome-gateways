@@ -14,6 +14,13 @@ import java.util.List;
 /** Polymarket International: what its feed and its order entry need to know about it. */
 public final class PolymarketIntlVenue {
 
+    /**
+     * Cloudflare's timings of the CLOB's edge and worker on every answer, in milliseconds ({@code cfEdge;dur=2,
+     * cfOrigin;dur=0,cfWorker;dur=27}): the worker makes the call to the matching backend itself, so edge plus worker is
+     * the time spent past the network.
+     */
+    public static final String SERVER_TIMING_HEADER = "server-timing";
+
     public static final VenueFeed FEED = new VenueFeed(
             PolymarketIntlVenue::subjectOf,
             // Down to a tenth of a cent tick: 999 prices a side.
@@ -68,6 +75,10 @@ public final class PolymarketIntlVenue {
                         new VenueRateLimits.Rule(HTTPMethod.DELETE, "", null, "cancel", 1, RequestClass.CANCEL),
                         new VenueRateLimits.Rule(HTTPMethod.GET, "", null, null, 0, RequestClass.BACKGROUND),
                         new VenueRateLimits.Rule(null, "", null, "order", 1, RequestClass.NEW)),
-                List.of(VenueRateLimits.RETRY_AFTER, VenueRateLimits.POLY_REMAINING, VenueRateLimits.POLY_RESET));
+                List.of(
+                        VenueRateLimits.RETRY_AFTER,
+                        VenueRateLimits.POLY_REMAINING,
+                        VenueRateLimits.POLY_RESET,
+                        SERVER_TIMING_HEADER));
     }
 }

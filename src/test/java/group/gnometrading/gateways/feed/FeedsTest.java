@@ -7,11 +7,13 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import group.gnometrading.gateways.feed.book.Projection;
+import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.NullLogger;
 import group.gnometrading.schemas.Mbp10Schema;
 import group.gnometrading.schemas.Statics;
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 import org.junit.jupiter.api.AfterEach;
@@ -23,7 +25,18 @@ class FeedsTest {
     private static final long DOLLAR = Statics.PRICE_SCALING_FACTOR;
 
     private final FakeVenue.Opener opener = new FakeVenue.Opener();
-    private final Feeds feeds = new Feeds(new NullLogger(), null);
+    // What the feeds logged as unexpected.
+    private final List<String> errors = new CopyOnWriteArrayList<>();
+    private final Feeds feeds = new Feeds(
+            new NullLogger() {
+                @Override
+                public void logf(final LogMessage message, final String format, final Object... args) {
+                    if (message == LogMessage.UNKNOWN_ERROR) {
+                        errors.add(String.format(format, args));
+                    }
+                }
+            },
+            null);
     private final VenueTestKit.Stream yes = new VenueTestKit.Stream();
     private final VenueTestKit.Stream no = new VenueTestKit.Stream();
 
@@ -142,6 +155,8 @@ class FeedsTest {
         // The connection marks the market quarantined, then tells the feeds on its own thread: a tick takes it in
         // only once that has arrived.
         await(() -> tickedEmpty(MINUTE));
+        // One line a quarantine, so a market quarantined alone doesn't read as several errors.
+        assertEquals(List.of("TEST T quarantined after 3 resyncs (SEQUENCE), retrying in 5 minutes"), errors);
         feeds.tick(MINUTE + Feeds.RETRY_DELAYS_NANOS[0] - 1);
         assertEquals(SubjectState.QUARANTINED, market.state());
         feeds.tick(MINUTE + Feeds.RETRY_DELAYS_NANOS[0]);

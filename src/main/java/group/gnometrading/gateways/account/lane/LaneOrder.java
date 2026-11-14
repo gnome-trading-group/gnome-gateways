@@ -57,6 +57,16 @@ final class LaneOrder extends AdmissionEntry {
     // When its submit's outcome was left unknown (0 while known), and when it is next looked for.
     long unknownSinceNanos;
     long nextSweepNanos;
+    // For its requests' timings, on the lane's clock: when ingress queued, and the lane took, its submit, its latest
+    // cancel and its latest amend; and when the request on the wire was decided on and written.
+    long submitIngressNanos;
+    long submitTakenNanos;
+    long cancelIngressNanos;
+    long cancelTakenNanos;
+    long amendIngressNanos;
+    long amendTakenNanos;
+    long decidedNanos;
+    long wireSentNanos;
 
     LaneOrder(final int index, final int maxBodyLength) {
         super(index);
@@ -134,5 +144,13 @@ final class LaneOrder extends AdmissionEntry {
         this.cancelRetryAtNanos = 0;
         this.unknownSinceNanos = 0;
         this.nextSweepNanos = 0;
+        this.submitIngressNanos = 0;
+        this.submitTakenNanos = 0;
+        this.cancelIngressNanos = 0;
+        this.cancelTakenNanos = 0;
+        this.amendIngressNanos = 0;
+        this.amendTakenNanos = 0;
+        this.decidedNanos = 0;
+        this.wireSentNanos = 0;
     }
 }

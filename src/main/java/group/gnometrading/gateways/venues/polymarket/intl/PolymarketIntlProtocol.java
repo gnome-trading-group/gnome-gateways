@@ -39,6 +39,8 @@ public final class PolymarketIntlProtocol implements VenueProtocol<WebSocketChan
     private static final long NO_TIME = Mbp10Encoder.timestampEventNullValue();
     private static final long NO_SEQUENCE = Mbp10Encoder.sequenceNullValue();
     private static final long UNREADABLE = Long.MIN_VALUE;
+    // Longer than the venue's prices lag a mass cancel, shorter than a missed change has been seen to take to recur.
+    static final long GAP_CONFIRM_NANOS = 10 * NANOS_PER_MILLI;
     private static final byte[] PING = "PING".getBytes(StandardCharsets.US_ASCII);
     // Changes in one event are for few tokens, a market's pair in practice; more grows the arrays once.
     private static final int INITIAL_TOUCHED = 16;
@@ -46,8 +48,9 @@ public final class PolymarketIntlProtocol implements VenueProtocol<WebSocketChan
     /** A token's pending check: the venue's best prices after a match, and the book's then. */
     private static final class Check {
         boolean pending;
-        // The last completed match disagreed; one more that does too means the book missed a change.
+        // A completed match disagreed, at doubtedAt (venue time), and none has agreed since.
         boolean doubtful;
+        long doubtedAt;
         long timestamp;
         long venueBid;
         long venueAsk;
@@ -447,9 +450,12 @@ public final class PolymarketIntlProtocol implements VenueProtocol<WebSocketChan
      * match's changes can come as several messages with one timestamp, so mid-match the book and those prices can
      * disagree for a moment; once the timestamp moves on they should agree. But a match can also straddle two
      * timestamps a millisecond apart, the first message's prices not yet showing the change it carries (2026-10-27: 4
-     * of 5 disagreements over 1.9 million checks, the book right each time). So a book is only doubted after one
-     * completed match disagrees, and found wrong when the next does too: a change the book missed stays missed until a
-     * resync. Returns whether the book is still trusted.
+     * of 5 disagreements over 1.9 million checks, the book right each time). And when a market maker pulls a dozen
+     * levels at once, the prices lag the cancels for two or three timestamps, at most 2 ms of venue time, then agree
+     * again (in captures of 114 markets the book matched the venue's snapshot after every such run, while a change the
+     * venue never sent kept matches disagreeing 23 ms and more later). So a book is only doubted
+     * after one completed match disagrees, and found wrong when one at least {@link #GAP_CONFIRM_NANOS} later still
+     * does: a change the book missed stays missed until a resync. Returns whether the book is still trusted.
      */
     private boolean checkBestPrices(final Subject subject, final long venueBid, final long venueAsk) {
         final Check check = checks.get(subject.key());
@@ -460,12 +466,13 @@ public final class PolymarketIntlProtocol implements VenueProtocol<WebSocketChan
             check.pending = false;
             if (check.bookBid == check.venueBid && check.bookAsk == check.venueAsk) {
                 check.doubtful = false;
-            } else if (check.doubtful) {
+            } else if (!check.doubtful) {
+                check.doubtful = true;
+                check.doubtedAt = check.timestamp;
+            } else if (check.timestamp - check.doubtedAt >= GAP_CONFIRM_NANOS) {
                 check.doubtful = false;
                 subject.stale(GapReason.BEST_PRICE, receiveNanos);
                 return false;
-            } else {
-                check.doubtful = true;
             }
         }
         if (venueBid != UNREADABLE && venueAsk != UNREADABLE) {

@@ -72,7 +72,10 @@ public final class Feeds {
     private final Map<String, Map<String, Market>> markets = new HashMap<>();
     private final Map<Subject, Market> bySubject = new IdentityHashMap<>();
     private final Map<Integer, Market> streams = new HashMap<>();
-    private final ConcurrentLinkedQueue<Subject> quarantined = new ConcurrentLinkedQueue<>();
+
+    private record Quarantine(Subject subject, GapReason reason) {}
+
+    private final ConcurrentLinkedQueue<Quarantine> quarantined = new ConcurrentLinkedQueue<>();
     private final List<Market> waiting = new ArrayList<>();
 
     /** @param prober checks books against the venue's REST book; null where nothing is probed */
@@ -90,8 +93,8 @@ public final class Feeds {
                 opener,
                 new FeedListener() {
                     @Override
-                    public void onQuarantined(final Subject subject) {
-                        quarantined.add(subject);
+                    public void onQuarantined(final Subject subject, final GapReason reason) {
+                        quarantined.add(new Quarantine(subject, reason));
                     }
                 },
                 logger);
@@ -172,8 +175,9 @@ public final class Feeds {
      * Allocates nothing unless one of those happens, as it runs in a trading session's JVM.
      */
     public void tick(final long now) throws Exception {
-        Subject subject;
-        while ((subject = quarantined.poll()) != null) {
+        Quarantine quarantine;
+        while ((quarantine = quarantined.poll()) != null) {
+            final Subject subject = quarantine.subject();
             final Market market = bySubject.get(subject);
             if (market == null) {
                 continue;
@@ -188,9 +192,11 @@ public final class Feeds {
             waiting.add(market);
             logger.logf(
                     LogMessage.UNKNOWN_ERROR,
-                    "%s %s quarantined, retrying in %d minutes",
+                    "%s %s quarantined after %d resyncs (%s), retrying in %d minutes",
                     market.source.code(),
                     subject.key(),
+                    FeedConnection.MAX_RESYNCS,
+                    quarantine.reason(),
                     TimeUnit.NANOSECONDS.toMinutes(delay));
         }
         for (int i = waiting.size() - 1; i >= 0; i--) {

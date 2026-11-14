@@ -491,10 +491,13 @@ public final class Subject {
 
     /**
      * The book once more, flagged badData, stamped when it stopped being trusted: its last update can be minutes old on
-     * a quiet market, and a replay would show the book bad from then.
+     * a quiet market, and a replay would show the book bad from then. Readers now hold a flagged book, so the next
+     * trusted one must reach them even if a roll counted it as already sent: a venue that sends a quiet market's
+     * unchanged book again on every reconnect gives two connections different counts of it.
      */
     private void publishBad(final long receiveNanos) {
         publishBook(book, Math.max(lastEventTimestamp, receiveNanos), receiveNanos, NO_SEQUENCE, false, true);
+        repeatBookTime = NO_POSITION;
     }
 
     private void publishBook(

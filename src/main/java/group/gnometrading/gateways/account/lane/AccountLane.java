@@ -154,6 +154,14 @@ public final class AccountLane<M> implements GnomeAgent {
         default void taken(final RequestClass type, final long waitedNanos) {}
 
         /**
+         * A session's new order, cancel or amend is over: answered, failed, given up on, or refused unsent. Once per
+         * request that went on the wire (a submit resent, or a cancel sent again, is told each time), and once for one
+         * held past its wait or dropped for a later request of its order. Lookups aren't told. {@code timing} is reused:
+         * read it during the call.
+         */
+        default void timed(final RequestTiming timing) {}
+
+        /**
          * A request went to the venue: {@code writeNanos} from deciding to send it to the socket write's return, its
          * encoding and signing included (for a batch, entries written earlier, only the send).
          */
@@ -259,6 +267,15 @@ public final class AccountLane<M> implements GnomeAgent {
     private final long[] sentAtNanos;
     private final RequestClass[] sentTypes;
     private boolean connectionsWereBusy;
+    // For requests' timings: the command being handled's stamps, when the lane last looked for answers, and the answer
+    // being handled's, for a batch's entries.
+    private final RequestTiming requestTiming = new RequestTiming();
+    private long commandIngressNanos;
+    private long commandTakenNanos;
+    private long lastPollNanos;
+    private long answerNanos;
+    private long answerSlackNanos;
+    private int answerOutcome;
     // Whether the last request held back was held by the budget rather than for want of a connection.
     private boolean heldByBudget;
     private long retireAtNanos;
@@ -293,6 +310,7 @@ public final class AccountLane<M> implements GnomeAgent {
         this.name = name;
         this.venue = venue;
         this.connections = connections;
+        venue.bindHeaders(connections::headerIndex);
         this.sentAtNanos = new long[connections.size()];
         this.sentTypes = new RequestClass[connections.size()];
         this.budget = budget;
@@ -538,7 +556,10 @@ public final class AccountLane<M> implements GnomeAgent {
     }
 
     private void onCommand(final LaneCommand command) {
+        this.commandIngressNanos = command.enqueuedNanos;
+        this.commandTakenNanos = 0;
         if (command.enqueuedNanos != 0) {
+            this.commandTakenNanos = this.nanoClock.getAsLong();
             tellTaken(command);
         }
         switch (command.kind) {
@@ -568,7 +589,7 @@ public final class AccountLane<M> implements GnomeAgent {
                     default -> null;
                 };
         if (type != null) {
-            this.admissions.taken(type, this.nanoClock.getAsLong() - command.enqueuedNanos);
+            this.admissions.taken(type, this.commandTakenNanos - command.enqueuedNanos);
         }
     }
 
@@ -643,6 +664,8 @@ public final class AccountLane<M> implements GnomeAgent {
         ctx.limitPrice = command.price;
         ctx.originalQty = command.size;
         ctx.leavesQty = command.size;
+        order.submitIngressNanos = this.commandIngressNanos;
+        order.submitTakenNanos = this.commandTakenNanos;
 
         final int bodyLength = this.venue.prepare(command, market, ctx, order.body, this.epochClock.time());
         if (bodyLength < 0) {
@@ -756,6 +779,8 @@ public final class AccountLane<M> implements GnomeAgent {
 
     /** As a cancel of it: one never sent is dropped unsent, any other is cancelled once it can be. */
     private void cancelHeld(final LaneOrder order) {
+        order.cancelIngressNanos = this.commandIngressNanos;
+        order.cancelTakenNanos = this.commandTakenNanos;
         if (order.submitState == LaneOrder.QUEUED && order.inFlight == LaneOrder.NONE) {
             refuseWanted(order);
             this.notices.canceledUnsent(order.ctx);
@@ -794,6 +819,8 @@ public final class AccountLane<M> implements GnomeAgent {
             return;
         }
         order.amendWanted = true;
+        order.amendIngressNanos = this.commandIngressNanos;
+        order.amendTakenNanos = this.commandTakenNanos;
         order.amendPrice = command.price;
         order.amendSize = command.size;
         order.amendPostOnly = command.postOnly;
@@ -936,6 +963,61 @@ public final class AccountLane<M> implements GnomeAgent {
                 action,
                 sinceNanos == 0 ? 0 : this.nanoClock.getAsLong() - sinceNanos,
                 tokensLeft);
+        if (action == AdmissionAction.DROPPED_CONFLATED || action == AdmissionAction.REJECTED_RATE_LIMITED) {
+            final int kind = type == RequestClass.AMEND ? LaneOrder.AMEND : LaneOrder.SUBMIT;
+            final RequestTiming timing = startTiming(order, kind, RequestTiming.NOT_SENT);
+            timing.decidedNanos = this.nanoClock.getAsLong();
+            this.admissions.timed(timing);
+        }
+    }
+
+    /** The timing of the order's request of {@code kind}, as far as the lane's own stamps go. */
+    private RequestTiming startTiming(final LaneOrder order, final int kind, final int outcome) {
+        final RequestTiming timing = this.requestTiming;
+        timing.reset();
+        timing.sessionSlot = order.ctx.sessionSlot;
+        timing.clientOidCounter = order.ctx.clientOidCounter;
+        timing.requestClass = singleClass(kind);
+        timing.outcome = outcome;
+        switch (kind) {
+            case LaneOrder.SUBMIT -> {
+                timing.ingressNanos = order.submitIngressNanos;
+                timing.takenNanos = order.submitTakenNanos;
+            }
+            case LaneOrder.CANCEL -> {
+                timing.ingressNanos = order.cancelIngressNanos;
+                timing.takenNanos = order.cancelTakenNanos;
+            }
+            default -> {
+                timing.ingressNanos = order.amendIngressNanos;
+                timing.takenNanos = order.amendTakenNanos;
+            }
+        }
+        return timing;
+    }
+
+    /** The order's request of {@code kind} that went on the wire is over, with the answer being handled, if any. */
+    private void tellTimed(final LaneOrder order, final int kind, final int outcome, final HTTPResponse response) {
+        if (kind == LaneOrder.LOOKUP) {
+            return;
+        }
+        final RequestTiming timing = startTiming(order, kind, outcome);
+        timing.decidedNanos = order.decidedNanos;
+        timing.wireSentNanos = order.wireSentNanos;
+        if (response != null) {
+            timing.answeredNanos = this.answerNanos;
+            timing.answerSlackNanos = this.answerSlackNanos;
+            timing.venueCode = response.getStatusCode();
+            this.venue.readTiming(response, timing);
+        }
+        this.admissions.timed(timing);
+    }
+
+    private static int outcomeOf(final int completion, final HTTPResponse response) {
+        if (response != null) {
+            return response.isSuccess() ? RequestTiming.ANSWERED : RequestTiming.REJECTED;
+        }
+        return completion == HTTPCompletion.TIMED_OUT ? RequestTiming.NO_ANSWER : RequestTiming.TRANSPORT_ERROR;
     }
 
     // ----- batches -----
@@ -1084,14 +1166,16 @@ public final class AccountLane<M> implements GnomeAgent {
             releaseBatch(batch);
             return 0;
         }
-        this.admissions.sent(
-                batch.kind == BATCH_SUBMIT ? RequestClass.NEW : RequestClass.CANCEL, this.nanoClock.getAsLong() - now);
+        final long wireNanos = this.nanoClock.getAsLong();
+        this.admissions.sent(batch.kind == BATCH_SUBMIT ? RequestClass.NEW : RequestClass.CANCEL, wireNanos - now);
         final boolean submits = batch.kind == BATCH_SUBMIT;
         for (int i = 0; i < batch.count; i++) {
             final LaneOrder order = live(batch.entries[i]);
             if (order == null) {
                 continue;
             }
+            order.decidedNanos = now;
+            order.wireSentNanos = wireNanos;
             if (submits) {
                 order.ctx.lastSendNanos = now;
             }
@@ -1103,6 +1187,7 @@ public final class AccountLane<M> implements GnomeAgent {
                     this.budget.tokensLeft(batch.rule, now));
         }
         if (result == AsyncHTTPConnections.SEND_FAILED) {
+            noAnswer();
             onBatchAnswer(batch, null);
         }
         return 1;
@@ -1155,6 +1240,7 @@ public final class AccountLane<M> implements GnomeAgent {
                 continue;
             }
             order.inFlight = LaneOrder.NONE;
+            tellBatchedTimed(batch, order, i == failed, response);
             if (batch.kind == BATCH_SUBMIT) {
                 final SubmitResult result = i == failed ? SubmitResult.REJECTED : batch.submitResults[i];
                 settle(order, this.policy.afterSend(order.ctx, result, this.venue.resendsAreSafe()));
@@ -1164,6 +1250,15 @@ public final class AccountLane<M> implements GnomeAgent {
             afterAnswer(order);
         }
         releaseBatch(batch);
+    }
+
+    private void tellBatchedTimed(
+            final LaneBatch batch, final LaneOrder order, final boolean refusedForAll, final HTTPResponse response) {
+        tellTimed(
+                order,
+                batch.kind == BATCH_SUBMIT ? LaneOrder.SUBMIT : LaneOrder.CANCEL,
+                refusedForAll ? RequestTiming.REJECTED : outcomeOf(this.answerOutcome, response),
+                response);
     }
 
     /**
@@ -1263,6 +1358,7 @@ public final class AccountLane<M> implements GnomeAgent {
             return BLOCKED;
         }
         this.lastCost = this.budget.cost(rule) * MILLI_TOKENS;
+        order.decidedNanos = now;
         write(order, kind, connection);
         sending(connection, singleClass(kind), now);
         final int result =
@@ -1270,7 +1366,8 @@ public final class AccountLane<M> implements GnomeAgent {
         if (result == AsyncHTTPConnections.NOT_SENT) {
             return RETRY;
         }
-        this.admissions.sent(singleClass(kind), this.nanoClock.getAsLong() - now);
+        order.wireSentNanos = this.nanoClock.getAsLong();
+        this.admissions.sent(singleClass(kind), order.wireSentNanos - now);
         tellSent(order, kind, rule, now);
         if (kind == LaneOrder.SUBMIT) {
             // Once written, not when the pass began: the venue's reads lag from when it took the order.
@@ -1279,6 +1376,8 @@ public final class AccountLane<M> implements GnomeAgent {
         order.inFlight = kind;
         order.inFlightRule = rule;
         if (result == AsyncHTTPConnections.SEND_FAILED) {
+            noAnswer();
+            tellTimed(order, kind, RequestTiming.TRANSPORT_ERROR, null);
             onAnswer(order, kind, null);
         }
         return TAKEN;
@@ -1355,6 +1454,13 @@ public final class AccountLane<M> implements GnomeAgent {
         this.sentTypes[connection] = type;
     }
 
+    /** A request found failed as it was sent: no answer, and nothing late about it. */
+    private void noAnswer() {
+        this.answerNanos = 0;
+        this.answerSlackNanos = 0;
+        this.answerOutcome = HTTPCompletion.FAILED;
+    }
+
     private static RequestClass singleClass(final int kind) {
         return switch (kind) {
             case LaneOrder.SUBMIT -> RequestClass.NEW;
@@ -1368,13 +1474,19 @@ public final class AccountLane<M> implements GnomeAgent {
 
     private int pollAnswers() {
         int answered = 0;
+        // Every answer found now came after the last look: how late its time can be.
+        final long lookedBefore = this.lastPollNanos;
+        this.lastPollNanos = this.nanoClock.getAsLong();
         while (this.connections.poll()) {
             answered++;
             final HTTPCompletion completion = this.connections.completion();
             final int connection = completion.connection();
+            this.answerNanos = this.nanoClock.getAsLong();
+            this.answerSlackNanos = lookedBefore == 0 ? 0 : this.answerNanos - lookedBefore;
+            this.answerOutcome = completion.outcome();
             this.admissions.answered(
                     this.sentTypes[connection],
-                    this.nanoClock.getAsLong() - this.sentAtNanos[connection],
+                    this.answerNanos - this.sentAtNanos[connection],
                     completion.outcome() == HTTPCompletion.RESPONSE);
             final long tag = completion.tag();
             final int kind = (int) (tag & KIND_MASK);
@@ -1397,6 +1509,7 @@ public final class AccountLane<M> implements GnomeAgent {
             if (response != null) {
                 this.budget.onResponse(order.inFlightRule, response, this.nanoClock.getAsLong());
             }
+            tellTimed(order, kind, outcomeOf(this.answerOutcome, response), response);
             onAnswer(order, kind, response);
         }
         return answered;

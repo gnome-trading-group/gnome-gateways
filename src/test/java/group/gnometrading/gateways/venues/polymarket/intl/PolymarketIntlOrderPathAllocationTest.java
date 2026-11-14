@@ -3,6 +3,7 @@ package group.gnometrading.gateways.venues.polymarket.intl;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import group.gnometrading.gateways.orders.OrderPathTestKit;
+import group.gnometrading.strings.ViewString;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -14,6 +15,18 @@ class PolymarketIntlOrderPathAllocationTest {
     private static final int MEASURED = 10_000;
 
     private final PolymarketIntlOrderPath path = new PolymarketIntlOrderPath();
+    private final ViewString serverTiming = new ViewString("cfEdge;dur=2,cfOrigin;dur=0,cfWorker;dur=27");
+    private long timingTotal;
+
+    @Test
+    void readingAnAnswersServerTimingDoesNotAllocate() {
+        OrderPathTestKit.assertNoAllocation("Polymarket Intl server-timing", WARM_UP, MEASURED, this::readTiming);
+        assertEquals((WARM_UP + MEASURED) * 29_000L, this.timingTotal);
+    }
+
+    private void readTiming() {
+        this.timingTotal += PolymarketIntlLaneVenue.serverTimingMicros(this.serverTiming);
+    }
 
     @Test
     void signingAndBuildingAnOrderDoesNotAllocate() {

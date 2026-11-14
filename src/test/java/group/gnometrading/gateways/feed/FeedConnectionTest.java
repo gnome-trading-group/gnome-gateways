@@ -174,10 +174,14 @@ class FeedConnectionTest {
 
     private long now = TimeUnit.HOURS.toNanos(1);
     private final List<String> logged = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final List<String> unexpected = new java.util.concurrent.CopyOnWriteArrayList<>();
     private final NullLogger logger = new NullLogger() {
         @Override
         public void logf(final group.gnometrading.logging.LogMessage msg, final String format, final Object... args) {
             logged.add(String.format(format, args));
+            if (msg == group.gnometrading.logging.LogMessage.UNKNOWN_ERROR) {
+                unexpected.add(String.format(format, args));
+            }
         }
     };
 
@@ -185,6 +189,7 @@ class FeedConnectionTest {
     private final SubjectTable table = new SubjectTable();
     private final TextProtocol protocol = new TextProtocol(table, 2);
     private final List<String> quarantined = new ArrayList<>();
+    private final List<GapReason> quarantineReasons = new ArrayList<>();
     private final FeedConnection<Sent> connection = connection(RateBudget.UNLIMITED);
 
     private FeedConnection<Sent> connection(final RateBudget limiter) {
@@ -205,8 +210,9 @@ class FeedConnectionTest {
                 limiter,
                 new FeedListener() {
                     @Override
-                    public void onQuarantined(final Subject subject) {
+                    public void onQuarantined(final Subject subject, final GapReason reason) {
                         quarantined.add(subject.key());
+                        quarantineReasons.add(reason);
                     }
                 });
         made.assumeConnected();
@@ -304,6 +310,8 @@ class FeedConnectionTest {
 
         assertEquals(SubjectState.QUARANTINED, a.state());
         assertEquals(List.of("A"), quarantined);
+        assertEquals(List.of(GapReason.SEQUENCE), quarantineReasons);
+        assertTrue(unexpected.isEmpty(), "the feeds log the quarantine with its retry: " + unexpected);
         assertEquals("unsub A", transport.sent.commands.get(transport.sent.commands.size() - 1));
         assertEquals(0, connection.size());
     }

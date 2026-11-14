@@ -3,6 +3,7 @@ package group.gnometrading.gateways.venues.polymarket.us;
 import group.gnometrading.gateways.account.lane.LaneCommand;
 import group.gnometrading.gateways.account.lane.LaneVenue;
 import group.gnometrading.gateways.account.lane.RequestShape;
+import group.gnometrading.gateways.account.lane.RequestTiming;
 import group.gnometrading.gateways.account.reader.PublishedMap;
 import group.gnometrading.gateways.orders.CancelResult;
 import group.gnometrading.gateways.orders.LookupResult;
@@ -24,6 +25,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.function.ToIntFunction;
 
 /**
  * Polymarket US for an account's lane: one key's orders on any of its markets. The venue has no client order id and
@@ -38,6 +40,7 @@ public final class PolymarketUsLaneVenue implements LaneVenue<PolymarketUsMarket
     // IOCs held at once; more than this and every IOC is refused until some end. They end within a round trip, unless
     // a lost answer left their outcome unknown.
     private static final int MAX_HELD_IMMEDIATE = 64;
+    private static final int MICROS_PER_MILLI = 1_000;
     private static final int MAX_LOGGED_REASON_CHARS = 500;
     private static final byte[] HEADER_ACCESS_KEY = ascii(PolymarketUsAuthSigner.ACCESS_KEY_HEADER);
     private static final byte[] HEADER_TIMESTAMP = ascii(PolymarketUsAuthSigner.TIMESTAMP_HEADER);
@@ -51,6 +54,8 @@ public final class PolymarketUsLaneVenue implements LaneVenue<PolymarketUsMarket
     private static final byte[] CANCEL_MARKET_SLUG = ascii("\",\"marketSlug\":\"");
     private static final byte[] CANCEL_END = ascii("\"}");
 
+    // Where the lane's responses keep the header; -1 until bound, or if they don't capture it.
+    private int serverLatencyIndex = -1;
     private final Logger logger;
     private final PolymarketUsAuthSigner signer;
     private final PolymarketUsOrderCodec codec = new PolymarketUsOrderCodec();
@@ -248,6 +253,23 @@ public final class PolymarketUsLaneVenue implements LaneVenue<PolymarketUsMarket
         request.header(HEADER_ACCESS_KEY, this.signer.apiKeyBytes())
                 .header(HEADER_TIMESTAMP, this.signer.timestampBytes(), 0, this.signer.timestampLength())
                 .header(HEADER_SIGNATURE, this.signer.signatureBytes(), 0, this.signer.signatureLength());
+    }
+
+    @Override
+    public void bindHeaders(final ToIntFunction<String> indexOf) {
+        this.serverLatencyIndex = indexOf.applyAsInt(PolymarketUsVenue.SERVER_LATENCY_HEADER);
+    }
+
+    /** Polymarket US says how long it took over each request, in whole milliseconds. */
+    @Override
+    public void readTiming(final HTTPResponse response, final RequestTiming timing) {
+        if (this.serverLatencyIndex < 0) {
+            return;
+        }
+        final long millis = response.headerAsLong(this.serverLatencyIndex, -1);
+        if (millis >= 0 && millis <= Integer.MAX_VALUE / MICROS_PER_MILLI) {
+            timing.venueProcessingMicros = (int) millis * MICROS_PER_MILLI;
+        }
     }
 
     @Override

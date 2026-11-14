@@ -14,6 +14,12 @@ import java.util.List;
 /** Polymarket US: what its feed and its order entry need to know about it. */
 public final class PolymarketUsVenue {
 
+    /**
+     * Its own processing time for a request, in whole milliseconds, on every answer (probed on order writes 2026-11-14:
+     * a round trip less this was steady at the network's).
+     */
+    public static final String SERVER_LATENCY_HEADER = "x-pm-server-latency";
+
     public static final VenueFeed FEED = new VenueFeed(
             PolymarketUsVenue::subjectOf,
             1000,
@@ -75,6 +81,6 @@ public final class PolymarketUsVenue {
                                 HTTPMethod.GET, "/v1/portfolio/activities", null, "key", 1, RequestClass.CATCH_UP),
                         new VenueRateLimits.Rule(HTTPMethod.GET, "", null, "key", 1, RequestClass.BACKGROUND),
                         new VenueRateLimits.Rule(null, "", null, "key", 1, RequestClass.NEW)),
-                List.of(VenueRateLimits.RETRY_AFTER));
+                List.of(VenueRateLimits.RETRY_AFTER, SERVER_LATENCY_HEADER));
     }
 }

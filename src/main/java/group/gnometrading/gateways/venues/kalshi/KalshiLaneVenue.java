@@ -3,6 +3,7 @@ package group.gnometrading.gateways.venues.kalshi;
 import group.gnometrading.gateways.account.lane.LaneCommand;
 import group.gnometrading.gateways.account.lane.LaneVenue;
 import group.gnometrading.gateways.account.lane.RequestShape;
+import group.gnometrading.gateways.account.lane.RequestTiming;
 import group.gnometrading.gateways.account.reader.PublishedMap;
 import group.gnometrading.gateways.orders.CancelResult;
 import group.gnometrading.gateways.orders.LookupResult;
@@ -36,6 +37,7 @@ public final class KalshiLaneVenue implements LaneVenue<KalshiMarket> {
 
     private static final String LOOKUP_PATH = "/trade-api/v2/portfolio/orders";
     private static final long LOOKUP_WINDOW_SECONDS = 60;
+    private static final long NANOS_PER_MILLI = 1_000_000L;
     private static final int MAX_LOGGED_REASON_CHARS = 500;
     private static final byte[] HEADER_KEY = ascii(KalshiOrderCodec.HEADER_KEY);
     private static final byte[] HEADER_TIMESTAMP = ascii(KalshiOrderCodec.HEADER_TIMESTAMP);
@@ -244,6 +246,15 @@ public final class KalshiLaneVenue implements LaneVenue<KalshiMarket> {
      * A 503 is Kalshi refusing every order, the shard or exchange not trading: nothing was placed, so it is a refusal,
      * not a lost answer. A 409 is its answer to a client order id it already has.
      */
+    /** Kalshi's create, cancel and amend answers say when its matching engine processed them, as epoch {@code ts_ms}. */
+    @Override
+    public void readTiming(final HTTPResponse response, final RequestTiming timing) {
+        final long millis = this.codec.tsMillis(response.getBody());
+        if (millis > 0) {
+            timing.venueTsNanos = millis * NANOS_PER_MILLI;
+        }
+    }
+
     @Override
     public SubmitResult readSubmit(final OrderContext ctx, final HTTPResponse response) {
         if (response.isSuccess()) {

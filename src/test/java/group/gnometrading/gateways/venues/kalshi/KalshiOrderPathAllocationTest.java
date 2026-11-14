@@ -3,6 +3,8 @@ package group.gnometrading.gateways.venues.kalshi;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import group.gnometrading.gateways.orders.OrderPathTestKit;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -14,6 +16,21 @@ class KalshiOrderPathAllocationTest {
     private static final int MEASURED = 10_000;
 
     private final KalshiOrderPath path = new KalshiOrderPath();
+    private final KalshiOrderCodec codec = new KalshiOrderCodec("maker");
+    private final ByteBuffer answer =
+            ByteBuffer.wrap("{\"order_id\":\"o-1\",\"reduced_by\":\"1.00\",\"ts_ms\":1794671966452}"
+                    .getBytes(StandardCharsets.US_ASCII));
+    private long tsTotal;
+
+    @Test
+    void readingAnAnswersVenueTimeDoesNotAllocate() {
+        OrderPathTestKit.assertNoAllocation("Kalshi answer ts_ms", WARM_UP, MEASURED, this::readTs);
+        assertEquals((WARM_UP + MEASURED) * 1794671966452L, this.tsTotal);
+    }
+
+    private void readTs() {
+        this.tsTotal += this.codec.tsMillis(this.answer);
+    }
 
     @Test
     void buildingAnOrderAndReadingItsAnswerDoesNotAllocate() {

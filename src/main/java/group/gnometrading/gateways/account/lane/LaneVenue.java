@@ -7,6 +7,7 @@ import group.gnometrading.gateways.orders.SubmitResult;
 import group.gnometrading.networking.http.HTTPRequestWriter;
 import group.gnometrading.networking.http.HTTPResponse;
 import group.gnometrading.schemas.RejectReason;
+import java.util.function.ToIntFunction;
 
 /**
  * What an {@link AccountLane} needs from a venue: building, signing and reading its requests, on top of the venue's
@@ -91,6 +92,19 @@ public interface LaneVenue<M> {
      * @return the refusal's reason, or null if accepted
      */
     RejectReason readAmend(OrderContext ctx, long newSize, HTTPResponse response, AmendAnswer out);
+
+    /**
+     * Told once, as its lane is built, where the lane's connections keep each response header ({@code indexOf} gives
+     * -1 for one they don't capture), for the headers {@link #readTiming} reads.
+     */
+    default void bindHeaders(final ToIntFunction<String> indexOf) {}
+
+    /**
+     * What the venue's answer says of itself, into {@code timing}'s venue fields: its own time for the request, and how
+     * long it says it took. Called for every answer to a submit, cancel or amend (a batch's once per entry), before it
+     * is read; must not move the body's position.
+     */
+    default void readTiming(final HTTPResponse response, final RequestTiming timing) {}
 
     /** For an order that ends on the venue's word: all it will ever fill, as its accepted submit said. */
     default long finalFillQty(final OrderContext ctx) {

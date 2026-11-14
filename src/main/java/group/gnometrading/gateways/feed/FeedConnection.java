@@ -577,15 +577,16 @@ public final class FeedConnection<C> implements SubjectHost {
         if (reason == GapReason.CONNECTION_SEQUENCE) {
             countConnectionGap(atNanos, now);
         } else if (reason != GapReason.PROBE_MISMATCH && countResync(note, now)) {
+            // The feeds log the quarantine with its retry, once a market; this line only says which connection.
             logger.logf(
-                    LogMessage.UNKNOWN_ERROR,
+                    LogMessage.DEBUG,
                     "%s: quarantined %s after %d resyncs (%s)",
                     name,
                     subject.key(),
                     MAX_RESYNCS,
                     reason);
             takeOff(subject, SubjectState.QUARANTINED);
-            listener.onQuarantined(subject);
+            listener.onQuarantined(subject, reason);
             return;
         }
         logger.logf(LogMessage.DEBUG, "%s: resyncing %s (%s)", name, subject.key(), reason);

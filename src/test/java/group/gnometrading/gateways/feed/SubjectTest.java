@@ -337,6 +337,26 @@ class SubjectTest {
     }
 
     @Test
+    void aReconnectsBookGoesOutAfterARollThatCountedItAsSent() throws Exception {
+        Subject standIn = Subject.standIn("TICKER", 64, 128);
+        // A quiet market: the old connection reconnected twice and was sent its unchanged book each time; the stand-in
+        // was sent it once.
+        for (int i = 0; i < 3; i++) {
+            book(subject, true, 0.40, 5);
+        }
+        book(standIn, true, 0.40, 5);
+        subject.adoptFrom(standIn, 9);
+        subject.disconnected(10);
+        book(subject, true, 0.40, 5);
+
+        List<Mbp10Schema> records = yes.drain();
+        assertEquals(5, records.size(), "three books, the flagged one, and the reconnect's");
+        assertTrue(records.get(3).decoder.flags().badData());
+        assertFalse(records.get(4).decoder.flags().badData(), "readers aren't left on the flagged book");
+        assertEquals(SubjectState.LIVE, subject.state());
+    }
+
+    @Test
     void aStandInBehindTheOldConnectionDoesntPublishWhatTheOldOneAlreadyDid() throws Exception {
         Subject standIn = Subject.standIn("TICKER", 64, 128);
         book(subject, true, 0.40, 1);

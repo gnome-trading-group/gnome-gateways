@@ -3,6 +3,7 @@ package group.gnometrading.gateways.venues.polymarket.intl;
 import group.gnometrading.gateways.account.lane.LaneCommand;
 import group.gnometrading.gateways.account.lane.LaneVenue;
 import group.gnometrading.gateways.account.lane.RequestShape;
+import group.gnometrading.gateways.account.lane.RequestTiming;
 import group.gnometrading.gateways.account.reader.PublishedMap;
 import group.gnometrading.gateways.orders.CancelResult;
 import group.gnometrading.gateways.orders.LookupResult;
@@ -16,9 +17,12 @@ import group.gnometrading.networking.http.HTTPRequestWriter;
 import group.gnometrading.networking.http.HTTPResponse;
 import group.gnometrading.schemas.OrderType;
 import group.gnometrading.schemas.RejectReason;
+import group.gnometrading.strings.GnomeString;
 import group.gnometrading.strings.MutableString;
+import group.gnometrading.utils.AsciiParsing;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.function.ToIntFunction;
 
 /**
  * Polymarket International for an account's lane: one wallet's orders on any of its markets, each signed by the
@@ -27,6 +31,8 @@ import java.nio.charset.StandardCharsets;
  */
 public final class PolymarketIntlLaneVenue implements LaneVenue<PolymarketIntlMarket> {
 
+    private static final int MICROS_PER_MILLI = 1_000;
+    private static final byte[] DUR = "dur=".getBytes(StandardCharsets.US_ASCII);
     private static final byte[] HEADER_API_KEY = ascii(PolymarketIntlAuthHeaders.API_KEY_HEADER);
     private static final byte[] HEADER_SIGNATURE = ascii(PolymarketIntlAuthHeaders.SIGNATURE_HEADER);
     private static final byte[] HEADER_TIMESTAMP = ascii(PolymarketIntlAuthHeaders.TIMESTAMP_HEADER);
@@ -35,6 +41,8 @@ public final class PolymarketIntlLaneVenue implements LaneVenue<PolymarketIntlMa
     private static final int MAX_LOGGED_REASON_CHARS = 500;
     private static final long MILLIS_PER_SECOND = 1_000L;
 
+    // Where the lane's responses keep the header; -1 until bound, or if they don't capture it.
+    private int serverTimingIndex = -1;
     private final Logger logger;
     private final PolymarketIntlAuthHeaders auth;
     private final PolymarketIntlOrderCodec codec;
@@ -192,6 +200,50 @@ public final class PolymarketIntlLaneVenue implements LaneVenue<PolymarketIntlMa
                 .header(HEADER_TIMESTAMP, this.auth.timestampBytes(), 0, this.auth.timestampLength())
                 .header(HEADER_PASSPHRASE, this.auth.passphraseBytes())
                 .header(HEADER_ADDRESS, this.auth.addressBytes());
+    }
+
+    @Override
+    public void bindHeaders(final ToIntFunction<String> indexOf) {
+        this.serverTimingIndex = indexOf.applyAsInt(PolymarketIntlVenue.SERVER_TIMING_HEADER);
+    }
+
+    /** Polymarket Intl's Cloudflare edge and worker say how long they took over each request. */
+    @Override
+    public void readTiming(final HTTPResponse response, final RequestTiming timing) {
+        if (this.serverTimingIndex >= 0 && response.hasHeader(this.serverTimingIndex)) {
+            final long micros = serverTimingMicros(response.header(this.serverTimingIndex));
+            if (micros >= 0 && micros <= Integer.MAX_VALUE) {
+                timing.venueProcessingMicros = (int) micros;
+            }
+        }
+    }
+
+    /**
+     * The sum of a {@code server-timing} header's {@code dur=} values (milliseconds, decimals allowed), in microseconds;
+     * -1 if it has none.
+     */
+    static long serverTimingMicros(final GnomeString header) {
+        final byte[] bytes = header.getBytes();
+        final int end = header.offset() + header.length();
+        long total = -1;
+        int at = header.offset();
+        while (at <= end - DUR.length) {
+            if (!AsciiParsing.equalsIgnoreCase(bytes, at, at + DUR.length, DUR)) {
+                at++;
+                continue;
+            }
+            final int start = at + DUR.length;
+            int stop = start;
+            while (stop < end && (AsciiParsing.isDigit(bytes[stop]) || bytes[stop] == '.')) {
+                stop++;
+            }
+            final long micros = AsciiParsing.parseFixedPoint(bytes, start, stop, MICROS_PER_MILLI, -1);
+            if (micros >= 0) {
+                total = Math.max(total, 0) + micros;
+            }
+            at = Math.max(stop, start);
+        }
+        return total;
     }
 
     @Override

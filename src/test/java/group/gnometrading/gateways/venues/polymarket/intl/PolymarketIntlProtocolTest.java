@@ -166,11 +166,13 @@ class PolymarketIntlProtocolTest {
         assertEquals(SubjectState.LIVE, kit.table.get("token-yes").state());
         assertFalse(yes.last().decoder.flags().badData());
 
-        // A bid the book was never told about: doubted after one match, found wrong after the next.
+        // A bid the book was never told about: doubted after one match, found wrong once a match 10 ms on still
+        // disagrees.
         frame(changes("1782753357400", change("token-yes", "BUY", "0.07", "6", "0.095", "0.10")));
         frame(changes("1782753357401", change("token-yes", "SELL", "0.11", "3", "0.095", "0.10")));
-        assertEquals(SubjectState.LIVE, kit.table.get("token-yes").state(), "one disagreement is only a doubt");
-        frame(changes("1782753357402", change("token-yes", "SELL", "0.11", "4", "0.095", "0.10")));
+        frame(changes("1782753357410", change("token-yes", "SELL", "0.11", "4", "0.095", "0.10")));
+        assertEquals(SubjectState.LIVE, kit.table.get("token-yes").state(), "1 ms on is still only a doubt");
+        frame(changes("1782753357411", change("token-yes", "SELL", "0.11", "5", "0.095", "0.10")));
         Subject subject = kit.table.get("token-yes");
         assertEquals(SubjectState.STALE, subject.state());
         assertTrue(yes.last().decoder.flags().badData());
@@ -185,6 +187,29 @@ class PolymarketIntlProtocolTest {
         frame(changes("1782753357300", change("token-yes", "BUY", "0.08", "0", "0.08", "0.10")));
         frame(changes("1782753357301", change("token-yes", "BUY", "0.08", "0", "0.07", "0.10")));
         frame(changes("1782753357302", change("token-yes", "SELL", "0.11", "2", "0.07", "0.10")));
+
+        assertEquals(SubjectState.LIVE, kit.table.get("token-yes").state());
+        assertTrue(kit.resyncs.isEmpty());
+        assertFalse(yes.last().decoder.flags().badData());
+    }
+
+    @Test
+    void pricesLaggingAMassCancelAreNotAGap() throws Exception {
+        frame("["
+                + book(
+                        "token-yes",
+                        "1782753357257",
+                        level("0.05", "9") + "," + level("0.06", "5") + "," + level("0.07", "4") + ","
+                                + level("0.08", "3"),
+                        level("0.11", "7") + "," + level("0.10", "6"))
+                + "]");
+        // As Polymarket sends a market maker's quotes pulled at once: each removal quoting the best from a change or
+        // two earlier, over three milliseconds, until the prices catch up.
+        frame(changes("1782753357300", change("token-yes", "BUY", "0.08", "0", "0.08", "0.10")));
+        frame(changes("1782753357301", change("token-yes", "BUY", "0.07", "0", "0.08", "0.10")));
+        frame(changes("1782753357302", change("token-yes", "BUY", "0.06", "0", "0.07", "0.10")));
+        frame(changes("1782753357302", change("token-yes", "BUY", "0.07", "0", "0.05", "0.10")));
+        frame(changes("1782753357303", change("token-yes", "SELL", "0.12", "2", "0.05", "0.10")));
 
         assertEquals(SubjectState.LIVE, kit.table.get("token-yes").state());
         assertTrue(kit.resyncs.isEmpty());

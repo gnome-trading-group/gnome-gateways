@@ -263,6 +263,31 @@ public final class KalshiOrderCodec {
     }
 
     /**
+     * The top-level {@code ts_ms} of a create, cancel or amend answer (when the matching engine processed it, epoch
+     * milliseconds), or -1; leaves the body where it was, for the answer's own read.
+     */
+    public long tsMillis(final ByteBuffer body) {
+        if (body == null || !body.hasRemaining()) {
+            return -1;
+        }
+        final int position = body.position();
+        long millis = -1;
+        try (var root = this.jsonDecoder.wrap(body);
+                var obj = root.asObject()) {
+            while (obj.hasNextKey()) {
+                try (var entry = obj.nextKey()) {
+                    if (entry.getName().equals("ts_ms")) {
+                        millis = entry.asLong();
+                    }
+                }
+            }
+        } finally {
+            body.position(position);
+        }
+        return millis;
+    }
+
+    /**
      * Scans an order listing page ({@code {"orders":[...]}}) for the order's client id, taking the venue's order id
      * into the context if found.
      */

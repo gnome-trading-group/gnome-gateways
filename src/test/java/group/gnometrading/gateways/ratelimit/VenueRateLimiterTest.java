@@ -412,7 +412,7 @@ class VenueRateLimiterTest {
     @Test
     void capturedHeadersAreTheOnesTheLimiterReads() {
         assertEquals(
-                List.of("Retry-After", "Poly-RateLimit-Remaining", "Poly-RateLimit-Reset"),
+                List.of("Retry-After", "Poly-RateLimit-Remaining", "Poly-RateLimit-Reset", "server-timing"),
                 List.of(PolymarketIntlVenue.rateLimits().capturedHeaders()));
         assertEquals(List.of("Retry-After"), List.of(KalshiVenue.rateLimits().capturedHeaders()));
     }

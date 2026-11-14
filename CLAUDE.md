@@ -46,7 +46,8 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
     `Subject` tracks where its last book and trade fell in the venue's sequence (venue time, and how many came at that
     time; every connection gets the same sequence, measured on all five venues), a stand-in keeps its last 128 records
     in a `ReplayLog`, and `Subject.adoptFrom` publishes those past the old connection's last ones, or, if the stand-in
-    was behind, holds back its next records up to there. The new connection's protocol subscribed the stand-in, so
+    was behind, holds back its next records up to there (until the market goes out flagged bad: then its next trusted
+    book always goes out, as Polymarket US resends an unchanged book on every reconnect, so connections' counts differ). The new connection's protocol subscribed the stand-in, so
     `VenueProtocol.adopted` hands it the real market: a protocol that keeps markets between commands (Polymarket US's
     groups, Hyperliquid's due replays) swaps it, or a later unsubscribe would miss it. Hyperliquid and Polymarket US
     sample whole books per connection, so there "nothing lost" means no hole, not every state. `Feeds`: streams to
@@ -71,7 +72,13 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
     wait; a cancel the venue failed to answer sent again up to 3 times in 2 s; every decision told to its
     `Admissions`, with each request's timings: how long a command stamped `LaneCommand.enqueuedNanos` (the lane's
     monotonic clock) waited for the lane (`taken`), how long writing and signing it took (`sent`), and the venue's
-    answer (`answered`). `FairQueue` (in `account/admission/`) is start-time fair queuing over `AdmissionSession`s (the queued session charged least, cost
+    answer (`answered`). Each session request also gets one `timed(RequestTiming)` when it is over (per request on
+    the wire, resends and cancel retries included, and once for one refused unsent; lookups not): its ingress, taken,
+    decided, written and answered times on the lane's clock, `answerSlackNanos` (how long before finding the answer
+    the lane last looked: the most the answer time can be late), its outcome, the HTTP status, and what the venue's
+    answer says of itself through `LaneVenue.readTiming` (Kalshi's `ts_ms` from the body; Polymarket US's
+    `x-pm-server-latency` and Polymarket Intl's Cloudflare `server-timing` edge + worker, headers the venue's
+    `capturedHeaders` list and `bindHeaders` locates on the lane's connections, skipped where not captured). `FairQueue` (in `account/admission/`) is start-time fair queuing over `AdmissionSession`s (the queued session charged least, cost
     over weight, goes next; one back after over a second idle starts level; one back sooner, as when its queued
     orders all expired between two of the venue's slots, keeps its place, but never more than a second of the budget
     behind the level), at most `FairQueue.MAX_SESSIONS` per account. A session's `CANCEL_SESSION` fences it: its new
@@ -132,7 +139,8 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
 - Every venue snapshots over its socket. Gap detection: a bad book goes `STALE`, is published once flagged badData, and
   only that market is resynced on its connection. Kalshi checks `seq` over every frame of the connection (a gap
   resyncs all its markets, hence 250 per connection), Lighter each market's nonce chain, Polymarket Intl the venue's
-  best bid/ask against the book (wrong only when two completed matches in a row disagree). Hyperliquid and Polymarket
+  best bid/ask against the book (wrong only when a completed match still disagrees 10 ms of venue time after
+  one first did; its prices lag a mass cancel by up to 2 ms). Hyperliquid and Polymarket
   US send whole books. The REST probe catches the rest.
 - Trades a subscribe replays are never published: Lighter answers with its last 50 (`subscribed/trade`, dropped once
   the frame's type, which comes last, is known), Hyperliquid with its last 30 (the trades frame right after a trades
@@ -184,7 +192,8 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
   `SOCKET_CONNECT_FAILED` logs the cause chain; a 401/403 on Kalshi or Polymarket US usually means a bad or revoked key
   in the secret. `GatewayConnectFailedException` means all connect cycles failed; check venue status and credentials.
 - Stale book: `SOCKET_SILENCE_TIMED_OUT` forces a reconnect after a connection's silence. "resyncing <market> (<reason>)"
-  is one market resynced; "quarantined <market> after 3 resyncs" takes it off for 5, 15, then 60 minutes; "sent no
+  is one market resynced; "<source> <market> quarantined after 3 resyncs (<reason>), retrying in N minutes" takes it off for 5, 15, then
+  60 minutes, the one `UNKNOWN_ERROR` a quarantine logs (the connection's own line is `DEBUG`); "sent no
   book" means it is marked `EMPTY` and rechecked every 15 minutes. The prober logs mismatches against the venue's REST
   book at `DEBUG` (the resync handles them; a market that keeps drifting is quarantined). A shard's `HEARTBEAT` lines and a session's heartbeat (`reconnecting`, `resyncsLast5m` per listing) show it.
 - Rejected orders: `ORDER_REJECTED_BY_VENUE` carries the venue's own text. Kalshi 503 while its shard isn't trading
