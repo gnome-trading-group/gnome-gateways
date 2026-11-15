@@ -22,6 +22,7 @@ final class ReplayLog {
     private final long[] times;
     private final int[] indexes;
     private final long[] receives;
+    private final long[] sents;
     private final long[] sequences;
     private final boolean[] snapshots;
     private final long[] prices;
@@ -41,6 +42,7 @@ final class ReplayLog {
         times = new long[capacity];
         indexes = new int[capacity];
         receives = new long[capacity];
+        sents = new long[capacity];
         sequences = new long[capacity];
         snapshots = new boolean[capacity];
         prices = new long[capacity];
@@ -57,10 +59,11 @@ final class ReplayLog {
             final long time,
             final int index,
             final Book book,
+            final long sentNanos,
             final long receiveNanos,
             final long sequence,
             final boolean snapshot) {
-        final int slot = next(BOOK, time, index, receiveNanos);
+        final int slot = next(BOOK, time, index, sentNanos, receiveNanos);
         sequences[slot] = sequence;
         snapshots[slot] = snapshot;
         bidDepths[slot] = keep(book.bids(), slot * 2 * LEVELS);
@@ -73,18 +76,20 @@ final class ReplayLog {
             final long price,
             final long size,
             final Side aggressor,
+            final long sentNanos,
             final long receiveNanos) {
-        final int slot = next(TRADE, time, index, receiveNanos);
+        final int slot = next(TRADE, time, index, sentNanos, receiveNanos);
         prices[slot] = price;
         sizes[slot] = size;
         sides[slot] = aggressor;
     }
 
-    private int next(final byte kind, final long time, final int index, final long receiveNanos) {
+    private int next(final byte kind, final long time, final int index, final long sentNanos, final long receiveNanos) {
         final int slot = (int) (written++ % capacity);
         kinds[slot] = kind;
         times[slot] = time;
         indexes[slot] = index;
+        sents[slot] = sentNanos;
         receives[slot] = receiveNanos;
         return slot;
     }
@@ -128,6 +133,11 @@ final class ReplayLog {
 
     long receive(final int slot) {
         return receives[slot];
+    }
+
+    /** When the venue sent the record's message, or none if it doesn't say. */
+    long sent(final int slot) {
+        return sents[slot];
     }
 
     long sequence(final int slot) {

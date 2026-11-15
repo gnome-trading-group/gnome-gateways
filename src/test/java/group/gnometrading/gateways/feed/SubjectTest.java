@@ -103,6 +103,58 @@ class SubjectTest {
     }
 
     @Test
+    void booksAndTradesCarryWhenTheVenueSentThemAndNothingWhereItDoesntSay() throws Exception {
+        subject.beginSnapshot();
+        subject.level(Side.Bid, px(0.40), 10, 1);
+        subject.endSnapshot(1_000, 1_000, 3_000, 7);
+        subject.set(Side.Bid, px(0.41), 10, 1);
+        subject.endUpdate(1_100, 1_400, 3_100, 8);
+        subject.trade(px(0.41), 5, Side.Bid, 1_200, 1_500, 3_200);
+        subject.set(Side.Bid, px(0.42), 10, 1);
+        subject.endUpdate(1_300, 3_300, 9);
+
+        List<Mbp10Schema> records = yes.drain();
+        assertEquals(1_000, records.get(0).decoder.timestampSent());
+        assertEquals(1_400, records.get(1).decoder.timestampSent());
+        assertEquals(1_500, records.get(2).decoder.timestampSent());
+        assertEquals(3_200, records.get(2).decoder.timestampRecv());
+        assertEquals(Subject.NO_SENT_TIME, records.get(3).decoder.timestampSent(), "a venue that doesn't say");
+    }
+
+    @Test
+    void aBookRepeatedRatherThanSentByTheVenueCarriesNoSendTime() throws Exception {
+        subject.beginSnapshot();
+        subject.level(Side.Bid, px(0.40), 10, 1);
+        subject.endSnapshot(1_000, 1_000, 3_000, 7);
+        subject.republish(3_050);
+        subject.stale(GapReason.SEQUENCE, 3_100);
+
+        List<Mbp10Schema> records = yes.drain();
+        assertEquals(3, records.size());
+        assertEquals(Subject.NO_SENT_TIME, records.get(1).decoder.timestampSent(), "a joining stream's republish");
+        assertTrue(records.get(2).decoder.flags().badData());
+        assertEquals(Subject.NO_SENT_TIME, records.get(2).decoder.timestampSent(), "a bad-data re-flag");
+    }
+
+    @Test
+    void aRollsReplayedRecordsKeepWhenTheVenueSentThem() throws Exception {
+        Subject standIn = Subject.standIn("TICKER", 64, 128);
+        book(subject, true, 0.40, 1);
+        book(standIn, true, 0.40, 1);
+        standIn.set(Side.Bid, px(0.42), 10, 1);
+        standIn.endUpdate(3, 30, 300, 8);
+        standIn.trade(px(0.46), 5, Side.Bid, 4, 40, 400);
+        yes.drain().clear();
+
+        assertEquals(2, subject.adoptFrom(standIn, 900));
+
+        List<Mbp10Schema> replayed = yes.drain();
+        assertEquals(30, replayed.get(0).decoder.timestampSent());
+        assertEquals(300, replayed.get(0).decoder.timestampRecv());
+        assertEquals(40, replayed.get(1).decoder.timestampSent());
+    }
+
+    @Test
     void aStaleBookGoesOutOnceFlaggedAndAsksForAResync() throws Exception {
         snapshot();
         subject.stale(GapReason.SEQUENCE, 3_000);

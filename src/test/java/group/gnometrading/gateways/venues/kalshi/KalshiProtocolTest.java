@@ -183,6 +183,41 @@ class KalshiProtocolTest {
     }
 
     @Test
+    void deltasTradesAndSnapshotsCarryWhenKalshiSentThem() throws Exception {
+        subscribed();
+        snapshot(1);
+        assertEquals(1699999999000L * 1_000_000L, yes.last().decoder.timestampSent());
+
+        // As Kalshi sends them: the frame's send time after its message.
+        frame("{\"type\":\"orderbook_delta\",\"sid\":1,\"seq\":2,\"msg\":{\"market_ticker\":\"" + TICKER
+                + "\",\"price_dollars\":\"0.550\",\"delta_fp\":\"50.00\",\"side\":\"yes\",\"ts_ms\":1700000000000},"
+                + "\"sending_ts_ms\":1700000000004}");
+        Mbp10Schema book = yes.last();
+        assertEquals(size("150"), book.decoder.bidSize0());
+        assertEquals(1700000000000L * 1_000_000L, book.decoder.timestampEvent());
+        assertEquals(1700000000004L * 1_000_000L, book.decoder.timestampSent());
+
+        frame("{\"type\":\"trade\",\"sid\":2,\"seq\":1,\"msg\":{\"market_ticker\":\"" + TICKER
+                + "\",\"yes_price_dollars\":\"0.5500\",\"count_fp\":\"3.00\",\"taker_book_side\":\"bid\","
+                + "\"ts_ms\":1700000000123},\"sending_ts_ms\":1700000000125}");
+        Mbp10Schema trade = yes.last();
+        assertEquals(Action.Trade, trade.decoder.action());
+        assertEquals(1700000000123L * 1_000_000L, trade.decoder.timestampEvent());
+        assertEquals(1700000000125L * 1_000_000L, trade.decoder.timestampSent());
+    }
+
+    @Test
+    void aFrameWithNoSendTimeLeavesItsRecordsWithout() throws Exception {
+        subscribed();
+        snapshot(1);
+        delta(2, "0.550", "50.00", "yes");
+        trade(1, "0.5500", "3.00", "bid");
+
+        assertEquals(Mbp10Encoder.timestampSentNullValue(), yes.last().decoder.timestampSent());
+        assertEquals(Action.Trade, yes.last().decoder.action());
+    }
+
+    @Test
     void deltasChangeTheirLevelAndCarryTheVenueTime() throws Exception {
         subscribed();
         snapshot(1);

@@ -147,6 +147,15 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
   `subscriptionResponse`; its `tid`s are kept, since its last block can come again live). Never by time: Hyperliquid
   can deliver a live trade a second after its time. Kalshi and both Polymarkets replay nothing. Hyperliquid books are asked
   for `fast` (about every half second instead of every ten); its unsubscribe must say `fast` too or it matches nothing.
+- Records' `timestampSent` is when the venue says it sent the message, where it does: Kalshi's `sending_ts_ms`
+  (top-level, after `msg`, so a Kalshi delta, trade or snapshot is published once its whole frame is read), and on
+  Lighter books the envelope `timestamp`, when its API server generated the frame. Null for every other venue, and on records that repeat no venue message (a bad-data re-flag, a joining stream's republish, a
+  roll's snapshot of the stand-in's book); a roll's replayed records keep theirs (`ReplayLog`).
+- Lighter times (docs.lighter.xyz/developers/reference/timestamps): a book's event time is `last_updated_at` (µs, the
+  sequencer's execution time of the batch's latest change; the envelope `timestamp` when absent); a trade's is its
+  `transaction_time` (µs, when it executed; its block's `timestamp` when missing or 0). Before 2026-11 books carried
+  the frame time (~22 ms late at the median) and trades the block time (~50 ms early), so stored Lighter data from
+  before the fix is off by that much.
 - Kalshi: `:yes`/`:no` listings share one subject (the ticker); a `:no` listing's book and trades are its complement
   (price `1 - p`, sides flipped), as are its orders. Market orders are refused (Kalshi needs a price; the OMS sends
   priced IOCs).

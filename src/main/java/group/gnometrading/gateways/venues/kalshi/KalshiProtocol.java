@@ -234,8 +234,11 @@ public final class KalshiProtocol implements VenueProtocol<WebSocketChannel> {
     private boolean sequenceChecked;
     private long receiveNanos;
     private long sentNanos;
-    // A snapshot ends once the whole frame is read: its only time, the frame's send time, comes after its levels.
+    // A snapshot ends, and a delta or trade is published, once the whole frame is read: the frame's send time comes
+    // after its message.
     private Subject snapshotSubject;
+    private Subject updatedSubject;
+    private Subject tradedSubject;
 
     @Override
     public void onFrame(final ByteBuffer frame, final long receive) {
@@ -246,6 +249,8 @@ public final class KalshiProtocol implements VenueProtocol<WebSocketChannel> {
         sequenceChecked = false;
         sentNanos = NO_TIME;
         snapshotSubject = null;
+        updatedSubject = null;
+        tradedSubject = null;
         try (var node = decoder.wrap(frame);
                 var object = node.asObject()) {
             while (object.hasNextKey()) {
@@ -270,7 +275,13 @@ public final class KalshiProtocol implements VenueProtocol<WebSocketChannel> {
         checkSequence();
         if (snapshotSubject != null) {
             // Kalshi's snapshot carries no time of its own; it is the book as of when Kalshi sent it.
-            snapshotSubject.endSnapshot(sentNanos, receiveNanos, NO_SEQUENCE);
+            snapshotSubject.endSnapshot(sentNanos, sentNanos, receiveNanos, NO_SEQUENCE);
+        }
+        if (updatedSubject != null) {
+            updatedSubject.endUpdate(timestamp, sentNanos, receiveNanos, NO_SEQUENCE);
+        }
+        if (tradedSubject != null) {
+            tradedSubject.trade(price, amount, side, timestamp, sentNanos, receiveNanos);
         }
     }
 
@@ -460,7 +471,7 @@ public final class KalshiProtocol implements VenueProtocol<WebSocketChannel> {
         if (tick > 0 && tick < TICKS_PER_DOLLAR) {
             current.add(side, tick * TICK_TO_PRICE, amount * CENTS_TO_SIZE, 1);
         }
-        current.endUpdate(timestamp, receiveNanos, NO_SEQUENCE);
+        updatedSubject = current;
     }
 
     private void deltaField(final JsonDecoder.JsonNode key) {
@@ -498,7 +509,7 @@ public final class KalshiProtocol implements VenueProtocol<WebSocketChannel> {
         }
         // A trade with a price or size that can't be read isn't published: it would read as a real trade.
         if (current != null && price >= 0 && amount >= 0) {
-            current.trade(price, amount, side, timestamp, receiveNanos);
+            tradedSubject = current;
         }
     }
 

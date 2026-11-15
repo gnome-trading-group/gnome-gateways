@@ -32,6 +32,7 @@ import org.agrona.collections.Object2LongHashMap;
 public final class LighterProtocol implements VenueProtocol<WebSocketChannel> {
 
     private static final long NANOS_PER_MILLI = 1_000_000L;
+    private static final long NANOS_PER_MICRO = 1_000L;
     private static final long UNREADABLE = -1L;
     private static final long NO_NONCE = -1L;
     private static final long NO_SEQUENCE = Mbp10Encoder.sequenceNullValue();
@@ -131,7 +132,11 @@ public final class LighterProtocol implements VenueProtocol<WebSocketChannel> {
     private boolean unreadable;
     private long nonce;
     private long beginNonce;
-    private long timestamp;
+    // The envelope's timestamp: when Lighter's API server generated the frame (its clock), the nearest it gives to a
+    // send time; and the book's last_updated_at: the sequencer's execution time of the latest order change in the
+    // batch, which is when the book changed.
+    private long frameNanos;
+    private long bookChangedNanos;
     // The frame's trades, held until its type says whether they are new or the subscribe's replay.
     private Side[] tradeSides = new Side[INITIAL_TRADES];
     private long[] tradePrices = new long[INITIAL_TRADES];
@@ -150,7 +155,8 @@ public final class LighterProtocol implements VenueProtocol<WebSocketChannel> {
         unreadable = false;
         nonce = NO_NONCE;
         beginNonce = NO_NONCE;
-        timestamp = Mbp10Encoder.timestampEventNullValue();
+        frameNanos = Subject.NO_SENT_TIME;
+        bookChangedNanos = Mbp10Encoder.timestampEventNullValue();
         trades = 0;
         tradeReplay = false;
         try (var node = decoder.wrap(frame);
@@ -166,7 +172,7 @@ public final class LighterProtocol implements VenueProtocol<WebSocketChannel> {
         }
         if (!tradeReplay) {
             for (int i = 0; i < trades; i++) {
-                current.trade(tradePrices[i], tradeSizes[i], tradeSides[i], tradeTimes[i], receiveNanos);
+                current.trade(tradePrices[i], tradeSizes[i], tradeSides[i], tradeTimes[i], frameNanos, receiveNanos);
             }
         }
     }
@@ -181,7 +187,9 @@ public final class LighterProtocol implements VenueProtocol<WebSocketChannel> {
         } else if (name.equals("trades") && current != null) {
             readTrades(key);
         } else if (name.equals("timestamp")) {
-            timestamp = key.asLong() * NANOS_PER_MILLI;
+            frameNanos = key.asLong() * NANOS_PER_MILLI;
+        } else if (name.equals("last_updated_at") && bookChangedNanos == Mbp10Encoder.timestampEventNullValue()) {
+            bookChangedNanos = key.asLong() * NANOS_PER_MICRO;
         } else if (name.equals("type")) {
             frameType(key.asString());
         }
@@ -221,10 +229,17 @@ public final class LighterProtocol implements VenueProtocol<WebSocketChannel> {
                         nonce = key.asLong();
                     } else if (name.equals("begin_nonce")) {
                         beginNonce = key.asLong();
+                    } else if (name.equals("last_updated_at")) {
+                        bookChangedNanos = key.asLong() * NANOS_PER_MICRO;
                     }
                 }
             }
         }
+    }
+
+    /** When the book changed; a frame without last_updated_at falls back to when it was generated. */
+    private long bookTime() {
+        return bookChangedNanos > 0 ? bookChangedNanos : frameNanos;
     }
 
     private void finishBook() {
@@ -234,7 +249,7 @@ public final class LighterProtocol implements VenueProtocol<WebSocketChannel> {
                 current.level(levelSides[i], levelPrices[i], levelSizes[i], 1);
             }
             nonces.put(current.key(), nonce);
-            current.endSnapshot(timestamp, receiveNanos, NO_SEQUENCE);
+            current.endSnapshot(bookTime(), frameNanos, receiveNanos, NO_SEQUENCE);
             return;
         }
         // Skipped, an update that can't be read would leave its level wrong for good.
@@ -253,7 +268,7 @@ public final class LighterProtocol implements VenueProtocol<WebSocketChannel> {
         for (int i = 0; i < levels; i++) {
             current.set(levelSides[i], levelPrices[i], levelSizes[i], 1);
         }
-        current.endUpdate(timestamp, receiveNanos, NO_SEQUENCE);
+        current.endUpdate(bookTime(), frameNanos, receiveNanos, NO_SEQUENCE);
     }
 
     /**
@@ -312,13 +327,16 @@ public final class LighterProtocol implements VenueProtocol<WebSocketChannel> {
     // The trade being read.
     private long tradePrice;
     private long tradeSize;
-    private long tradeTime;
+    // The block's opening time, shared by its trades, and the trade's own execution time, which is when it happened.
+    private long tradeBlockTime;
+    private long tradeExecutedTime;
     private Side tradeSide;
 
     private void trade(final JsonDecoder.JsonNode item) {
         tradePrice = UNREADABLE;
         tradeSize = UNREADABLE;
-        tradeTime = Mbp10Encoder.timestampEventNullValue();
+        tradeBlockTime = Mbp10Encoder.timestampEventNullValue();
+        tradeExecutedTime = 0;
         tradeSide = Side.None;
         try (var trade = item.asObject()) {
             while (trade.hasNextKey()) {
@@ -340,7 +358,8 @@ public final class LighterProtocol implements VenueProtocol<WebSocketChannel> {
         tradeSides[trades] = tradeSide;
         tradePrices[trades] = tradePrice;
         tradeSizes[trades] = tradeSize;
-        tradeTimes[trades] = tradeTime;
+        // Lighter leaves transaction_time out, or 0, when it has none.
+        tradeTimes[trades] = tradeExecutedTime > 0 ? tradeExecutedTime : tradeBlockTime;
         trades++;
     }
 
@@ -351,7 +370,9 @@ public final class LighterProtocol implements VenueProtocol<WebSocketChannel> {
         } else if (name.equals("size")) {
             tradeSize = key.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR, UNREADABLE);
         } else if (name.equals("timestamp")) {
-            tradeTime = key.asLong() * NANOS_PER_MILLI;
+            tradeBlockTime = key.asLong() * NANOS_PER_MILLI;
+        } else if (name.equals("transaction_time")) {
+            tradeExecutedTime = key.asLong() * NANOS_PER_MICRO;
         } else if (name.equals("is_maker_ask")) {
             // A resting ask was hit, so the aggressor bought.
             tradeSide = key.asBoolean() ? Side.Bid : Side.Ask;

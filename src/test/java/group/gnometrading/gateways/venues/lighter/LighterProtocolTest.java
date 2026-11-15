@@ -11,6 +11,7 @@ import group.gnometrading.gateways.feed.SubjectState;
 import group.gnometrading.gateways.feed.VenueTestKit;
 import group.gnometrading.schemas.Mbp10Schema;
 import group.gnometrading.schemas.book.Action;
+import group.gnometrading.schemas.book.Mbp10Encoder;
 import group.gnometrading.schemas.book.Side;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
@@ -125,6 +126,39 @@ class LighterProtocolTest {
 
         frame(book("0", "update", 100, 101, level("4212.00", "lots"), ""));
         assertEquals(SubjectState.STALE, kit.table.get("0").state());
+    }
+
+    @Test
+    void aBookChangedWhenTheSequencerSaysAndWasSentWhenTheApiServerBuiltTheFrame() throws Exception {
+        snapshotEth();
+        // As Lighter sends them: the batch's last change in microseconds, the frame's generation in milliseconds.
+        frame("{\"type\":\"update/order_book\",\"channel\":\"order_book:0\",\"last_updated_at\":1761585003140250,"
+                + "\"offset\":6,\"order_book\":{\"code\":0,\"asks\":[" + level("4212.00", "1.5") + "],\"bids\":[],"
+                + "\"offset\":6,\"begin_nonce\":100,\"nonce\":101,\"last_updated_at\":1761585003140250},"
+                + "\"timestamp\":1761585003166}");
+
+        Mbp10Schema record = eth.last();
+        assertEquals(size("1.5"), record.decoder.askSize0());
+        assertEquals(1761585003140250L * 1_000L, record.decoder.timestampEvent(), "when the book changed");
+        assertEquals(1761585003166L * 1_000_000L, record.decoder.timestampSent(), "when the frame was built");
+    }
+
+    @Test
+    void aTradeHappenedWhenItExecutedNotWhenItsBlockOpened() throws Exception {
+        snapshotEth();
+        frame(
+                "{\"channel\":\"trade:0\",\"trades\":[{\"price\":\"4212.50\",\"size\":\"0.1\",\"timestamp\":1761585003200,"
+                        + "\"transaction_time\":1761585003232065,\"is_maker_ask\":true},"
+                        + "{\"price\":\"4212.75\",\"size\":\"0.2\",\"timestamp\":1761585003200,\"transaction_time\":0,"
+                        + "\"is_maker_ask\":true}],\"type\":\"update/trade\"}");
+
+        final List<Mbp10Schema> prints = eth.drain().stream()
+                .filter(r -> r.decoder.action() == Action.Trade)
+                .toList();
+        assertEquals(1761585003232065L * 1_000L, prints.get(0).decoder.timestampEvent(), "its execution time");
+        assertEquals(1761585003200L * 1_000_000L, prints.get(1).decoder.timestampEvent(), "none given: its block's");
+        assertEquals(
+                Mbp10Encoder.timestampSentNullValue(), prints.get(0).decoder.timestampSent(), "no send time");
     }
 
     @Test
