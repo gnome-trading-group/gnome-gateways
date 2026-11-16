@@ -97,6 +97,21 @@ class AccountLaneTest {
     }
 
     @Test
+    void requestsAwaitingAnswerCountsWhatIsOnTheWireUntilAnswered() {
+        this.server.script(request -> Reply.ok("v-" + request.body()).after(300));
+        assertEquals(0, this.lane.requestsAwaitingAnswer());
+        submit(1);
+        submit(2);
+        runUntil(() -> requests("POST").size() == 2);
+        assertEquals(2, this.lane.requestsAwaitingAnswer());
+        assertEquals(0, this.lane.queuedRequests(), "sent, so no longer queued");
+
+        runUntil(() -> this.lane.requestsAwaitingAnswer() == 0);
+        assertEquals(0, this.connections.inFlight());
+        assertEquals(2, this.handed.size(), "both answered and handed to the reader");
+    }
+
+    @Test
     void aLostAnswerIsResentAndADuplicateLookedUp() {
         this.server.script(request -> {
             final int posts = requests("POST").size();

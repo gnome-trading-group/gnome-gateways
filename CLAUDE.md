@@ -69,7 +69,7 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
   - `account/lane/`: `AccountLane`, one thread sending every session's orders over `AsyncHTTPConnections`, settled
     by `SubmitPolicy`, unknown outcomes swept and in the end given up on; cancels, resends and lookups first, then
     each session's amends and new orders as `FairQueue` decides; each queued request refused after its session's
-    wait; a cancel the venue failed to answer sent again up to 3 times in 2 s; every decision told to its
+    wait; a cancel the venue failed to answer sent again up to 3 times in 2 s; `requestsAwaitingAnswer()` (safe from another thread) counts requests on the wire, for a gateway handing over; every decision told to its
     `Admissions`, with each request's timings: how long a command stamped `LaneCommand.enqueuedNanos` (the lane's
     monotonic clock) waited for the lane (`taken`), how long writing and signing it took (`sent`), and the venue's
     answer (`answered`). Each session request also gets one `timed(RequestTiming)` when it is over (per request on
@@ -99,7 +99,8 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
 - `venues/<venue>/`: everything specific to one venue, on top of the generic layers above, which never depend on it.
   `<Venue>Venue` holds its facts (`FEED`, `subjectOf`, and where it has order entry `rateLimits()` and
   `crossMarketOf`: the market a listing's orders can trade against others on, for the order gateway's self-trade
-  check); `<Venue>Protocol` its market data (auth, subscribe/unsubscribe/resync, keep-alive, frame decoding); `<Venue>BookProbe` its REST probe
+  check, and `ordersOutliveGatewayFor`: how long its resting orders survive a gateway stopped without cancels,
+  Polymarket Intl's 10 s heartbeat, else forever); `<Venue>Protocol` its market data (auth, subscribe/unsubscribe/resync, keep-alive, frame decoding); `<Venue>BookProbe` its REST probe
   if it sends book changes; `<Venue>LaneVenue`, `<Venue>AccountProtocol`, signers, requests and order queries its order entry. Venues:
   `kalshi`, `polymarket/intl`, `polymarket/us` (market data and orders), `hyperliquid`, `lighter` (market data only).
 - `fix/`: generic FIX transport; nothing in this repo or gnome-orchestrator uses it now that Binance is gone.

@@ -14,6 +14,7 @@ import group.gnometrading.strings.ViewString;
 import group.gnometrading.utils.AsciiParsing;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
@@ -33,6 +34,7 @@ import org.agrona.concurrent.EpochClock;
  */
 public final class PolymarketIntlHeartbeats implements GnomeAgent {
 
+    public static final Duration VENUE_CANCELS_AFTER = Duration.ofSeconds(10);
     public static final long INTERVAL_NANOS = TimeUnit.MILLISECONDS.toNanos(2_500);
     public static final long REQUEST_TIMEOUT_NANOS = TimeUnit.SECONDS.toNanos(2);
     public static final long AT_RISK_NANOS = TimeUnit.SECONDS.toNanos(6);

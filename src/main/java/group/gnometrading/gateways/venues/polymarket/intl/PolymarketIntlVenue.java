@@ -37,6 +37,15 @@ public final class PolymarketIntlVenue {
 
     private PolymarketIntlVenue() {}
 
+    /**
+     * How long its resting orders survive with nothing in front of them: once a key has sent a heartbeat the venue
+     * cancels every order on it when beats stop for this long, so a gateway can't stop and start again without losing
+     * them.
+     */
+    public static Duration ordersOutliveGatewayFor() {
+        return PolymarketIntlHeartbeats.VENUE_CANCELS_AFTER;
+    }
+
     /** A listing's market: the outcome token of its {@code condition_id:token_id}; each token is its own book. */
     public static SubjectRef subjectOf(final String exchangeSecurityId) {
         final int colon = exchangeSecurityId.indexOf(':');

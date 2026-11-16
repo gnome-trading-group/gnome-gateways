@@ -279,6 +279,8 @@ public final class AccountLane<M> implements GnomeAgent {
     // Whether the last request held back was held by the budget rather than for want of a connection.
     private boolean heldByBudget;
     private long retireAtNanos;
+    // Read from another thread while the gateway hands over; written only when it changes, so rarely.
+    private volatile int awaitingAnswer;
 
     /**
      * @param maxOrders the most orders the account may have working
@@ -372,6 +374,10 @@ public final class AccountLane<M> implements GnomeAgent {
         work += sweepUnknowns();
         work += drainCommands();
         work += sendQueued();
+        final int inFlight = this.connections.inFlight();
+        if (inFlight != this.awaitingAnswer) {
+            this.awaitingAnswer = inFlight;
+        }
         return work;
     }
 
@@ -415,6 +421,15 @@ public final class AccountLane<M> implements GnomeAgent {
     /** Amends and new orders waiting for a connection or the budget, for status and tests. */
     public int queuedRequests() {
         return this.fair.queuedRequests();
+    }
+
+    /**
+     * Requests sent to the venue and not yet answered, as of the lane's last pass. Safe to read from another thread: a
+     * gateway stopping without cancels waits for this to reach zero, so every request's outcome is known before it
+     * exits.
+     */
+    public int requestsAwaitingAnswer() {
+        return this.awaitingAnswer;
     }
 
     /** Set before the lane's thread starts. */

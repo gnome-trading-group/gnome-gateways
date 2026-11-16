@@ -9,6 +9,7 @@ import group.gnometrading.gateways.ratelimit.RequestClass;
 import group.gnometrading.gateways.ratelimit.VenueRateLimits;
 import group.gnometrading.networking.http.HTTPMethod;
 import java.time.Duration;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 
 /** Kalshi: what its feed and its order entry need to know about it. */
@@ -36,6 +37,14 @@ public final class KalshiVenue {
     public static final String SELF_TRADE_PREVENTION = "taker_at_cross";
 
     private KalshiVenue() {}
+
+    /**
+     * How long its resting orders survive with nothing in front of them: for good, as the venue has no switch that
+     * cancels them when the gateway goes quiet, so a gateway may stop and start again without cancelling.
+     */
+    public static Duration ordersOutliveGatewayFor() {
+        return ChronoUnit.FOREVER.getDuration();
+    }
 
     /**
      * A listing's market: its ticker, without the {@code :yes} or {@code :no} a binary market's two listings carry.

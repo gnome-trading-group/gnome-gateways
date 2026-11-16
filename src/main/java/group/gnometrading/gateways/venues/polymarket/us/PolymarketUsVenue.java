@@ -9,6 +9,7 @@ import group.gnometrading.gateways.ratelimit.RequestClass;
 import group.gnometrading.gateways.ratelimit.VenueRateLimits;
 import group.gnometrading.networking.http.HTTPMethod;
 import java.time.Duration;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 
 /** Polymarket US: what its feed and its order entry need to know about it. */
@@ -35,6 +36,14 @@ public final class PolymarketUsVenue {
             Duration.ofMinutes(30));
 
     private PolymarketUsVenue() {}
+
+    /**
+     * How long its resting orders survive with nothing in front of them: for good, as the venue has no switch that
+     * cancels them when the gateway goes quiet, so a gateway may stop and start again without cancelling.
+     */
+    public static Duration ordersOutliveGatewayFor() {
+        return ChronoUnit.FOREVER.getDuration();
+    }
 
     /** A listing's market: its slug, without {@code :long} or {@code :short}; the short listing sees the complement. */
     public static SubjectRef subjectOf(final String exchangeSecurityId) {
