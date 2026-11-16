@@ -3,12 +3,11 @@ package group.gnometrading.gateways.venues.kalshi;
 import static org.junit.jupiter.api.Assertions.*;
 
 import group.gnometrading.strings.MutableString;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.Signature;
-import java.security.spec.MGF1ParameterSpec;
-import java.security.spec.PSSParameterSpec;
 import java.util.Base64;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -22,9 +21,7 @@ class KalshiAuthSignerTest {
 
     @BeforeEach
     void setUp() throws Exception {
-        final KeyPairGenerator gen = KeyPairGenerator.getInstance("RSA");
-        gen.initialize(2048);
-        keyPair = gen.generateKeyPair();
+        keyPair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
         signer = new KalshiAuthSigner(API_KEY, keyPair.getPrivate());
     }
 
@@ -52,20 +49,30 @@ class KalshiAuthSignerTest {
     }
 
     @Test
+    void sign_SignatureIs88Base64Bytes() throws Exception {
+        signer.sign(1700000000000L, "POST", "/trade-api/v2/portfolio/events/orders");
+        assertEquals(88, signer.signatureLength());
+    }
+
+    @Test
     void sign_GnomeStringPath_ProducesVerifiableSignature() throws Exception {
         final long ts = 1700000000001L;
         final String method = "DELETE";
         final String pathStr = "/trade-api/v2/portfolio/events/orders/order-abc-123";
 
-        final MutableString path = new MutableString(pathStr.length());
-        for (int i = 0; i < pathStr.length(); i++) {
-            path.append((byte) pathStr.charAt(i));
-        }
-
-        signer.sign(ts, method, path);
+        signer.sign(ts, method, path(pathStr));
 
         final byte[] message = (ts + method + pathStr).getBytes(StandardCharsets.US_ASCII);
         assertTrue(verify(message, signer.signature()));
+    }
+
+    @Test
+    void sign_GnomeStringPath_SignsOnlyThePathBeforeItsQuery() throws Exception {
+        final String signed = "/trade-api/v2/portfolio/events/orders/order-abc-123";
+
+        signer.sign(1700000000001L, "DELETE", path(signed + "?ticker=KXTEST&exchange_index=2"), signed.length());
+
+        assertTrue(verify(("1700000000001DELETE" + signed).getBytes(StandardCharsets.US_ASCII), signer.signature()));
     }
 
     @Test
@@ -90,19 +97,13 @@ class KalshiAuthSignerTest {
 
     @Test
     void sign_GnomeStringPath_SetsTimestamp() throws Exception {
-        final MutableString path = new MutableString("/user_orders".length());
-        for (byte b : "/user_orders".getBytes(StandardCharsets.US_ASCII)) {
-            path.append(b);
-        }
-        signer.sign(1700000000999L, "GET", path);
+        signer.sign(1700000000999L, "GET", path("/user_orders"));
         assertEquals("1700000000999", signer.timestamp());
     }
 
     @Test
     void rekey_SignsWithTheNewKeyAndApiKeyFromThenOn() throws Exception {
-        final KeyPairGenerator gen = KeyPairGenerator.getInstance("RSA");
-        gen.initialize(2048);
-        keyPair = gen.generateKeyPair();
+        keyPair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
 
         signer.rekey("rotated-key", keyPair.getPrivate());
         signer.sign(1700000000002L, "GET", "/trade-api/v2/portfolio/orders");
@@ -113,9 +114,27 @@ class KalshiAuthSignerTest {
                 signer.signature()));
     }
 
+    @Test
+    void anRsaKeyIsRefused() throws Exception {
+        final KeyPairGenerator rsa = KeyPairGenerator.getInstance("RSA");
+        rsa.initialize(2048);
+        final KeyPair rsaKeys = rsa.generateKeyPair();
+
+        assertThrows(IOException.class, () -> new KalshiAuthSigner(API_KEY, rsaKeys.getPrivate()));
+        assertThrows(IOException.class, () -> signer.rekey("rsa-key", rsaKeys.getPrivate()));
+        assertEquals(API_KEY, signer.apiKey(), "a refused key leaves the old one signing");
+    }
+
+    private static MutableString path(final String text) {
+        final MutableString path = new MutableString(text.length());
+        for (int i = 0; i < text.length(); i++) {
+            path.append((byte) text.charAt(i));
+        }
+        return path;
+    }
+
     private boolean verify(final byte[] message, final String base64Sig) throws Exception {
-        final Signature verifier = Signature.getInstance("RSASSA-PSS");
-        verifier.setParameter(new PSSParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256, 32, 1));
+        final Signature verifier = Signature.getInstance("Ed25519");
         verifier.initVerify(keyPair.getPublic());
         verifier.update(message);
         return verifier.verify(Base64.getDecoder().decode(base64Sig));

@@ -16,12 +16,6 @@ import group.gnometrading.schemas.book.Side;
 import group.gnometrading.strings.GnomeString;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
-import java.security.PrivateKey;
-import java.security.Signature;
-import java.security.spec.MGF1ParameterSpec;
-import java.security.spec.PSSParameterSpec;
-import java.util.Base64;
 import java.util.List;
 import org.agrona.concurrent.EpochNanoClock;
 
@@ -39,7 +33,7 @@ import org.agrona.concurrent.EpochNanoClock;
  * Quantities are contract strings with two decimals. Assumes {@code type} precedes {@code msg} in data frames and
  * {@code market_ticker} leads {@code msg}, as Kalshi sends them.
  *
- * <p>The upgrade is signed with RSA-PSS (SHA-256, MGF1-SHA-256, salt 32) over a fresh millisecond timestamp.
+ * <p>The upgrade is signed by {@link KalshiAuthSigner} over a fresh millisecond timestamp.
  */
 public final class KalshiProtocol implements VenueProtocol<WebSocketChannel> {
 
@@ -67,8 +61,7 @@ public final class KalshiProtocol implements VenueProtocol<WebSocketChannel> {
 
     private final Logger logger;
     private final SubjectTable table;
-    private final String apiKey;
-    private final PrivateKey privateKey;
+    private final KalshiAuthSigner signer;
     private final EpochNanoClock clock;
 
     // The connection's two subscriptions and the seq each sends next; reset by the supervisor on connect, while the
@@ -80,15 +73,10 @@ public final class KalshiProtocol implements VenueProtocol<WebSocketChannel> {
     private int nextCommandId;
 
     public KalshiProtocol(
-            final Logger logger,
-            final SubjectTable table,
-            final String apiKey,
-            final PrivateKey privateKey,
-            final EpochNanoClock clock) {
+            final Logger logger, final SubjectTable table, final KalshiAuthSigner signer, final EpochNanoClock clock) {
         this.logger = logger;
         this.table = table;
-        this.apiKey = apiKey;
-        this.privateKey = privateKey;
+        this.signer = signer;
         this.clock = clock;
         onConnected();
     }
@@ -111,19 +99,10 @@ public final class KalshiProtocol implements VenueProtocol<WebSocketChannel> {
 
     @Override
     public void authenticate(final WebSocketChannel channel) throws IOException {
-        final String timestamp = Long.toString(clock.nanoTime() / NANOS_PER_MILLI);
-        try {
-            final Signature signature = Signature.getInstance("RSASSA-PSS");
-            signature.setParameter(new PSSParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256, 32, 1));
-            signature.initSign(privateKey);
-            signature.update((timestamp + "GET" + WEBSOCKET_PATH).getBytes(StandardCharsets.UTF_8));
-            channel.client().setHeader("KALSHI-ACCESS-KEY", apiKey);
-            channel.client().setHeader("KALSHI-ACCESS-TIMESTAMP", timestamp);
-            channel.client()
-                    .setHeader("KALSHI-ACCESS-SIGNATURE", Base64.getEncoder().encodeToString(signature.sign()));
-        } catch (Exception e) {
-            throw new IOException("Failed to sign the Kalshi upgrade", e);
-        }
+        signer.sign(clock.nanoTime() / NANOS_PER_MILLI, "GET", WEBSOCKET_PATH);
+        channel.client().setHeader(KalshiOrderCodec.HEADER_KEY, signer.apiKey());
+        channel.client().setHeader(KalshiOrderCodec.HEADER_TIMESTAMP, signer.timestamp());
+        channel.client().setHeader(KalshiOrderCodec.HEADER_SIGNATURE, signer.signature());
     }
 
     @Override

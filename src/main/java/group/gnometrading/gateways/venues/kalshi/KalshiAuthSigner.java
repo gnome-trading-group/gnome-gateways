@@ -1,18 +1,21 @@
 package group.gnometrading.gateways.venues.kalshi;
 
-import group.gnometrading.networking.crypto.RsaPssSha256Signer;
+import group.gnometrading.networking.crypto.Ed25519Signer;
 import group.gnometrading.strings.GnomeString;
 import group.gnometrading.utils.ByteBufferUtils;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.PrivateKey;
+import java.security.interfaces.EdECPrivateKey;
 import java.util.Base64;
 
 /**
- * Signs Kalshi API requests: base64 RSA-PSS (SHA-256, 32-byte salt) over {@code timestamp + METHOD + path}, the path
- * without its query. Signing allocates nothing; the timestamp and signature are kept as ASCII bytes for header values,
- * and as strings only when asked for. Not thread-safe: each sending thread gets its own instance.
+ * Signs Kalshi API requests: base64 Ed25519 over {@code timestamp + METHOD + path}, the path without its query. Kalshi
+ * also takes RSA keys, but RSA-2048 costs about half a millisecond a signature on the order path against Ed25519's
+ * microseconds, so only Ed25519 keys are accepted. Signing allocates nothing; the timestamp and signature are kept as
+ * ASCII bytes for header values, and as strings only when asked for. Not thread-safe: each sending thread gets its own
+ * instance.
  */
 public final class KalshiAuthSigner {
 
@@ -22,11 +25,11 @@ public final class KalshiAuthSigner {
 
     private String apiKey;
     private byte[] apiKeyBytes;
-    private RsaPssSha256Signer rsa;
+    private Ed25519Signer ed25519;
     private final Base64.Encoder base64 = Base64.getEncoder();
     private final byte[] msgBuf = new byte[MSG_BUF_SIZE];
-    private byte[] sigBuf;
-    private byte[] sigBase64;
+    private final byte[] sigBuf = new byte[Ed25519Signer.SIGNATURE_LENGTH];
+    private final byte[] sigBase64 = new byte[4 * ((Ed25519Signer.SIGNATURE_LENGTH + 2) / 3)];
     private final byte[] timestampBuf = new byte[MAX_TIMESTAMP_DIGITS];
     private final ByteBuffer timestampBuffer = ByteBuffer.wrap(this.timestampBuf);
     private int timestampLength;
@@ -36,22 +39,27 @@ public final class KalshiAuthSigner {
         rekey(apiKey, privateKey);
     }
 
-    /** Signs with a new key from now on, e.g. after the venue refused the old one. On the signing thread. */
+    /**
+     * Signs with a new key from now on, e.g. after the venue refused the old one. On the signing thread.
+     *
+     * @param privateKey an Ed25519 key
+     */
     public void rekey(final String apiKey, final PrivateKey privateKey) throws IOException {
-        final RsaPssSha256Signer replacement;
+        if (!(privateKey instanceof EdECPrivateKey edKey) || edKey.getBytes().isEmpty()) {
+            throw new IOException("Kalshi signing needs an Ed25519 private key, got " + privateKey.getAlgorithm());
+        }
+        final Ed25519Signer replacement;
         try {
-            replacement = new RsaPssSha256Signer(privateKey.getEncoded());
+            replacement = new Ed25519Signer(edKey.getBytes().get());
         } catch (final RuntimeException e) {
             throw new IOException("Failed to initialize Kalshi auth signer", e);
         }
-        if (this.rsa != null) {
-            this.rsa.close();
+        if (this.ed25519 != null) {
+            this.ed25519.close();
         }
-        this.rsa = replacement;
+        this.ed25519 = replacement;
         this.apiKey = apiKey;
         this.apiKeyBytes = apiKey.getBytes(StandardCharsets.US_ASCII);
-        this.sigBuf = new byte[replacement.signatureLength()];
-        this.sigBase64 = new byte[4 * ((this.sigBuf.length + 2) / 3)];
         this.sigBase64Length = 0;
     }
 
@@ -95,7 +103,7 @@ public final class KalshiAuthSigner {
 
     private void doSign(final int len) throws IOException {
         try {
-            this.rsa.sign(this.msgBuf, 0, len, this.sigBuf, 0);
+            this.ed25519.sign(this.msgBuf, 0, len, this.sigBuf, 0);
             this.sigBase64Length = this.base64.encode(this.sigBuf, this.sigBase64);
         } catch (final RuntimeException e) {
             throw new IOException("Failed to compute Kalshi auth signature", e);

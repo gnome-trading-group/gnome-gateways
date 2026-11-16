@@ -17,8 +17,6 @@ import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.Signature;
-import java.security.spec.MGF1ParameterSpec;
-import java.security.spec.PSSParameterSpec;
 import java.util.Base64;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
@@ -39,8 +37,7 @@ class KalshiLaneVenueTest {
 
     @BeforeEach
     void setUp() throws Exception {
-        final KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
-        generator.initialize(2048);
+        final KeyPairGenerator generator = KeyPairGenerator.getInstance("Ed25519");
         this.keys = generator.generateKeyPair();
         final KalshiLaneVenue venue =
                 new KalshiLaneVenue(new NullLogger(), new KalshiAuthSigner("key-id", this.keys.getPrivate()), "maker");
@@ -191,8 +188,7 @@ class KalshiLaneVenueTest {
     private void assertSigned(final Request request, final String methodAndPath) throws Exception {
         assertEquals("key-id", request.header(KalshiOrderCodec.HEADER_KEY));
         final String timestamp = request.header(KalshiOrderCodec.HEADER_TIMESTAMP);
-        final Signature verifier = Signature.getInstance("RSASSA-PSS");
-        verifier.setParameter(new PSSParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256, 32, 1));
+        final Signature verifier = Signature.getInstance("Ed25519");
         verifier.initVerify(this.keys.getPublic());
         verifier.update((timestamp + methodAndPath).getBytes(StandardCharsets.US_ASCII));
         assertTrue(

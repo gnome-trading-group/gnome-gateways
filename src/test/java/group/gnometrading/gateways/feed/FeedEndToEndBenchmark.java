@@ -5,6 +5,7 @@ import group.gnometrading.gateways.GatewayConfig;
 import group.gnometrading.gateways.feed.book.Projection;
 import group.gnometrading.gateways.transport.WebSocketChannel;
 import group.gnometrading.gateways.transport.WebSocketTransport;
+import group.gnometrading.gateways.venues.kalshi.KalshiAuthSigner;
 import group.gnometrading.gateways.venues.kalshi.KalshiProtocol;
 import group.gnometrading.logging.NullLogger;
 import group.gnometrading.networking.sockets.factory.NativeSocketFactory;
@@ -176,8 +177,11 @@ class FeedEndToEndBenchmark {
                 new KalshiProtocol(
                         new NullLogger(),
                         table,
-                        "key",
-                        KeyPairGenerator.getInstance("RSA").generateKeyPair().getPrivate(),
+                        new KalshiAuthSigner(
+                                "key",
+                                KeyPairGenerator.getInstance("Ed25519")
+                                        .generateKeyPair()
+                                        .getPrivate()),
                         clock),
                 table,
                 new GatewayConfig.Builder().build(),

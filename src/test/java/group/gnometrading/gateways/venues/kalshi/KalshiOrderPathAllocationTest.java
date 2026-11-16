@@ -39,8 +39,7 @@ class KalshiOrderPathAllocationTest {
 
     @Test
     void signingDoesNotAllocate() {
-        // RSA-2048 is slow, so fewer runs: still well past the JIT's warm-up.
-        OrderPathTestKit.assertNoAllocation("Kalshi request signing", 2_000, 1_000, this.path::sign);
+        OrderPathTestKit.assertNoAllocation("Kalshi request signing", 20_000, 10_000, this.path::sign);
     }
 
     @Test

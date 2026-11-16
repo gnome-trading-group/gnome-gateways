@@ -159,7 +159,10 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
   before the fix is off by that much.
 - Kalshi: `:yes`/`:no` listings share one subject (the ticker); a `:no` listing's book and trades are its complement
   (price `1 - p`, sides flipped), as are its orders. Market orders are refused (Kalshi needs a price; the OMS sends
-  priced IOCs).
+  priced IOCs). `KalshiAuthSigner` (every Kalshi request and the feed's
+  upgrade) takes Ed25519 keys only: Kalshi also accepts RSA, but RSA-2048 costs ~0.5 ms a signature against ~10 µs.
+  Signed text is `timestamp_ms + METHOD + path` without its query, accepted within ±30 s of Kalshi's clock, and a
+  signature may be sent more than once.
 - Polymarket US: `:long`/`:short` listings share one subject; `:short` is the complement. Feeds hold at most 10
   subscriptions a connection, so markets go in up to 5 groups of 20, a changed group replaced under new ids. No client
   order id and no dedup, so a submit is never resent; events are matched by GTD stamp or (IOC) side+price. FOK refused.

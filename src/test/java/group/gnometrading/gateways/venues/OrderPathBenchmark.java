@@ -17,15 +17,12 @@ class OrderPathBenchmark {
 
     private static final int WARM_UP = 50_000;
     private static final int MEASURED = 100_000;
-    // RSA-2048 costs about half a millisecond a signature.
-    private static final int RSA_WARM_UP = 2_000;
-    private static final int RSA_MEASURED = 5_000;
 
     @Test
     void report() {
         final KalshiOrderPath kalshi = new KalshiOrderPath();
         OrderPathTestKit.time("Kalshi order build + answer", WARM_UP, MEASURED, kalshi::build);
-        OrderPathTestKit.time("Kalshi request signing (RSA-PSS 2048)", RSA_WARM_UP, RSA_MEASURED, kalshi::sign);
+        OrderPathTestKit.time("Kalshi request signing (Ed25519)", WARM_UP, MEASURED, kalshi::sign);
         OrderPathTestKit.time("Kalshi resting + fill events", WARM_UP, MEASURED, kalshi::events);
         OrderPathTestKit.time("Kalshi amend + cancel requests", WARM_UP, MEASURED, kalshi::amendAndCancel);
         OrderPathTestKit.time("Submit policy, unknown outcome", WARM_UP, MEASURED, kalshi::unknownOutcome);

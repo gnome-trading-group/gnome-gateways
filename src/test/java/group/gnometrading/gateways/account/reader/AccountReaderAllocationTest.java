@@ -54,8 +54,7 @@ class AccountReaderAllocationTest {
 
     @Test
     void kalshi() throws Exception {
-        final KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
-        generator.initialize(2048);
+        final KeyPairGenerator generator = KeyPairGenerator.getInstance("Ed25519");
         final KalshiAccountProtocol protocol = new KalshiAccountProtocol(
                 new KalshiAuthSigner("key", generator.generateKeyPair().getPrivate()),
                 null,

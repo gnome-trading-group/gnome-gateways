@@ -73,8 +73,7 @@ class AccountLaneAllocationTest {
                 .withConnections(2)
                 .build();
         this.connector = new HTTPConnector(List.of(this.connections), HTTPConnector.Listener.NONE);
-        final KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
-        generator.initialize(2048);
+        final KeyPairGenerator generator = KeyPairGenerator.getInstance("Ed25519");
         final KalshiLaneVenue venue = new KalshiLaneVenue(
                 new NullLogger(),
                 new KalshiAuthSigner("key-id", generator.generateKeyPair().getPrivate()),

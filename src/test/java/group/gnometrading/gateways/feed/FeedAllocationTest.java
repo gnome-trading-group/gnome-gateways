@@ -14,6 +14,7 @@ import group.gnometrading.gateways.transport.Transport;
 import group.gnometrading.gateways.transport.WebSocketChannel;
 import group.gnometrading.gateways.transport.WebSocketTransport;
 import group.gnometrading.gateways.venues.hyperliquid.HyperliquidProtocol;
+import group.gnometrading.gateways.venues.kalshi.KalshiAuthSigner;
 import group.gnometrading.gateways.venues.kalshi.KalshiProtocol;
 import group.gnometrading.gateways.venues.lighter.LighterProtocol;
 import group.gnometrading.gateways.venues.polymarket.intl.PolymarketIntlProtocol;
@@ -36,7 +37,6 @@ import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPairGenerator;
-import java.security.PrivateKey;
 import java.security.interfaces.EdECPrivateKey;
 import java.time.Duration;
 import java.util.Base64;
@@ -72,12 +72,12 @@ class FeedAllocationTest {
                     + "\"T\",\"price_dollars\":\"0.550\",\"delta_fp\":\"" + (i % 2 == 0 ? "-1.00" : "1.00")
                     + "\",\"side\":\"yes\",\"ts_ms\":1700000000000}}");
         }
-        final PrivateKey key =
-                KeyPairGenerator.getInstance("RSA").generateKeyPair().getPrivate();
+        final KalshiAuthSigner key = new KalshiAuthSigner(
+                "key", KeyPairGenerator.getInstance("Ed25519").generateKeyPair().getPrivate());
         assertNoAllocation(
                 messages,
                 "T",
-                table -> new KalshiProtocol(new NullLogger(), table, "key", key, () -> 0),
+                table -> new KalshiProtocol(new NullLogger(), table, key, () -> 0),
                 Projection.IDENTITY,
                 Projection.COMPLEMENT);
     }

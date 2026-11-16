@@ -31,9 +31,14 @@ import group.gnometrading.sequencer.SequencedRingBuffer;
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.security.Signature;
 import java.util.ArrayList;
+import java.util.Base64;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -84,6 +89,7 @@ class KalshiProtocolTest {
     private final List<String> sent = new ArrayList<>();
     private Subject market;
     private Subject otherMarket;
+    private KeyPair keys;
     private KalshiProtocol protocol;
     private WebSocketChannel channel;
     private long receive = 1_000;
@@ -100,10 +106,12 @@ class KalshiProtocolTest {
             subject.attach(new RecordingHost(resyncs));
             table.put(subject);
         }
-        KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
-        generator.initialize(2048);
+        keys = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
         protocol = new KalshiProtocol(
-                new NullLogger(), table, "key", generator.generateKeyPair().getPrivate(), () -> 0);
+                new NullLogger(),
+                table,
+                new KalshiAuthSigner("key", keys.getPrivate()),
+                () -> 1_700_000_000_000_000_000L);
         WebSocketClient client = mock(WebSocketClient.class);
         doAnswer(inv -> {
                     ByteBuffer payload = inv.getArgument(2);
@@ -431,9 +439,9 @@ class KalshiProtocolTest {
     @Test
     void theUpgradeIsSigned() throws Exception {
         WebSocketClient client = mock(WebSocketClient.class);
-        List<String> headers = new ArrayList<>();
+        Map<String, String> headers = new LinkedHashMap<>();
         doAnswer(inv -> {
-                    headers.add(inv.getArgument(0));
+                    headers.put(inv.getArgument(0), inv.getArgument(1));
                     return null;
                 })
                 .when(client)
@@ -441,6 +449,14 @@ class KalshiProtocolTest {
 
         protocol.authenticate(new WebSocketChannel(client, new WebSocketWriter(client, 1 << 12)));
 
-        assertEquals(List.of("KALSHI-ACCESS-KEY", "KALSHI-ACCESS-TIMESTAMP", "KALSHI-ACCESS-SIGNATURE"), headers);
+        assertEquals(
+                List.of("KALSHI-ACCESS-KEY", "KALSHI-ACCESS-TIMESTAMP", "KALSHI-ACCESS-SIGNATURE"),
+                List.copyOf(headers.keySet()));
+        assertEquals("key", headers.get("KALSHI-ACCESS-KEY"));
+        assertEquals("1700000000000", headers.get("KALSHI-ACCESS-TIMESTAMP"));
+        Signature verifier = Signature.getInstance("Ed25519");
+        verifier.initVerify(keys.getPublic());
+        verifier.update(("1700000000000GET" + KalshiProtocol.WEBSOCKET_PATH).getBytes(StandardCharsets.US_ASCII));
+        assertTrue(verifier.verify(Base64.getDecoder().decode(headers.get("KALSHI-ACCESS-SIGNATURE"))));
     }
 }

@@ -54,10 +54,9 @@ public final class KalshiOrderPath {
 
     public KalshiOrderPath() {
         try {
-            final KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
-            generator.initialize(2048);
-            this.signer =
-                    new KalshiAuthSigner("key-id", generator.generateKeyPair().getPrivate());
+            this.signer = new KalshiAuthSigner(
+                    "key-id",
+                    KeyPairGenerator.getInstance("Ed25519").generateKeyPair().getPrivate());
         } catch (final IOException e) {
             throw new UncheckedIOException(e);
         } catch (final Exception e) {

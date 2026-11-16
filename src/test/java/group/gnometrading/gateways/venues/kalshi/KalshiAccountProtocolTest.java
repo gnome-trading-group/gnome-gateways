@@ -40,8 +40,7 @@ class KalshiAccountProtocolTest {
 
     @BeforeEach
     void setUp() throws Exception {
-        final KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
-        generator.initialize(2048);
+        final KeyPairGenerator generator = KeyPairGenerator.getInstance("Ed25519");
         this.protocol = new KalshiAccountProtocol(
                 new KalshiAuthSigner("key", generator.generateKeyPair().getPrivate()),
                 this.restClient,
