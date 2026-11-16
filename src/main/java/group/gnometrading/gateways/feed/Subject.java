@@ -132,7 +132,7 @@ public final class Subject {
     /** Reader thread: publishes the book once more, as a snapshot, if it is trusted; for a stream that just joined. */
     public void republish(final long receiveNanos) {
         if (state().trusted()) {
-            publishBook(book, lastEventTimestamp, NO_SENT_TIME, receiveNanos, NO_SEQUENCE, true, false);
+            publishBook(book, lastEventTimestamp, NO_SENT_TIME, receiveNanos, NO_SEQUENCE, true, false, false);
         }
     }
 
@@ -201,7 +201,7 @@ public final class Subject {
             top.update(book);
             return;
         }
-        publishBook(book, eventTimestamp, sentNanos, receiveNanos, sequence, true, false);
+        publishBook(book, eventTimestamp, sentNanos, receiveNanos, sequence, true, false, false);
         if (replay != null) {
             replay.book(eventTimestamp, index, book, sentNanos, receiveNanos, sequence, true);
         }
@@ -250,7 +250,7 @@ public final class Subject {
             top.update(book);
             return;
         }
-        publishBook(book, eventTimestamp, sentNanos, receiveNanos, sequence, false, false);
+        publishBook(book, eventTimestamp, sentNanos, receiveNanos, sequence, false, false, false);
         if (replay != null) {
             replay.book(eventTimestamp, index, book, sentNanos, receiveNanos, sequence, false);
         }
@@ -295,7 +295,7 @@ public final class Subject {
         if (repeatsTrade(eventTimestamp, index)) {
             return;
         }
-        publishTrade(price, size, aggressor, eventTimestamp, sentNanos, receiveNanos, current.trusted(), book);
+        publishTrade(price, size, aggressor, eventTimestamp, sentNanos, receiveNanos, current.trusted(), false, book);
         if (replay != null) {
             replay.trade(eventTimestamp, index, price, size, aggressor, sentNanos, receiveNanos);
         }
@@ -309,11 +309,12 @@ public final class Subject {
             final long sentNanos,
             final long receiveNanos,
             final boolean trusted,
+            final boolean replayed,
             final Book with) {
         for (StreamOutput output : outputs) {
             final Mbp10Schema schema = output.ring().claim();
             final Mbp10Encoder encoder = schema.encoder;
-            header(encoder, output, eventTimestamp, sentNanos, receiveNanos, NO_SEQUENCE, false, !trusted);
+            header(encoder, output, eventTimestamp, sentNanos, receiveNanos, NO_SEQUENCE, false, !trusted, replayed);
             encoder.price(output.projection().price(price, Mbp10Encoder.priceNullValue()));
             encoder.size(size);
             encoder.action(Action.Trade);
@@ -416,7 +417,8 @@ public final class Subject {
             repeatUpTo(shadow);
         } else {
             // The stand-in's book as it stands, not one venue message, so no send time.
-            publishBook(shadow.book, shadow.lastEventTimestamp, NO_SENT_TIME, receiveNanos, NO_SEQUENCE, true, false);
+            publishBook(
+                    shadow.book, shadow.lastEventTimestamp, NO_SENT_TIME, receiveNanos, NO_SEQUENCE, true, false, true);
         }
         book.copyFrom(shadow.book);
         top.update(book);
@@ -472,6 +474,7 @@ public final class Subject {
                     log.sent(slot),
                     log.receive(slot),
                     true,
+                    true,
                     with);
             return with;
         }
@@ -486,7 +489,8 @@ public final class Subject {
                 log.receive(slot),
                 log.sequence(slot),
                 log.snapshot(slot),
-                false);
+                false,
+                true);
         return replayed;
     }
 
@@ -534,7 +538,14 @@ public final class Subject {
     private void publishBad(final long receiveNanos) {
         // A repeat of no venue message, so nothing says when the venue sent it.
         publishBook(
-                book, Math.max(lastEventTimestamp, receiveNanos), NO_SENT_TIME, receiveNanos, NO_SEQUENCE, false, true);
+                book,
+                Math.max(lastEventTimestamp, receiveNanos),
+                NO_SENT_TIME,
+                receiveNanos,
+                NO_SEQUENCE,
+                false,
+                true,
+                false);
         repeatBookTime = NO_POSITION;
     }
 
@@ -545,12 +556,13 @@ public final class Subject {
             final long receiveNanos,
             final long sequence,
             final boolean snapshot,
-            final boolean badData) {
+            final boolean badData,
+            final boolean replayed) {
         lastEventTimestamp = eventTimestamp;
         for (StreamOutput output : outputs) {
             final Mbp10Schema schema = output.ring().claim();
             final Mbp10Encoder encoder = schema.encoder;
-            header(encoder, output, eventTimestamp, sentNanos, receiveNanos, sequence, snapshot, badData);
+            header(encoder, output, eventTimestamp, sentNanos, receiveNanos, sequence, snapshot, badData, replayed);
             encoder.price(Mbp10Encoder.priceNullValue());
             encoder.size(Mbp10Encoder.sizeNullValue());
             encoder.action(Action.Modify);
@@ -570,14 +582,20 @@ public final class Subject {
             final long receiveNanos,
             final long sequence,
             final boolean snapshot,
-            final boolean badData) {
+            final boolean badData,
+            final boolean replayed) {
         encoder.streamId(output.streamId());
         encoder.timestampEvent(eventTimestamp);
         encoder.timestampSent(sentNanos);
         encoder.timestampRecv(receiveNanos);
         encoder.sequence(sequence);
         encoder.depth(Mbp10Encoder.depthNullValue());
-        encoder.flags().clear().marketByPrice(true).snapshot(snapshot).badData(badData);
+        encoder.flags()
+                .clear()
+                .marketByPrice(true)
+                .snapshot(snapshot)
+                .badData(badData)
+                .replayed(replayed);
     }
 
     // ----- liveness -----

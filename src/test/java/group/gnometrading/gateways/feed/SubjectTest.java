@@ -155,6 +155,41 @@ class SubjectTest {
     }
 
     @Test
+    void onlyWhatARollPublishesLateIsFlaggedReplayed() throws Exception {
+        Subject standIn = Subject.standIn("TICKER", 64, 128);
+        book(subject, true, 0.40, 1);
+        book(standIn, true, 0.40, 1);
+        standIn.set(Side.Bid, px(0.42), 10, 1);
+        standIn.endUpdate(3, 30, 300, 8);
+        standIn.trade(px(0.46), 5, Side.Bid, 4, 40, 400);
+
+        subject.adoptFrom(standIn, 900);
+        book(subject, false, 0.43, 5);
+
+        List<Mbp10Schema> records = yes.drain();
+        assertEquals(4, records.size());
+        assertFalse(records.get(0).decoder.flags().replayed(), "the old connection's own book");
+        assertTrue(records.get(1).decoder.flags().replayed(), "a replayed book");
+        assertTrue(records.get(2).decoder.flags().replayed(), "a replayed trade");
+        assertEquals(Action.Trade, records.get(2).decoder.action());
+        assertFalse(records.get(3).decoder.flags().replayed(), "the new connection's own book after the roll");
+        assertTrue(no.drain().get(1).decoder.flags().replayed(), "on every stream");
+    }
+
+    @Test
+    void theStandInsBookAdoptedInPlaceOfAMarketWithoutOneIsFlaggedReplayed() throws Exception {
+        Subject standIn = Subject.standIn("TICKER", 64, 128);
+        book(standIn, true, 0.40, 1);
+
+        subject.adoptFrom(standIn, 900);
+
+        Mbp10Schema adopted = yes.drain().get(0);
+        assertTrue(adopted.decoder.flags().snapshot());
+        assertTrue(adopted.decoder.flags().replayed());
+        assertFalse(adopted.decoder.flags().badData());
+    }
+
+    @Test
     void aStaleBookGoesOutOnceFlaggedAndAsksForAResync() throws Exception {
         snapshot();
         subject.stale(GapReason.SEQUENCE, 3_000);

@@ -1021,7 +1021,8 @@ public final class AccountLane<M> implements GnomeAgent {
         timing.wireSentNanos = order.wireSentNanos;
         if (response != null) {
             timing.answeredNanos = this.answerNanos;
-            timing.answerSlackNanos = this.answerSlackNanos;
+            // A request written in the pass after the lane last looked was answered no earlier than it went out.
+            timing.answerSlackNanos = Math.min(this.answerSlackNanos, this.answerNanos - order.wireSentNanos);
             timing.venueCode = response.getStatusCode();
             this.venue.readTiming(response, timing);
         }

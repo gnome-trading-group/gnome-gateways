@@ -7,6 +7,7 @@ import group.gnometrading.gateways.account.lane.FakeVenueServer.Reply;
 import group.gnometrading.gateways.ratelimit.RequestClass;
 import group.gnometrading.gateways.ratelimit.VenueRateLimits;
 import group.gnometrading.networking.http.HTTPMethod;
+import group.gnometrading.schemas.gateway.AdmissionAction;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
@@ -128,6 +129,51 @@ class AccountLaneTimingTest {
         assertEquals(0, submit.venueCode());
     }
 
+    @Test
+    void anAnswerToARequestWrittenLongAfterTheLaneLastLookedIsNoLaterThanItsWait() throws Exception {
+        this.harness = harness(1_000);
+        this.harness.server.script(request -> Reply.ok("v-" + request.body()));
+        // A slow pass: the lane looked for answers, then took long deciding and writing the order, and the answer was
+        // back before it looked again.
+        this.harness.lane.admissions(new AccountLane.Admissions() {
+            @Override
+            public void decided(
+                    final long sessionSlot,
+                    final long clientOidCounter,
+                    final RequestClass type,
+                    final AdmissionAction action,
+                    final long queuedNanos,
+                    final long tokensLeft) {
+                pause();
+            }
+
+            @Override
+            public void sent(final RequestClass type, final long writeNanos) {
+                pause();
+            }
+
+            @Override
+            public void timed(final RequestTiming timing) {
+                record(timing);
+            }
+        });
+        this.harness.session(A, 1, 0);
+        this.harness.submitStamped(A, 1, System.nanoTime());
+        this.harness.runUntil(() -> this.timings.size() == 1, 3_000);
+
+        final Timed submit = this.timings.get(0);
+        assertEquals(RequestTiming.ANSWERED, submit.outcome());
+        assertSteps(submit);
+    }
+
+    private static void pause() {
+        try {
+            Thread.sleep(20);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     private static void assertSteps(final Timed timed) {
         assertTrue(timed.ingress() > 0, "stamped by ingress: " + timed);
         assertTrue(timed.ingress() <= timed.taken(), "taken after ingress: " + timed);
@@ -162,21 +208,25 @@ class AccountLaneTimingTest {
         made.lane.admissions(new AccountLane.Admissions() {
             @Override
             public void timed(final RequestTiming timing) {
-                AccountLaneTimingTest.this.timings.add(new Timed(
-                        timing.sessionSlot,
-                        timing.clientOidCounter,
-                        timing.requestClass,
-                        timing.outcome,
-                        timing.ingressNanos,
-                        timing.takenNanos,
-                        timing.decidedNanos,
-                        timing.wireSentNanos,
-                        timing.answeredNanos,
-                        timing.answerSlackNanos,
-                        timing.venueCode,
-                        timing.venueProcessingMicros));
+                record(timing);
             }
         });
         return made;
+    }
+
+    private void record(final RequestTiming timing) {
+        this.timings.add(new Timed(
+                timing.sessionSlot,
+                timing.clientOidCounter,
+                timing.requestClass,
+                timing.outcome,
+                timing.ingressNanos,
+                timing.takenNanos,
+                timing.decidedNanos,
+                timing.wireSentNanos,
+                timing.answeredNanos,
+                timing.answerSlackNanos,
+                timing.venueCode,
+                timing.venueProcessingMicros));
     }
 }

@@ -45,7 +45,7 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
     connections itself (Polymarket US 30 min, Hyperliquid 2 h, others 12 h). A roll loses and repeats nothing: each
     `Subject` tracks where its last book and trade fell in the venue's sequence (venue time, and how many came at that
     time; every connection gets the same sequence, measured on all five venues), a stand-in keeps its last 128 records
-    in a `ReplayLog`, and `Subject.adoptFrom` publishes those past the old connection's last ones, or, if the stand-in
+    in a `ReplayLog`, and `Subject.adoptFrom` publishes those past the old connection's last ones (flagged `replayed`, as is a stand-in's book adopted for a market that had none: their receive time is when they arrived, not when they were published), or, if the stand-in
     was behind, holds back its next records up to there (until the market goes out flagged bad: then its next trusted
     book always goes out, as Polymarket US resends an unchanged book on every reconnect, so connections' counts differ). The new connection's protocol subscribed the stand-in, so
     `VenueProtocol.adopted` hands it the real market: a protocol that keeps markets between commands (Polymarket US's
