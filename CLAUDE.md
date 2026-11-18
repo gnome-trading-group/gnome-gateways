@@ -172,6 +172,13 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
   refused and the rest go again. One alone goes as a single request, whose answer says more.
 - Polymarket Intl: `exchangeSecurityId` is `{condition_id}:{token_id}`. Orders are EIP-712 signed (signature types
   0-3, incl. 3 = deposit wallet) and immutable, so no modify; market orders refused.
+  - One taker can match dozens of resting orders in one trade (40 seen). `PolymarketIntlUserEvents` keeps 1,024 legs
+    to price a taker fill of ours and, past them, only legs that are ours, so no maker fill of ours is dropped;
+    either overflow logs `UNKNOWN_ERROR`.
+  - The CLOB's order lookup answers `200 null` for a fully matched order, as for one it never knew, so
+    `PolymarketIntlVenueOrderQuery.getOrder` then sums what the order filled from the trades that name it (its
+    market's, or the account's without a listing, from a minute before it was placed). Startup recovery and
+    catch-up rely on this to book fills the socket never brought.
 - Submits with no clear answer: resent only where the venue dedups (`resendsAreSafe`), else looked up. Every OMS
   message must get exactly one report; do not add a path that drops or doubles one.
 - Rate limits (`VenueRateLimits`): Kalshi Advanced tier read/write buckets (300/s, burst 900; a by-id lookup costs 2)

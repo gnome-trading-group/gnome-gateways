@@ -35,6 +35,10 @@ class PolymarketIntlAccountProtocolTest {
     private static final long MARKET_B = 4;
     private static final String ORDER_A = "0x" + "aa".repeat(32);
     private static final String ORDER_B = "0x" + "bb".repeat(32);
+    private static final long MARKET_C = 5;
+    private static final String TOKEN_C =
+            "50457052132497639576079899029343835391631491841554202948494895299600106128085";
+    private static final String ORDER_C = "0x351699e67620c414e30b67643815b7fc53dba4505e8d6388d4a1419cf690085b";
     // What the CLOB answered a lookup with under load: too short for the order object the reader expects.
     private static final String UNREADABLE = "{\"id\"";
     private static final String SECRET = "c2VjcmV0LXNlY3JldC1zZWNyZXQtc2VjcmV0LXNlY3JldA==";
@@ -125,6 +129,19 @@ class PolymarketIntlAccountProtocolTest {
         frame(orderEvent(ORDER_A, "token-a"));
         frame(cancellation(ORDER_A, "token-a", "0"));
         assertEquals(List.of(ExecType.NEW, ExecType.CANCEL), this.recorded.execTypes());
+    }
+
+    @Test
+    void aRestingOrderMatchedPastTheTradesThirtySecondLegIsStillFilled() throws Exception {
+        // Captured: a taker swept 40 resting orders; ours was the 38th.
+        this.protocol.addMarket(EXCHANGE_ID, MARKET_C, TOKEN_C, FeeTimeline.EMPTY);
+        register(9, 1, MARKET_C, ORDER_C, 0);
+        frame(tradeEvent("polymarket-intl/trade-40-makers.json"));
+
+        assertEquals(List.of(ExecType.NEW, ExecType.FILL), this.recorded.execTypes());
+        assertEquals(10_000_000L, this.recorded.reports.get(1).filledQty());
+        assertEquals(610_000_000L, this.recorded.reports.get(1).fillPrice());
+        assertEquals(List.of(1L), this.recorded.released);
     }
 
     @Test
@@ -332,6 +349,19 @@ class PolymarketIntlAccountProtocolTest {
             ctx.submittedAtMillis = submittedAt;
         }
         this.reports.register(ctx);
+    }
+
+    private static String resource(final String name) throws Exception {
+        try (var in = PolymarketIntlAccountProtocolTest.class.getClassLoader().getResourceAsStream(name)) {
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
+
+    /** A listed trade as the socket sends it: the same fields, with its event type. */
+    private static String tradeEvent(final String name) throws Exception {
+        final String page = resource(name);
+        final int start = page.indexOf('{', page.indexOf("\"data\""));
+        return "{\"event_type\":\"trade\"," + page.substring(start + 1, page.lastIndexOf(']'));
     }
 
     private void frame(final String json) {

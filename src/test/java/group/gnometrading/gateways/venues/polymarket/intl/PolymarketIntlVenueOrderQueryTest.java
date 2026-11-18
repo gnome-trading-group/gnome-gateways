@@ -120,9 +120,41 @@ class PolymarketIntlVenueOrderQueryTest {
     }
 
     @Test
-    void anOrderTheVenueDoesntKnowIsAbsent() throws IOException {
+    void anOrderTheVenueDoesntKnowAndNoTradeNamesIsAbsent() throws IOException {
         respond(404, "");
-        assertFalse(query.getOrder(LISTING, HASH, 0).isPresent());
+        respond(200, "{\"data\":[],\"next_cursor\":\"LTE=\"}");
+        assertFalse(query.getOrder(LISTING, HASH, 120_000).isPresent());
+        assertEquals("/data/trades?market=0xc&after=60", paths.get(1), "its market's trades, from a minute before it");
+    }
+
+    @Test
+    void aMatchedOrderTheLookupForgetsIsFoundInTheTradeThatFilledIt() throws IOException {
+        // Captured: the CLOB answers a fully matched order's lookup with a bare null. Ours is the 38th of the trade's
+        // 40 resting orders.
+        final String ours = "0x351699e67620c414e30b67643815b7fc53dba4505e8d6388d4a1419cf690085b";
+        respond(200, "null");
+        respond(200, resource("polymarket-intl/trade-40-makers.json"));
+        final VenueOrder order =
+                query.getOrder(LISTING, ours, 1_794_955_249_150L).orElseThrow();
+        assertEquals(10_000_000L, order.filledQty());
+        assertEquals(6_100_000_000L, order.filledNotional(), "10 at its 61c");
+        assertTrue(order.terminal());
+    }
+
+    @Test
+    void aTakerFilledTheTradesSizeAtItsMakersPricesTheOtherOutcomesAtTheComplement() throws IOException {
+        respond(404, "");
+        respond(
+                200,
+                "{\"data\":[{\"status\":\"MATCHED\",\"taker_order_id\":\"" + HASH + "\",\"asset_id\":\"777\","
+                        + "\"size\":\"5\",\"maker_orders\":["
+                        + "{\"order_id\":\"0x1\",\"asset_id\":\"777\",\"matched_amount\":\"2\",\"price\":\"0.40\"},"
+                        + "{\"order_id\":\"0x2\",\"asset_id\":\"888\",\"matched_amount\":\"3\",\"price\":\"0.55\"}]},"
+                        + "{\"status\":\"FAILED\",\"taker_order_id\":\"" + HASH + "\",\"asset_id\":\"777\","
+                        + "\"size\":\"9\",\"maker_orders\":[]}],\"next_cursor\":\"LTE=\"}");
+        final VenueOrder order = query.getOrder(LISTING, HASH, 0).orElseThrow();
+        assertEquals(5_000_000L, order.filledQty(), "the failed trade filled nothing");
+        assertEquals(2_150_000_000L, order.filledNotional(), "2 at 40c and 3 at 45c, the complement of 55c");
     }
 
     @Test
@@ -187,6 +219,12 @@ class PolymarketIntlVenueOrderQueryTest {
             final String matched) {
         return "{\"id\":\"" + id + "\",\"status\":\"" + status + "\",\"side\":\"" + side + "\",\"price\":\"" + price
                 + "\",\"original_size\":\"" + size + "\",\"size_matched\":\"" + matched + "\",\"asset_id\":\"777\"}";
+    }
+
+    private static String resource(final String name) throws IOException {
+        try (var in = PolymarketIntlVenueOrderQueryTest.class.getClassLoader().getResourceAsStream(name)) {
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
     }
 
     private void respond(final int status, final String body) {

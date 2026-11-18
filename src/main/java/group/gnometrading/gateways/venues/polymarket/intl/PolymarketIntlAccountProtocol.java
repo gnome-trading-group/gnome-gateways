@@ -72,6 +72,8 @@ public final class PolymarketIntlAccountProtocol extends JsonAccountProtocol<Web
     private List<ByteBuffer> tradePagesFetched = List.of();
     private List<VenueOrder> endedOrdersFetched = List.of();
     private List<VenueOrder> endedFollowUpFetched = List.of();
+    // Supervisor thread: when each order catch-up found too young was placed.
+    private final Map<String, Long> tooYoungSubmittedAt = new HashMap<>();
     // Supervisor thread: unlisted orders catch-up found too young to judge, by venue id, with when they no longer are.
     private final Map<String, Long> tooYoung = new HashMap<>();
     // Supervisor thread: follow-up lookups that failed so far, by venue id.
@@ -135,7 +137,7 @@ public final class PolymarketIntlAccountProtocol extends JsonAccountProtocol<Web
     /** An event's time for fee schedules and trade dedup is when its frame arrived, which the sink already has. */
     @Override
     protected void onEvent(final JsonDecoder.JsonObject event, final OrderEventSink sink) {
-        this.events.read(event);
+        this.events.read(event, sink);
         this.events.apply(sink, this.marketsOfOrders, sink.receiveNanos());
     }
 
@@ -159,7 +161,7 @@ public final class PolymarketIntlAccountProtocol extends JsonAccountProtocol<Web
             } else if (ctx.submittedAtMillis < nowMillis - ENDED_GRACE_MILLIS) {
                 try {
                     this.catchUpQuery
-                            .getOrder(null, id, 0)
+                            .getOrder(null, id, ctx.submittedAtMillis)
                             .filter(VenueOrder::terminal)
                             .ifPresent(ended::add);
                 } catch (final IOException e) {
@@ -169,6 +171,7 @@ public final class PolymarketIntlAccountProtocol extends JsonAccountProtocol<Web
                 }
             } else {
                 this.tooYoung.put(id, ctx.submittedAtMillis + ENDED_GRACE_MILLIS);
+                this.tooYoungSubmittedAt.put(id, ctx.submittedAtMillis);
             }
         }
         this.tradePagesFetched = trades;
@@ -223,7 +226,7 @@ public final class PolymarketIntlAccountProtocol extends JsonAccountProtocol<Web
             }
             try {
                 this.catchUpQuery
-                        .getOrder(null, id, 0)
+                        .getOrder(null, id, this.tooYoungSubmittedAt.getOrDefault(id, nowMillis - ENDED_GRACE_MILLIS))
                         .filter(VenueOrder::terminal)
                         .ifPresent(ended::add);
                 forgetFollowUp(id);
@@ -238,6 +241,7 @@ public final class PolymarketIntlAccountProtocol extends JsonAccountProtocol<Web
 
     private void forgetFollowUp(final String id) {
         this.tooYoung.remove(id);
+        this.tooYoungSubmittedAt.remove(id);
         this.followUpFailures.remove(id);
     }
 
@@ -295,7 +299,7 @@ public final class PolymarketIntlAccountProtocol extends JsonAccountProtocol<Web
             while (list.hasNextItem()) {
                 try (var item = list.nextItem();
                         var trade = item.asObject()) {
-                    this.events.readListedTrade(trade);
+                    this.events.readListedTrade(trade, sink);
                     this.events.apply(sink, this.marketsOfOrders, this.clock.nanoTime());
                 }
             }

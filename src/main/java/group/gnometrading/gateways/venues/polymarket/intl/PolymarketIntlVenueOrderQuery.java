@@ -34,6 +34,8 @@ public final class PolymarketIntlVenueOrderQuery implements VenueOrderQuery {
     private static final String END_CURSOR = "LTE=";
     private static final int HTTP_NOT_FOUND = 404;
     private static final long MILLIS_PER_SECOND = 1_000;
+    // Placed shortly before the time given, by a clock that may run behind the venue's.
+    private static final long TRADE_LOOKUP_SLACK_SECONDS = 60;
     // Statuses of an order that can still fill; anything else (matched, cancelled) has finished.
     private static final Set<String> WORKING_STATUSES = Set.of("LIVE", "DELAYED", "UNMATCHED");
 
@@ -95,6 +97,14 @@ public final class PolymarketIntlVenueOrderQuery implements VenueOrderQuery {
     @Override
     public Optional<VenueOrder> getOrder(final Listing listing, final String exchangeOrderId, final long createdAfterMs)
             throws IOException {
+        final Optional<OrderFields> found = lookUp(exchangeOrderId);
+        return found.isPresent()
+                ? Optional.of(found.get().toVenueOrder())
+                : orderFromTrades(listing, exchangeOrderId, createdAfterMs);
+    }
+
+    /** The order as the CLOB's lookup has it; empty when it doesn't know it. */
+    private Optional<OrderFields> lookUp(final String exchangeOrderId) throws IOException {
         final String path = PolymarketIntlRequests.ORDER_LOOKUP_PATH + exchangeOrderId;
         final HTTPResponse response = get(path, path);
         if (response.getStatusCode() == HTTP_NOT_FOUND) {
@@ -109,11 +119,176 @@ public final class PolymarketIntlVenueOrderQuery implements VenueOrderQuery {
                 return Optional.empty();
             }
             try (var order = root.asObject()) {
-                return Optional.of(readOrder(order).toVenueOrder());
+                return Optional.of(readOrder(order));
             }
         } catch (final RuntimeException e) {
             // The decoder trusts its input; a body that isn't an order object is the venue's fault, not ours.
             throw new IOException("Polymarket order lookup answered something unreadable: " + e, e);
+        }
+    }
+
+    /**
+     * An order the lookup doesn't know: the CLOB forgets a fully matched order as it forgets one cancelled unfilled,
+     * so what it filled, if anything, comes from the trades that name it. As the taker it filled the trade's size, at
+     * its resting orders' prices (one on the other outcome, matched by minting or merging, at the complement); as a
+     * resting order, its own leg. A trade that failed settlement filled nothing. An order no trade names is unknown.
+     *
+     * @param listing the order's listing, whose market's trades are read; null reads the account's in every market
+     * @param createdAfterMs when the order was placed, or just before: trades before it can't be its
+     */
+    private Optional<VenueOrder> orderFromTrades(final Listing listing, final String id, final long createdAfterMs)
+            throws IOException {
+        final long afterSeconds = Math.max(0, createdAfterMs / MILLIS_PER_SECOND - TRADE_LOOKUP_SLACK_SECONDS);
+        return orderFromTradePages(
+                id, listing == null ? accountTradePages(afterSeconds) : tradePages(conditionId(listing), afterSeconds));
+    }
+
+    private Optional<VenueOrder> orderFromTradePages(final String id, final List<ByteBuffer> pages) {
+        final OrderTradeTotals totals = new OrderTradeTotals(id);
+        for (final ByteBuffer page : pages) {
+            readTradePage(page.duplicate(), totals);
+        }
+        if (totals.qty <= 0) {
+            return Optional.empty();
+        }
+        return Optional.of(new VenueOrder(id, id, totals.qty, totals.notional, 0, true));
+    }
+
+    private void readTradePage(final ByteBuffer page, final OrderTradeTotals totals) {
+        try (var root = this.jsonDecoder.wrap(page);
+                var obj = root.asObject()) {
+            while (obj.hasNextKey()) {
+                try (var entry = obj.nextKey()) {
+                    if (!entry.isNull() && entry.getName().equals("data")) {
+                        readTrades(entry, totals);
+                    }
+                }
+            }
+        }
+    }
+
+    private static void readTrades(final JsonDecoder.JsonNode data, final OrderTradeTotals totals) {
+        try (var trades = data.asArray()) {
+            while (trades.hasNextItem()) {
+                readTrade(trades, totals);
+            }
+        }
+    }
+
+    private static void readTrade(final JsonDecoder.JsonArray trades, final OrderTradeTotals totals) {
+        try (var item = trades.nextItem();
+                var trade = item.asObject()) {
+            totals.add(ListedTrade.read(trade));
+        }
+    }
+
+    /** One trade of a listing, as much of it as an order's fills need. */
+    private static final class ListedTrade {
+        String status = "";
+        String takerOrderId = "";
+        String assetId = "";
+        long size;
+        final List<String> legOrderIds = new ArrayList<>();
+        final List<String> legAssetIds = new ArrayList<>();
+        final List<Long> legMatched = new ArrayList<>();
+        final List<Long> legPrices = new ArrayList<>();
+
+        static ListedTrade read(final JsonDecoder.JsonObject trade) {
+            final ListedTrade read = new ListedTrade();
+            while (trade.hasNextKey()) {
+                try (var field = trade.nextKey()) {
+                    if (field.isNull()) {
+                        continue;
+                    }
+                    final GnomeString name = field.getName();
+                    if (name.equals("status")) {
+                        read.status = field.asString().toString();
+                    } else if (name.equals("taker_order_id")) {
+                        read.takerOrderId = field.asString().toString();
+                    } else if (name.equals("asset_id")) {
+                        read.assetId = field.asString().toString();
+                    } else if (name.equals("size")) {
+                        read.size = field.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR);
+                    } else if (name.equals("maker_orders")) {
+                        read.readLegs(field);
+                    }
+                }
+            }
+            return read;
+        }
+
+        private void readLegs(final JsonDecoder.JsonNode field) {
+            try (var legs = field.asArray()) {
+                while (legs.hasNextItem()) {
+                    readLeg(legs);
+                }
+            }
+        }
+
+        private void readLeg(final JsonDecoder.JsonArray legs) {
+            try (var item = legs.nextItem();
+                    var leg = item.asObject()) {
+                this.legOrderIds.add("");
+                this.legAssetIds.add("");
+                this.legMatched.add(0L);
+                this.legPrices.add(0L);
+                final int at = this.legOrderIds.size() - 1;
+                while (leg.hasNextKey()) {
+                    readLegField(leg, at);
+                }
+            }
+        }
+
+        private void readLegField(final JsonDecoder.JsonObject leg, final int at) {
+            try (var legField = leg.nextKey()) {
+                if (legField.isNull()) {
+                    return;
+                }
+                final GnomeString name = legField.getName();
+                if (name.equals("order_id")) {
+                    this.legOrderIds.set(at, legField.asString().toString());
+                } else if (name.equals("asset_id")) {
+                    this.legAssetIds.set(at, legField.asString().toString());
+                } else if (name.equals("matched_amount")) {
+                    this.legMatched.set(at, legField.asString().toFixedPointLong(Statics.SIZE_SCALING_FACTOR));
+                } else if (name.equals("price")) {
+                    this.legPrices.set(at, legField.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR));
+                }
+            }
+        }
+    }
+
+    /** What one order filled across the trades read, by quantity and notional. */
+    private static final class OrderTradeTotals {
+        private final String orderId;
+        long qty;
+        long notional;
+
+        OrderTradeTotals(final String orderId) {
+            this.orderId = orderId;
+        }
+
+        void add(final ListedTrade trade) {
+            if (trade.status.equalsIgnoreCase("FAILED")) {
+                return;
+            }
+            final boolean taker = trade.takerOrderId.equalsIgnoreCase(this.orderId);
+            for (int i = 0; i < trade.legOrderIds.size(); i++) {
+                final long matched = trade.legMatched.get(i);
+                final long price = trade.legPrices.get(i);
+                if (taker) {
+                    final boolean sameToken = trade.legAssetIds.get(i).isEmpty()
+                            || trade.legAssetIds.get(i).equals(trade.assetId);
+                    final long legPrice = sameToken ? price : Statics.PRICE_SCALING_FACTOR - price;
+                    this.notional += ScaledMath.multiplyDivide(legPrice, matched, Statics.SIZE_SCALING_FACTOR);
+                } else if (trade.legOrderIds.get(i).equalsIgnoreCase(this.orderId)) {
+                    this.qty += matched;
+                    this.notional += ScaledMath.multiplyDivide(price, matched, Statics.SIZE_SCALING_FACTOR);
+                }
+            }
+            if (taker) {
+                this.qty += trade.size;
+            }
         }
     }
 
@@ -268,6 +443,12 @@ public final class PolymarketIntlVenueOrderQuery implements VenueOrderQuery {
                 return 0;
             }
         }
+    }
+
+    private static String conditionId(final Listing listing) {
+        final String exchangeSecurityId = listing.exchangeSecurityId();
+        final int colon = exchangeSecurityId.indexOf(':');
+        return colon >= 0 ? exchangeSecurityId.substring(0, colon) : exchangeSecurityId;
     }
 
     private static String tokenId(final Listing listing) {

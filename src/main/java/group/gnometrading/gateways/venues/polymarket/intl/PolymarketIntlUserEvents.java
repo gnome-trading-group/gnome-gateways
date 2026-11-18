@@ -42,8 +42,11 @@ public final class PolymarketIntlUserEvents {
     private static final long NANOS_PER_MILLI = 1_000_000L;
     private static final long NANOS_PER_SECOND = 1_000_000_000L;
     private static final int TOKEN_ID_MAX_LENGTH = 96;
-    // More maker orders than this in one trade are dropped; a market maker has at most one per side.
-    private static final int MAX_MAKER_LEGS = 32;
+    // One taker can sweep dozens of resting orders, of every trader on the level. A taker fill of ours is priced from
+    // the first this many; past them only legs that are ours are kept, so no fill of ours is ever lost to the count.
+    private static final int MAX_MAKER_LEGS = 1024;
+    // Our own resting orders matched by one trade past the first MAX_MAKER_LEGS legs.
+    private static final int MAX_OWN_OVERFLOW_LEGS = 64;
     // The venue redelivers MATCHED trades (e.g. on reconnect); a redelivery lands well inside this window.
     private static final int SEEN_TRADE_CAPACITY = 4096;
 
@@ -77,6 +80,12 @@ public final class PolymarketIntlUserEvents {
     private long matchTimeNanos;
     private final MakerLeg[] makerLegs = new MakerLeg[MAX_MAKER_LEGS];
     private int makerLegCount;
+    private final MakerLeg[] ownOverflowLegs = new MakerLeg[MAX_OWN_OVERFLOW_LEGS];
+    private int ownOverflowLegCount;
+    private final MakerLeg scratchLeg = new MakerLeg();
+    // Legs past MAX_MAKER_LEGS: others' (left out of a taker fill's price) and ours that found no room (lost fills).
+    private int othersSetAside;
+    private int ownLost;
 
     // A taker fill's price and fee, as priceTakerFill worked them out; reused for every trade.
     private long takerFillPrice;
@@ -93,24 +102,30 @@ public final class PolymarketIntlUserEvents {
         for (int i = 0; i < MAX_MAKER_LEGS; i++) {
             this.makerLegs[i] = new MakerLeg();
         }
+        for (int i = 0; i < MAX_OWN_OVERFLOW_LEGS; i++) {
+            this.ownOverflowLegs[i] = new MakerLeg();
+        }
     }
 
-    /** Reads a socket message's top-level object, ready to {@link #apply}. */
-    public void read(final JsonDecoder.JsonObject message) {
+    /**
+     * Reads a socket message's top-level object, ready to {@link #apply}. {@code sink} tells which of a trade's
+     * resting orders are ours, should there be more than can all be kept.
+     */
+    public void read(final JsonDecoder.JsonObject message, final OrderEventSink sink) {
         reset();
         while (message.hasNextKey()) {
             try (var entry = message.nextKey()) {
-                readField(entry);
+                readField(entry, sink);
             }
         }
     }
 
-    /** Reads one trade of a REST listing, ready to {@link #apply}. */
-    public void readListedTrade(final JsonDecoder.JsonObject trade) {
+    /** Reads one trade of a REST listing, ready to {@link #apply}; {@code sink} as for {@link #read}. */
+    public void readListedTrade(final JsonDecoder.JsonObject trade, final OrderEventSink sink) {
         reset();
         while (trade.hasNextKey()) {
             try (var field = trade.nextKey()) {
-                readField(field);
+                readField(field, sink);
             }
         }
         // A REST trade carries no event type, and its time only as match_time.
@@ -165,18 +180,51 @@ public final class PolymarketIntlUserEvents {
             return;
         }
         final OrderContext taker = sink.order(OrderKeys.of(this.takerOrderIdBytes, this.takerOrderIdLength));
+        if (this.ownLost > 0 || (taker != null && this.othersSetAside > 0)) {
+            logOverflow(taker != null);
+        }
         if (taker != null) {
             priceTakerFill(taker, markets, nowNanos);
             fill(sink, taker, this.size, this.takerFillPrice, this.takerFillFee, Liquidity.TAKER);
         }
-        for (int i = 0; i < this.makerLegCount; i++) {
-            final MakerLeg leg = this.makerLegs[i];
+        fillMakers(sink, markets, nowNanos, this.makerLegs, this.makerLegCount);
+        fillMakers(sink, markets, nowNanos, this.ownOverflowLegs, this.ownOverflowLegCount);
+    }
+
+    private void fillMakers(
+            final OrderEventSink sink,
+            final Markets markets,
+            final long nowNanos,
+            final MakerLeg[] legs,
+            final int count) {
+        for (int i = 0; i < count; i++) {
+            final MakerLeg leg = legs[i];
             final OrderContext maker = sink.order(OrderKeys.of(leg.orderIdBytes, leg.orderIdLength));
             if (maker != null) {
                 final long fee =
                         fee(markets.fees(maker), nowNanos, maker.side == Side.Bid, leg.price, leg.matchedAmount, true);
                 fill(sink, maker, leg.matchedAmount, leg.price, fee, Liquidity.MAKER);
             }
+        }
+    }
+
+    /** Off the hot path: a trade this large is rare, and its line allocates. */
+    private void logOverflow(final boolean ourTaker) {
+        final String trade = new String(this.idBytes, 0, this.idLength, StandardCharsets.US_ASCII);
+        if (this.ownLost > 0) {
+            this.logger.logf(
+                    LogMessage.UNKNOWN_ERROR,
+                    "Polymarket trade %s matched %d more of our orders than could be kept; their fills are lost",
+                    trade,
+                    this.ownLost);
+        }
+        if (ourTaker && this.othersSetAside > 0) {
+            this.logger.logf(
+                    LogMessage.UNKNOWN_ERROR,
+                    "Polymarket trade %s matched %d resting orders past %d; our taker fill is priced from the first",
+                    trade,
+                    this.othersSetAside,
+                    MAX_MAKER_LEGS);
         }
     }
 
@@ -269,7 +317,7 @@ public final class PolymarketIntlUserEvents {
         return schedule.fee(buy, fillPrice, fillQty, maker, null);
     }
 
-    private void readField(final JsonDecoder.JsonNode entry) {
+    private void readField(final JsonDecoder.JsonNode entry, final OrderEventSink sink) {
         // The decoder reads a null as whatever string or array comes after it.
         if (entry.isNull()) {
             return;
@@ -287,11 +335,11 @@ public final class PolymarketIntlUserEvents {
         } else if (name.equals("status")) {
             this.status = readStatus(entry.asString());
         } else {
-            readDetailField(name, entry);
+            readDetailField(name, entry, sink);
         }
     }
 
-    private void readDetailField(final GnomeString name, final JsonDecoder.JsonNode entry) {
+    private void readDetailField(final GnomeString name, final JsonDecoder.JsonNode entry, final OrderEventSink sink) {
         if (name.equals("id")) {
             this.idLength = copyId(entry.asString(), this.idBytes);
         } else if (name.equals("taker_order_id")) {
@@ -307,11 +355,11 @@ public final class PolymarketIntlUserEvents {
         } else if (name.equals("match_time")) {
             this.matchTimeNanos = entry.asString().toFixedPointLong(1L) * NANOS_PER_SECOND;
         } else if (name.equals("maker_orders")) {
-            readMakerOrders(entry);
+            readMakerOrders(entry, sink);
         }
     }
 
-    private void readMakerOrders(final JsonDecoder.JsonNode entry) {
+    private void readMakerOrders(final JsonDecoder.JsonNode entry, final OrderEventSink sink) {
         try (var legs = entry.asArray()) {
             while (legs.hasNextItem()) {
                 try (var item = legs.nextItem();
@@ -320,9 +368,24 @@ public final class PolymarketIntlUserEvents {
                         final MakerLeg leg = this.makerLegs[this.makerLegCount++];
                         leg.reset();
                         leg.read(legObj);
+                    } else {
+                        keepIfOurs(legObj, sink);
                     }
                 }
             }
+        }
+    }
+
+    private void keepIfOurs(final JsonDecoder.JsonObject legObj, final OrderEventSink sink) {
+        final MakerLeg leg = this.scratchLeg;
+        leg.reset();
+        leg.read(legObj);
+        if (sink.order(OrderKeys.of(leg.orderIdBytes, leg.orderIdLength)) == null) {
+            this.othersSetAside++;
+        } else if (this.ownOverflowLegCount < MAX_OWN_OVERFLOW_LEGS) {
+            this.ownOverflowLegs[this.ownOverflowLegCount++].copyFrom(leg);
+        } else {
+            this.ownLost++;
         }
     }
 
@@ -370,6 +433,9 @@ public final class PolymarketIntlUserEvents {
         this.timestampEvent = OrderExecutionReportEncoder.timestampEventNullValue();
         this.matchTimeNanos = OrderExecutionReportEncoder.timestampEventNullValue();
         this.makerLegCount = 0;
+        this.ownOverflowLegCount = 0;
+        this.othersSetAside = 0;
+        this.ownLost = 0;
     }
 
     private static final class MakerLeg {
@@ -386,6 +452,15 @@ public final class PolymarketIntlUserEvents {
             this.assetIdLength = 0;
             this.matchedAmount = 0;
             this.price = 0;
+        }
+
+        void copyFrom(final MakerLeg other) {
+            System.arraycopy(other.orderIdBytes, 0, this.orderIdBytes, 0, other.orderIdLength);
+            this.orderIdLength = other.orderIdLength;
+            System.arraycopy(other.assetIdBytes, 0, this.assetIdBytes, 0, other.assetIdLength);
+            this.assetIdLength = other.assetIdLength;
+            this.matchedAmount = other.matchedAmount;
+            this.price = other.price;
         }
 
         void read(final JsonDecoder.JsonObject legObj) {

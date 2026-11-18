@@ -124,7 +124,7 @@ public final class PolymarketIntlOrderPath {
     }
 
     private void apply(final JsonDecoder.JsonObject message) {
-        this.events.read(message);
+        this.events.read(message, this.sink);
         this.events.apply(this.sink, this.markets, 0);
     }
 
