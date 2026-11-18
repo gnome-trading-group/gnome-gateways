@@ -51,6 +51,21 @@ public final class OrderContext {
     public long finalFillQty = QTY_ABSENT;
     // Writer-to-reader marker: this context carries the venue's id for an order, learned from the submit's answer.
     public boolean venueOrderIdNotice;
+    // Sender-side: the submit's answer says the order rests on the book, which on a venue whose acknowledgement
+    // event can trail that answer lets the reader acknowledge it from the answer.
+    public boolean answeredResting;
+    // Sender-side: the submit's answer leaves the order neither resting nor matched, e.g. held in a matching delay, so
+    // a
+    // cancel that can't find it yet may find it later.
+    public boolean answeredHeldBack;
+    // Writer-to-reader marker: the venue's answer says this order rests; the reader acknowledges it unless it has.
+    public boolean restingNotice;
+    // Sender-side: the venue refused the submit as already cancelled, because a cancel sent before its answer reached
+    // the venue first. The order is cancelled, not refused.
+    public boolean refusedAsCanceled;
+    // Writer-to-reader marker on an abandon: the order was refused as already cancelled, so the reader remembers it,
+    // and says so loudly should the venue place or fill it anyway.
+    public boolean canceledBeforePlaced;
     // A notice that hands the reader a new order to hold, on the same queue as the order's later notices.
     public boolean registration;
     // A notice that ends an order the reader was handed: if the reader has ended it already, it is dropped.
@@ -114,6 +129,11 @@ public final class OrderContext {
         this.finalFillNotice = false;
         this.finalFillQty = QTY_ABSENT;
         this.venueOrderIdNotice = false;
+        this.answeredResting = false;
+        this.answeredHeldBack = false;
+        this.restingNotice = false;
+        this.refusedAsCanceled = false;
+        this.canceledBeforePlaced = false;
         this.registration = false;
         this.endsRegistered = false;
         this.limitPrice = 0;
@@ -152,6 +172,11 @@ public final class OrderContext {
         this.finalFillNotice = src.finalFillNotice;
         this.finalFillQty = src.finalFillQty;
         this.venueOrderIdNotice = src.venueOrderIdNotice;
+        this.answeredResting = src.answeredResting;
+        this.answeredHeldBack = src.answeredHeldBack;
+        this.restingNotice = src.restingNotice;
+        this.refusedAsCanceled = src.refusedAsCanceled;
+        this.canceledBeforePlaced = src.canceledBeforePlaced;
         this.registration = src.registration;
         this.endsRegistered = src.endsRegistered;
         this.limitPrice = src.limitPrice;

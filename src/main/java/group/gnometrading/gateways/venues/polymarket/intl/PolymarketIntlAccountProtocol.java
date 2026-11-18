@@ -134,6 +134,20 @@ public final class PolymarketIntlAccountProtocol extends JsonAccountProtocol<Web
         return false;
     }
 
+    /**
+     * The venue placed an order it then refused as already cancelled, and its PLACEMENT or fill came first. The order is
+     * reported cancelled but may rest, so reconciliation must look; rare, so the line may allocate.
+     */
+    @Override
+    public void onRefusedAfterPlaced(final OrderContext ctx, final long key) {
+        this.logger.logf(
+                LogMessage.UNKNOWN_ERROR,
+                "Polymarket refused order %s as already cancelled after placing it (filled %d); "
+                        + "it is reported cancelled but may still rest",
+                new String(ctx.correlationIdBytes, 0, ctx.correlationIdLength, StandardCharsets.US_ASCII),
+                ctx.cumulativeFilledQty);
+    }
+
     /** An event's time for fee schedules and trade dedup is when its frame arrived, which the sink already has. */
     @Override
     protected void onEvent(final JsonDecoder.JsonObject event, final OrderEventSink sink) {

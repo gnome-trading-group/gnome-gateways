@@ -180,12 +180,26 @@ public final class AccountLane<M> implements GnomeAgent {
     static final int MAX_CANCEL_RETRIES = 3;
     static final long CANCEL_RETRY_WINDOW_NANOS = TimeUnit.SECONDS.toNanos(2);
     static final long CANCEL_RETRY_BACKOFF_NANOS = TimeUnit.MILLISECONDS.toNanos(200);
+    // A held-back order sits out the venue's matching delay (seconds for sports) before its cancel can find it.
+    static final long HELD_BACK_RETRY_WINDOW_NANOS = TimeUnit.SECONDS.toNanos(5);
+    static final long HELD_BACK_RETRY_NANOS = TimeUnit.MILLISECONDS.toNanos(500);
+    // An order its cancel didn't find is cancelled again twice if still held: soon, past the lag between a `live`
+    // answer and the order being on the book (a cancel in that gap finds nothing), and then once its events have had
+    // long enough to end it, that last one's "not found" told to the OMS as a refusal.
+    static final long NOT_FOUND_QUICK_RECHECK_NANOS = TimeUnit.MILLISECONDS.toNanos(600);
+    static final long NOT_FOUND_FINAL_RECHECK_NANOS = TimeUnit.MILLISECONDS.toNanos(2_400);
+    static final int QUICK_RECHECK = 1;
+    static final int FINAL_RECHECK = 2;
 
     private static final long MILLI_TOKENS = 1_000;
     private static final int KIND_BITS = 3;
     // Answers' tags name a batch, not an order, for these kinds.
     private static final int BATCH_SUBMIT = 5;
     private static final int BATCH_CANCEL = 6;
+    // A copy of a cancel sent beside the order's other request, on a venue that cancels before the submit's answer.
+    private static final int CANCEL_COPY = 7;
+    /** The most copies of one cancel {@link #cancelCopies(int)} may ask for. */
+    public static final int MAX_CANCEL_COPIES = 5;
     // Batches on the wire at once: more than the lane has connections, which bound them first.
     private static final int BATCH_POOL = 64;
     private static final long KIND_MASK = (1 << KIND_BITS) - 1;
@@ -225,6 +239,8 @@ public final class AccountLane<M> implements GnomeAgent {
     private final Long2ObjectHashMap<LaneOrder> byCorrelation;
 
     private final LongArrayQueue cancels;
+    // Orders whose cancel's first copy went this pass, waiting for their further copies until every first copy has.
+    private final LongArrayQueue cancelsToCopy;
     // Resends and lookups apart: they draw on different budgets, and one blocked mustn't hold up the other.
     private final LongArrayQueue resends;
     private final LongArrayQueue lookups;
@@ -266,6 +282,15 @@ public final class AccountLane<M> implements GnomeAgent {
     // By connection, which carries one request at a time: when its request went, and its class, for its round trip.
     private final long[] sentAtNanos;
     private final RequestClass[] sentTypes;
+    // Whether the venue's cancels go without waiting on the order's other requests, and how many copies of each; and,
+    // by connection, a copy's rule and when it was decided on and written, as an order can have several on the wire.
+    private final boolean cancelsBeforeAnswer;
+    private int cancelCopies;
+    private final int[] cancelRules;
+    private final long[] cancelDecidedNanos;
+    private final long[] cancelWireNanos;
+    // The rule of the cancel copy just admitted.
+    private int admittedRule;
     private boolean connectionsWereBusy;
     // For requests' timings: the command being handled's stamps, when the lane last looked for answers, and the answer
     // being handled's, for a batch's entries.
@@ -340,9 +365,11 @@ public final class AccountLane<M> implements GnomeAgent {
         this.byCorrelation = new Long2ObjectHashMap<>(maxOrders * 2, 0.5f);
         // Each holds at most every order once, plus stale entries for orders since ended.
         this.cancels = new LongArrayQueue(2 * maxOrders, -1);
+        this.cancelsToCopy = new LongArrayQueue(maxOrders, -1);
         this.resends = new LongArrayQueue(2 * maxOrders, -1);
         this.lookups = new LongArrayQueue(2 * maxOrders, -1);
-        this.cancelRetries = new long[maxOrders];
+        // An order has at most a retry and a recheck waiting at once.
+        this.cancelRetries = new long[2 * maxOrders];
         this.fair = new FairQueue<>(
                 this.orders,
                 timing.maxQueueDelayNanos(),
@@ -350,6 +377,13 @@ public final class AccountLane<M> implements GnomeAgent {
                 this::expire,
                 Math.round(budget.newOrderTokensPerSecond() * MILLI_TOKENS));
         this.maxBatch = venue.maxBatch();
+        // A venue that batches cancels sends them its own way.
+        this.cancelsBeforeAnswer = venue.cancelsBeforeAnswer() && this.maxBatch == 1;
+        this.cancelCopies =
+                this.cancelsBeforeAnswer ? Math.max(1, Math.min(MAX_CANCEL_COPIES, venue.cancelCopies())) : 1;
+        this.cancelRules = new int[connections.size()];
+        this.cancelDecidedNanos = new long[connections.size()];
+        this.cancelWireNanos = new long[connections.size()];
         final int batchPool = this.maxBatch > 1 ? BATCH_POOL : 0;
         this.batches = new LaneBatch[batchPool];
         this.freeBatches = new int[batchPool];
@@ -462,6 +496,17 @@ public final class AccountLane<M> implements GnomeAgent {
     public void caps(final Caps caps) {
         this.caps = caps;
         this.fair.defaultCaps(caps.sessionMaxOpenOrders(), caps.sessionMaxNewPerSecond());
+    }
+
+    /**
+     * Copies of each cancel to send at once, from 1 to {@link #MAX_CANCEL_COPIES}, in place of the venue's own number;
+     * only on a venue that {@link LaneVenue#cancelsBeforeAnswer}. Copies past the first go only while a connection is
+     * free and the cancel budget is over half full. Before the lane starts.
+     */
+    public void cancelCopies(final int copies) {
+        if (this.cancelsBeforeAnswer) {
+            this.cancelCopies = Math.max(1, Math.min(MAX_CANCEL_COPIES, copies));
+        }
     }
 
     /**
@@ -803,10 +848,11 @@ public final class AccountLane<M> implements GnomeAgent {
             free(order);
             return;
         }
-        if (order.submitState != LaneOrder.SETTLED) {
+        if (order.submitState != LaneOrder.SETTLED && !this.cancelsBeforeAnswer) {
             decided(order, RequestClass.CANCEL, AdmissionAction.CANCEL_HELD_UNTIL_ACK, 0, -1);
         }
         order.cancelWanted = true;
+        order.notFoundRecheckAtNanos = 0;
         serveWanted(order);
     }
 
@@ -851,6 +897,15 @@ public final class AccountLane<M> implements GnomeAgent {
      * if the submit settled without the venue's id, which a cancel or amend needs.
      */
     private void serveWanted(final LaneOrder order) {
+        if (this.cancelsBeforeAnswer && order.cancelWanted) {
+            queueCancelBeforeAnswer(order);
+        } else {
+            serveWantedOnceSettled(order);
+        }
+    }
+
+    /** As {@link #serveWanted}, where a cancel or amend waits for the order's submit and other requests. */
+    private void serveWantedOnceSettled(final LaneOrder order) {
         if (order.inFlight != LaneOrder.NONE || order.submitState != LaneOrder.SETTLED) {
             return;
         }
@@ -881,10 +936,34 @@ public final class AccountLane<M> implements GnomeAgent {
         }
     }
 
+    /**
+     * Queues the order's wanted cancel without waiting on its other requests: on such a venue it can go while the
+     * submit is unanswered. An amend still wanted is refused, as the order is being cancelled.
+     */
+    private void queueCancelBeforeAnswer(final LaneOrder order) {
+        if (order.amendWanted) {
+            order.amendWanted = false;
+            this.fair.unqueue(order);
+            this.notices.cancelReject(order.ctx, RejectReason.GATEWAY_REJECTED);
+        }
+        if (order.cancelsInFlight > 0 || order.cancelQueued || order.cancelRetryAtNanos != 0) {
+            return;
+        }
+        if (order.cancelAwaitsSubmit) {
+            if (order.submitState != LaneOrder.SETTLED) {
+                return;
+            }
+            order.cancelAwaitsSubmit = false;
+        }
+        order.cancelQueued = true;
+        order.cancelQueuedAtNanos = this.nanoClock.getAsLong();
+        this.cancels.offerLong(order.entry());
+    }
+
     // ----- sending -----
 
     private int sendQueued() {
-        int sent = drainQueue(this.cancels, LaneOrder.CANCEL);
+        int sent = drainCancels();
         sent += drainQueue(this.resends, LaneOrder.SUBMIT);
         sent += drainQueue(this.lookups, LaneOrder.LOOKUP);
         sent += serveSessions();
@@ -1013,16 +1092,27 @@ public final class AccountLane<M> implements GnomeAgent {
 
     /** The order's request of {@code kind} that went on the wire is over, with the answer being handled, if any. */
     private void tellTimed(final LaneOrder order, final int kind, final int outcome, final HTTPResponse response) {
+        tellTimed(order, kind, outcome, response, order.decidedNanos, order.wireSentNanos);
+    }
+
+    /** As above, for a request whose decision and write times are its own, as one copy of a cancel's are. */
+    private void tellTimed(
+            final LaneOrder order,
+            final int kind,
+            final int outcome,
+            final HTTPResponse response,
+            final long decidedNanos,
+            final long wireSentNanos) {
         if (kind == LaneOrder.LOOKUP) {
             return;
         }
         final RequestTiming timing = startTiming(order, kind, outcome);
-        timing.decidedNanos = order.decidedNanos;
-        timing.wireSentNanos = order.wireSentNanos;
+        timing.decidedNanos = decidedNanos;
+        timing.wireSentNanos = wireSentNanos;
         if (response != null) {
             timing.answeredNanos = this.answerNanos;
             // A request written in the pass after the lane last looked was answered no earlier than it went out.
-            timing.answerSlackNanos = Math.min(this.answerSlackNanos, this.answerNanos - order.wireSentNanos);
+            timing.answerSlackNanos = Math.min(this.answerSlackNanos, this.answerNanos - wireSentNanos);
             timing.venueCode = response.getStatusCode();
             this.venue.readTiming(response, timing);
         }
@@ -1317,10 +1407,17 @@ public final class AccountLane<M> implements GnomeAgent {
     private static final int RETRY = 2;
 
     /** Sends the queue's requests in order while connections and the budget allow; the head waits otherwise. */
-    private int drainQueue(final LongArrayQueue queue, final int kind) {
-        if (kind == LaneOrder.CANCEL && this.maxBatch > 1 && queue.size() > 1) {
+    private int drainCancels() {
+        if (this.cancelsBeforeAnswer) {
+            return drainCancelsBeforeAnswer();
+        }
+        if (this.maxBatch > 1 && this.cancels.size() > 1) {
             return drainCancelBatches();
         }
+        return drainQueue(this.cancels, LaneOrder.CANCEL);
+    }
+
+    private int drainQueue(final LongArrayQueue queue, final int kind) {
         int sent = 0;
         while (!queue.isEmpty()) {
             final LaneOrder order = live(queue.peekLong());
@@ -1338,6 +1435,147 @@ public final class AccountLane<M> implements GnomeAgent {
             }
         }
         return sent;
+    }
+
+    /**
+     * Sends each queued cancel's first copy as a connection and the budget allow. Only then, so that one cancel's copies
+     * never hold up another cancel, as many more of each as {@link #cancelCopies} asks for while a connection is free
+     * and the cancel budget is over half full.
+     */
+    private int drainCancelsBeforeAnswer() {
+        int sent = 0;
+        while (!this.cancels.isEmpty()) {
+            final LaneOrder order = live(this.cancels.peekLong());
+            if (cancelNoLongerQueued(order)) {
+                this.cancels.pollLong();
+                continue;
+            }
+            final int outcome = sendCancelCopy(order, true);
+            if (outcome == BLOCKED) {
+                break;
+            }
+            if (outcome == TAKEN) {
+                this.cancels.pollLong();
+                order.cancelQueued = false;
+                sent++;
+                if (this.cancelCopies > 1) {
+                    this.cancelsToCopy.offerLong(order.entry());
+                }
+            }
+        }
+        final boolean firstsAllSent = this.cancels.isEmpty();
+        while (!this.cancelsToCopy.isEmpty()) {
+            final LaneOrder order = live(this.cancelsToCopy.pollLong());
+            if (firstsAllSent && order != null) {
+                sent += sendFurtherCopies(order);
+            }
+        }
+        return sent;
+    }
+
+    /** Whether a queued cancel's entry no longer stands: its order ended, its cancel was settled, or it is on the wire. */
+    private static boolean cancelNoLongerQueued(final LaneOrder order) {
+        if (order != null && order.cancelWanted && order.cancelsInFlight == 0) {
+            return false;
+        }
+        if (order != null) {
+            order.cancelQueued = false;
+        }
+        return true;
+    }
+
+    private int sendFurtherCopies(final LaneOrder order) {
+        int sent = 0;
+        while (order.cancelRoundOpen
+                && order.cancelsInFlight < this.cancelCopies
+                && sendCancelCopy(order, false) == TAKEN) {
+            sent++;
+        }
+        return sent;
+    }
+
+    /**
+     * Sends one copy of the order's cancel. The first opens a cancel round and waits for a connection and the budget like
+     * any request; a further copy goes only if a connection is free and the cancel budget is over half full.
+     *
+     * @return {@link #TAKEN} once sent, {@link #BLOCKED} if it can't go now, {@link #RETRY} if its connection was found
+     *     dead before a byte went
+     */
+    private int sendCancelCopy(final LaneOrder order, final boolean first) {
+        final long now = this.nanoClock.getAsLong();
+        final int connection = admitCancelCopy(order, first, now);
+        if (connection == AsyncHTTPConnections.NONE) {
+            return BLOCKED;
+        }
+        final int rule = this.admittedRule;
+        write(order, LaneOrder.CANCEL, connection);
+        sending(connection, RequestClass.CANCEL, now);
+        final int result =
+                this.connections.send(connection, tag(order, CANCEL_COPY), now + this.timing.responseTimeoutNanos());
+        if (result == AsyncHTTPConnections.NOT_SENT) {
+            return first ? RETRY : BLOCKED;
+        }
+        final long written = this.nanoClock.getAsLong();
+        this.cancelRules[connection] = rule;
+        this.cancelDecidedNanos[connection] = now;
+        this.cancelWireNanos[connection] = written;
+        this.admissions.sent(RequestClass.CANCEL, written - now);
+        tellSent(order, LaneOrder.CANCEL, rule, now);
+        if (first) {
+            openCancelRound(order);
+        }
+        order.cancelsInFlight++;
+        if (result == AsyncHTTPConnections.SEND_FAILED) {
+            noAnswer();
+            tellTimed(order, LaneOrder.CANCEL, RequestTiming.TRANSPORT_ERROR, null, now, written);
+            onCancelCopyAnswer(order, null);
+            afterAnswer(order);
+        }
+        return TAKEN;
+    }
+
+    /**
+     * A connection for a copy of the order's cancel, with the budget taken for it and its rule left in
+     * {@link #admittedRule}; {@link AsyncHTTPConnections#NONE} if it can't go now.
+     */
+    private int admitCancelCopy(final LaneOrder order, final boolean first, final long now) {
+        @SuppressWarnings("unchecked")
+        final M market = (M) order.market;
+        this.venue.cancelShape(order.ctx, market, this.shape);
+        final int connection = acquireConnection();
+        if (connection == AsyncHTTPConnections.NONE) {
+            if (first) {
+                this.heldByBudget = false;
+            }
+            return AsyncHTTPConnections.NONE;
+        }
+        final int rule = this.budget.classify(this.shape.method, this.shape.path);
+        if (!first && !budgetOverHalf(rule, now)) {
+            return AsyncHTTPConnections.NONE;
+        }
+        if (!this.budget.tryAcquire(rule, now)) {
+            if (first) {
+                this.heldByBudget = true;
+            }
+            return AsyncHTTPConnections.NONE;
+        }
+        this.admittedRule = rule;
+        return connection;
+    }
+
+    /** Whether the bucket {@code rule} draws on is over half full, as a further copy of a cancel needs. */
+    private boolean budgetOverHalf(final int rule, final long now) {
+        final long burst = this.budget.burstTokens(rule);
+        return burst <= 0 || 2 * this.budget.tokensLeft(rule, now) >= burst;
+    }
+
+    private static void openCancelRound(final LaneOrder order) {
+        order.cancelRoundOpen = true;
+        order.cancelSentBeforeSettled = order.submitState != LaneOrder.SETTLED;
+        order.cancelSucceeded = false;
+        order.cancelNotFound = false;
+        order.cancelRefused = false;
+        order.cancelRateLimited = false;
     }
 
     /** Whether what queued the entry no longer stands: a cancel or amend since answered or refused. */
@@ -1517,18 +1755,40 @@ public final class AccountLane<M> implements GnomeAgent {
                 continue;
             }
             final LaneOrder order = live(tag >>> KIND_BITS);
-            if (order == null) {
-                continue;
+            if (order != null) {
+                onOrderCompletion(
+                        order,
+                        kind,
+                        connection,
+                        completion.outcome() == HTTPCompletion.RESPONSE ? completion.response() : null);
             }
-            final HTTPResponse response =
-                    completion.outcome() == HTTPCompletion.RESPONSE ? completion.response() : null;
-            if (response != null) {
-                this.budget.onResponse(order.inFlightRule, response, this.nanoClock.getAsLong());
-            }
-            tellTimed(order, kind, outcomeOf(this.answerOutcome, response), response);
-            onAnswer(order, kind, response);
         }
         return answered;
+    }
+
+    /** @param response the answer, or null if none came whole */
+    private void onOrderCompletion(
+            final LaneOrder order, final int kind, final int connection, final HTTPResponse response) {
+        if (kind == CANCEL_COPY) {
+            if (response != null) {
+                this.budget.onResponse(this.cancelRules[connection], response, this.nanoClock.getAsLong());
+            }
+            tellTimed(
+                    order,
+                    LaneOrder.CANCEL,
+                    outcomeOf(this.answerOutcome, response),
+                    response,
+                    this.cancelDecidedNanos[connection],
+                    this.cancelWireNanos[connection]);
+            onCancelCopyAnswer(order, response);
+            afterAnswer(order);
+            return;
+        }
+        if (response != null) {
+            this.budget.onResponse(order.inFlightRule, response, this.nanoClock.getAsLong());
+        }
+        tellTimed(order, kind, outcomeOf(this.answerOutcome, response), response);
+        onAnswer(order, kind, response);
     }
 
     /** @param response the answer, or null if none came whole (the connection failed or the deadline passed) */
@@ -1554,7 +1814,7 @@ public final class AccountLane<M> implements GnomeAgent {
 
     /** An order whose answer came: freed if the reader ended it meanwhile, else what waited on it served. */
     private void afterAnswer(final LaneOrder order) {
-        if (order.releaseWanted && order.inFlight == LaneOrder.NONE && order.held) {
+        if (order.releaseWanted && order.inFlight == LaneOrder.NONE && order.cancelsInFlight == 0 && order.held) {
             free(order);
             return;
         }
@@ -1579,9 +1839,22 @@ public final class AccountLane<M> implements GnomeAgent {
                 if (ctx.awaitsFinalFill) {
                     this.notices.finalFill(ctx, this.venue.finalFillQty(ctx));
                 }
+                if (ctx.answeredResting) {
+                    this.notices.resting(ctx);
+                }
             }
-            case REJECT -> rejectAndFree(
-                    order, ctx.rejectReason != null ? ctx.rejectReason : RejectReason.EXCHANGE_REJECTED);
+            case REJECT -> {
+                if (ctx.refusedAsCanceled && order.held) {
+                    // A cancel sent before the answer reached the venue first: the order is cancelled, not refused,
+                    // and its cancel is answered by that.
+                    order.cancelWanted = false;
+                    refuseWanted(order);
+                    this.notices.canceledBeforePlaced(ctx);
+                    free(order);
+                } else {
+                    rejectAndFree(order, ctx.rejectReason != null ? ctx.rejectReason : RejectReason.EXCHANGE_REJECTED);
+                }
+            }
             case REJECT_RATE_LIMITED -> rejectAndFree(order, RejectReason.RATE_LIMITED);
             case RESEND -> {
                 order.submitState = LaneOrder.RESOLVING;
@@ -1629,6 +1902,136 @@ public final class AccountLane<M> implements GnomeAgent {
         order.cancelWanted = false;
         order.cancelRetries = 0;
         order.cancelFailedSinceNanos = 0;
+        order.heldBackSinceNanos = 0;
+        order.notFoundRecheckRound = 0;
+    }
+
+    /**
+     * One copy's answer. The first copy the venue cancels settles the round; copies answering after are ignored. Short
+     * of that, the round is settled once every copy has answered, by {@link #settleCancelRound}.
+     *
+     * @param response the answer, or null if none came whole
+     */
+    private void onCancelCopyAnswer(final LaneOrder order, final HTTPResponse response) {
+        order.cancelsInFlight--;
+        if (!order.cancelRoundOpen) {
+            return;
+        }
+        if (response != null && response.getStatusCode() < 500) {
+            switch (this.venue.readCancel(order.ctx, response)) {
+                case ACCEPTED -> order.cancelSucceeded = true;
+                case NOT_FOUND -> order.cancelNotFound = true;
+                case RATE_LIMITED -> order.cancelRateLimited = true;
+                default -> order.cancelRefused = true;
+            }
+        }
+        if (order.cancelSucceeded) {
+            // Cancelled: the order ends on the venue's events, which the reader reports.
+            order.cancelRoundOpen = false;
+            endCancel(order);
+            return;
+        }
+        if (order.cancelsInFlight == 0) {
+            order.cancelRoundOpen = false;
+            settleCancelRound(order);
+        }
+    }
+
+    /**
+     * A cancel round no copy of which the venue cancelled. "Not found" for a cancel sent before the submit settled may
+     * be the cancel overtaking its order: it stays wanted, sent again once the submit is answered (with its retries
+     * counted afresh), and a submit refused as already cancelled ends the order. For an order its answer held back
+     * from the book (a matching delay) it may be found once the delay ends, so it is tried again for a while, and the
+     * OMS told of a refusal if it never is. Otherwise it means the order has ended, which the venue's events report,
+     * so the OMS is told nothing; the text can't say whether it filled. In case they never do, or it wasn't yet on the
+     * book, the order is cancelled again if still held 600 ms on and 3 s on, and if the last finds nothing the OMS is
+     * told the cancel was refused.
+     */
+    private void settleCancelRound(final LaneOrder order) {
+        if (order.cancelNotFound) {
+            settleNotFound(order);
+            return;
+        }
+        if (order.cancelRefused) {
+            endCancel(order);
+            tellCancelRefused(order, RejectReason.EXCHANGE_REJECTED);
+            return;
+        }
+        if (order.cancelRateLimited) {
+            endCancel(order);
+            tellCancelRefused(order, RejectReason.RATE_LIMITED);
+            return;
+        }
+        if (retryCancel(order, this.nanoClock.getAsLong())) {
+            return;
+        }
+        endCancel(order);
+        tellCancelRefused(order, RejectReason.UNKNOWN);
+    }
+
+    private void settleNotFound(final LaneOrder order) {
+        if (order.cancelSentBeforeSettled) {
+            order.cancelAwaitsSubmit = true;
+            order.cancelRetries = 0;
+            order.cancelFailedSinceNanos = 0;
+            return;
+        }
+        final int round = order.notFoundRecheckRound;
+        if (round == FINAL_RECHECK) {
+            endCancel(order);
+            tellCancelRefused(order, RejectReason.UNKNOWN);
+            return;
+        }
+        final long now = this.nanoClock.getAsLong();
+        if (!order.ctx.answeredHeldBack) {
+            endCancel(order);
+            scheduleNotFoundRecheck(order, now, round + 1);
+            return;
+        }
+        if (retryHeldBack(order, now)) {
+            return;
+        }
+        endCancel(order);
+        tellCancelRefused(order, RejectReason.UNKNOWN);
+    }
+
+    /** Tells the OMS its cancel was refused, unless the order's events have ended it already. */
+    private void tellCancelRefused(final LaneOrder order, final RejectReason reason) {
+        if (!order.releaseWanted) {
+            this.notices.cancelReject(order.ctx, reason);
+        }
+    }
+
+    private boolean retryHeldBack(final LaneOrder order, final long now) {
+        if (order.heldBackSinceNanos == 0) {
+            order.heldBackSinceNanos = now;
+        }
+        if (now - order.heldBackSinceNanos >= HELD_BACK_RETRY_WINDOW_NANOS) {
+            return false;
+        }
+        order.cancelRetryAtNanos = now + HELD_BACK_RETRY_NANOS;
+        this.cancelRetries[this.cancelRetryCount++] = order.entry();
+        return true;
+    }
+
+    private void scheduleNotFoundRecheck(final LaneOrder order, final long now, final int check) {
+        if (!order.held || order.releaseWanted) {
+            return;
+        }
+        order.notFoundRecheckNext = check;
+        order.notFoundRecheckAtNanos =
+                now + (check == QUICK_RECHECK ? NOT_FOUND_QUICK_RECHECK_NANOS : NOT_FOUND_FINAL_RECHECK_NANOS);
+        this.cancelRetries[this.cancelRetryCount++] = order.entry();
+    }
+
+    /** An order whose cancel found nothing, still held: its events haven't ended it, so it is cancelled again. */
+    private void recheckNotFound(final LaneOrder order) {
+        if (!order.held || order.releaseWanted || order.cancelWanted) {
+            return;
+        }
+        order.cancelWanted = true;
+        order.notFoundRecheckRound = order.notFoundRecheckNext;
+        serveWanted(order);
     }
 
     /** An accepted cancel keeps the order until the reader sees it end on the venue's events. */
@@ -1668,17 +2071,27 @@ public final class AccountLane<M> implements GnomeAgent {
         for (int i = 0; i < this.cancelRetryCount; i++) {
             final long entry = this.cancelRetries[i];
             final LaneOrder order = live(entry);
-            if (order == null || order.cancelRetryAtNanos == 0) {
+            if (order == null) {
                 continue;
             }
-            if (order.cancelRetryAtNanos - now > 0) {
+            final boolean retry = order.cancelRetryAtNanos != 0;
+            final long due = retry ? order.cancelRetryAtNanos : order.notFoundRecheckAtNanos;
+            if (due == 0) {
+                continue;
+            }
+            if (due - now > 0) {
                 this.cancelRetries[kept++] = entry;
                 continue;
             }
-            order.cancelRetryAtNanos = 0;
             woken++;
-            if (order.cancelWanted) {
-                serveWanted(order);
+            if (retry) {
+                order.cancelRetryAtNanos = 0;
+                if (order.cancelWanted) {
+                    serveWanted(order);
+                }
+            } else {
+                order.notFoundRecheckAtNanos = 0;
+                recheckNotFound(order);
             }
         }
         this.cancelRetryCount = kept;
@@ -1804,7 +2217,7 @@ public final class AccountLane<M> implements GnomeAgent {
             }
             return;
         }
-        if (order.inFlight != LaneOrder.NONE) {
+        if (order.inFlight != LaneOrder.NONE || order.cancelsInFlight > 0) {
             order.releaseWanted = true;
             return;
         }
@@ -1819,6 +2232,9 @@ public final class AccountLane<M> implements GnomeAgent {
      */
     private void rejectAndFree(final LaneOrder order, final RejectReason reason) {
         if (order.held) {
+            // The order's REJECT answers a cancel wanted of it: a refusal of that cancel as well would read as the
+            // order still working.
+            order.cancelWanted = false;
             refuseWanted(order);
             this.notices.rejectRegistered(order.ctx, reason);
         } else {
@@ -1889,7 +2305,7 @@ public final class AccountLane<M> implements GnomeAgent {
     private LaneOrder live(final long entry) {
         final LaneOrder order = this.orders[(int) (entry & INDEX_MASK)];
         return (order.generation & LaneOrder.GENERATION_MASK) == (int) (entry >>> LaneOrder.INDEX_BITS)
-                        && (order.held || order.inFlight != LaneOrder.NONE)
+                        && (order.held || order.inFlight != LaneOrder.NONE || order.cancelsInFlight > 0)
                 ? order
                 : null;
     }

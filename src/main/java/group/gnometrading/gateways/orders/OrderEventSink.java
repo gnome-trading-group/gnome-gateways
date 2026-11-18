@@ -52,6 +52,14 @@ public interface OrderEventSink {
      */
     default void venueOrderIdLearned(final OrderContext ctx) {}
 
+    /**
+     * Whether the order whose correlation key is {@code correlationKey} was recently ended because the venue refused it
+     * as already cancelled: an event for it means the venue placed it after all.
+     */
+    default boolean endedBeforePlaced(final long correlationKey) {
+        return false;
+    }
+
     /** When the event being applied was received. */
     long receiveNanos();
 }

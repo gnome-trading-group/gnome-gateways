@@ -60,4 +60,10 @@ public interface AccountProtocol<C> {
 
     /** Reader thread: the sending thread learned the venue's id for an order held under {@code key}. */
     default void onVenueOrderId(final OrderContext ctx, final long key) {}
+
+    /**
+     * Reader thread: the venue refused the submit of the order held under {@code key} as already cancelled, yet its
+     * events had already shown the order placed or filled. It is reported cancelled, but may rest.
+     */
+    default void onRefusedAfterPlaced(final OrderContext ctx, final long key) {}
 }

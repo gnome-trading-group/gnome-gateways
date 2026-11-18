@@ -53,6 +53,7 @@ public final class AccountReader implements FrameReader.Handler {
         this.reportQueue = reportQueue;
         this.reports = new OrderReports(maxOrders, clock, new Output());
         this.reports.venueIdListener(protocol::onVenueOrderId);
+        this.reports.refusedAfterPlacedListener(protocol::onRefusedAfterPlaced);
         this.noticeHandler = this.reports::onNotice;
     }
 

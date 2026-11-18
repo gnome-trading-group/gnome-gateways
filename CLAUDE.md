@@ -69,7 +69,19 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
   - `account/lane/`: `AccountLane`, one thread sending every session's orders over `AsyncHTTPConnections`, settled
     by `SubmitPolicy`, unknown outcomes swept and in the end given up on; cancels, resends and lookups first, then
     each session's amends and new orders as `FairQueue` decides; each queued request refused after its session's
-    wait; a cancel the venue failed to answer sent again up to 3 times in 2 s; `requestsAwaitingAnswer()` (safe from another thread) counts requests on the wire, for a gateway handing over; every decision told to its
+    wait; a cancel the venue failed to answer sent again up to 3 times in 2 s; on a venue that `cancelsBeforeAnswer` (Polymarket Intl) a cancel goes at once, beside the order's submit or
+    lookup rather than after it, as `cancelCopies` copies (1–5, `AccountLane.cancelCopies`; the venue's default
+    otherwise) on separate connections, each copy past the first only after every queued cancel's first copy has gone
+    and only while a connection is free and the cancel budget is over half full; the first copy the venue cancels
+    settles it, and "not found" (`CancelResult.NOT_FOUND`) for a cancel sent before the submit settled waits for the
+    submit's answer (sent again once it settles, the order ended `CANCELED` if the venue refused it as already
+    cancelled; retries counted afresh); after it, an order whose answer held it back from the book
+    (`ctx.answeredHeldBack`, a matching delay) is tried every 500 ms for 5 s and told as a refused cancel if never
+    found, while any other is left to its events with no refusal told, and cancelled again if still held 600 ms on (a
+    `live` answer can come before the order is on the book) and 3 s on, that last one's "not found" told as a refused
+    cancel; an
+    order's REJECT answers a cancel wanted of it (no separate refusal), and no refusal is told for an order the reader
+    has already released; `requestsAwaitingAnswer()` (safe from another thread) counts requests on the wire, for a gateway handing over; every decision told to its
     `Admissions`, with each request's timings: how long a command stamped `LaneCommand.enqueuedNanos` (the lane's
     monotonic clock) waited for the lane (`taken`), how long writing and signing it took (`sent`), and the venue's
     answer (`answered`). Each session request also gets one `timed(RequestTiming)` when it is over (per request on
@@ -172,6 +184,17 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
   refused and the rest go again. One alone goes as a single request, whose answer says more.
 - Polymarket Intl: `exchangeSecurityId` is `{condition_id}:{token_id}`. Orders are EIP-712 signed (signature types
   0-3, incl. 3 = deposit wallet) and immutable, so no modify; market orders refused.
+  - An order's NEW goes out on whichever comes first: a submit answered `live` (the lane's `ReaderNotices.resting`,
+    set by the codec as `OrderContext.answeredResting`) or its PLACEMENT event (or a fill). The reader sends one NEW
+    per order (`ctx.acked`). The PLACEMENT was measured trailing the `live` answer by up to ~420 ms. Cancels still
+    end orders only on the account's events: a `canceled` answer carries no matched size.
+  - Cancels: 2 copies at once by default; "order can't be found - already canceled or matched" is `NOT_FOUND`, not
+    logged as a refusal (the losing copy always gets it). A cancel that reaches the CLOB before its order makes it
+    refuse the submit `400 "order ... is invalid. Already canceled."` (`ctx.refusedAsCanceled`), reported `CANCEL`
+    (`ReaderNotices.canceledBeforePlaced`), never a reject the OMS's reject streak would count, and not logged as a
+    refusal. The CLOB was seen once in 7 to place such an order anyway for a few ms: the reader remembers the last 256
+    and logs `UNKNOWN_ERROR` if a PLACEMENT or trade for one arrives, or if one had already arrived when the refusal
+    did (`AccountProtocol.onRefusedAfterPlaced`). `delayed`/`unmatched` answers set `ctx.answeredHeldBack`.
   - One taker can match dozens of resting orders in one trade (40 seen). `PolymarketIntlUserEvents` keeps 1,024 legs
     to price a taker fill of ours and, past them, only legs that are ours, so no maker fill of ours is dropped;
     either overflow logs `UNKNOWN_ERROR`.

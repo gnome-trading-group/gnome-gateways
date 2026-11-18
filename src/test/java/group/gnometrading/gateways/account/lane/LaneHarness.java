@@ -36,6 +36,8 @@ public final class LaneHarness<M> implements AutoCloseable {
     public final AccountLane<M> lane;
     public final List<OrderContext> handed = new ArrayList<>();
     public final List<OrderContext> notices = new ArrayList<>();
+    // Answers saying an order rests, which the reader turns into its NEW unless the venue's event did first.
+    public final List<OrderContext> resting = new ArrayList<>();
     private final HTTPConnector connector;
     private final ManyToOneRingBuffer<LaneCommand> commands =
             new ManyToOneRingBuffer<>(LaneCommand[]::new, LaneCommand::new, 256);
@@ -323,7 +325,9 @@ public final class LaneHarness<M> implements AutoCloseable {
         this.lane.doWork();
         if (!this.readerStalled) {
             this.noticeQueue.read(
-                    ctx -> (ctx.registration ? this.handed : this.notices).add(copy(ctx)), Integer.MAX_VALUE);
+                    ctx -> (ctx.registration ? this.handed : ctx.restingNotice ? this.resting : this.notices)
+                            .add(copy(ctx)),
+                    Integer.MAX_VALUE);
         }
     }
 

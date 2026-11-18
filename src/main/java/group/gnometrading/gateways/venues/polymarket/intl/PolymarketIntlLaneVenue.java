@@ -104,6 +104,18 @@ public final class PolymarketIntlLaneVenue implements LaneVenue<PolymarketIntlMa
         return true;
     }
 
+    /** The order's hash is its cancel handle before it is sent, and the venue refuses a submit it was told to cancel. */
+    @Override
+    public boolean cancelsBeforeAnswer() {
+        return true;
+    }
+
+    /** The venue sometimes sits on a cancel for seconds while another sent beside it is answered at once. */
+    @Override
+    public int cancelCopies() {
+        return 2;
+    }
+
     @Override
     public boolean canAmend(
             final OrderContext ctx, final PolymarketIntlMarket market, final long price, final long size) {
@@ -250,8 +262,9 @@ public final class PolymarketIntlLaneVenue implements LaneVenue<PolymarketIntlMa
     public SubmitResult readSubmit(final OrderContext ctx, final HTTPResponse response) {
         final int status = response.getStatusCode();
         final SubmitResult result = this.codec.readSubmitAnswer(response, status, ctx);
-        // A duplicate is the venue's answer to a resend whose first send landed: expected, so not a refusal to log.
-        final boolean expected = result == SubmitResult.DUPLICATE && ctx.submitAttempts > 0;
+        // A duplicate is the venue's answer to a resend whose first send landed, and "already canceled" an order its
+        // cancel overtook, which ends cancelled: both expected, so not refusals to log.
+        final boolean expected = (result == SubmitResult.DUPLICATE && ctx.submitAttempts > 0) || ctx.refusedAsCanceled;
         if (!expected && (!response.isSuccess() || result == SubmitResult.REJECTED)) {
             logRejection("submit", ctx, status, response);
         }
@@ -277,6 +290,10 @@ public final class PolymarketIntlLaneVenue implements LaneVenue<PolymarketIntlMa
     public CancelResult readCancel(final OrderContext ctx, final HTTPResponse response) {
         if (this.codec.readCanceled(response, ctx)) {
             return CancelResult.ACCEPTED;
+        }
+        if (response.isSuccess() && PolymarketIntlOrderCodec.saysNotFound(response)) {
+            // Every doubled cancel has one of these, the copy that lost, so it isn't logged as a refusal.
+            return CancelResult.NOT_FOUND;
         }
         logRejection("cancel", ctx, response.getStatusCode(), response);
         return SubmitPolicy.classifyCancelFailure(response);

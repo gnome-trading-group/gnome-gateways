@@ -72,6 +72,23 @@ public final class ReaderNotices {
         commit();
     }
 
+    /**
+     * Ends {@code CANCELED} an order the venue refused as already cancelled: a cancel sent before its answer reached the
+     * venue first. The reader keeps its fills and remembers the order a while, as a venue that placed it anyway would
+     * report it after this.
+     */
+    public void canceledBeforePlaced(final OrderContext ctx) {
+        final OrderContext notice = claim();
+        notice.copyFrom(ctx);
+        notice.registration = false;
+        notice.endsRegistered = true;
+        notice.canceledBeforePlaced = true;
+        notice.execType = ExecType.CANCEL;
+        notice.orderStatus = OrderStatus.CANCELED;
+        notice.rejectReason = RejectReason.NULL_VAL;
+        commit();
+    }
+
     /** Refuses an order the reader was never given: no slot was free to hold it, so nothing was sent. */
     public void rejectUnheld(
             final long sessionSlot,
@@ -181,6 +198,19 @@ public final class ReaderNotices {
         identify(existing, notice);
         notice.finalFillNotice = true;
         notice.finalFillQty = finalFillQty;
+        commit();
+    }
+
+    /**
+     * Tells the reader the venue's answer to {@code existing}'s submit says it rests on the book, so it can be
+     * acknowledged before the venue's own event for it arrives; the reader ignores it for an order already
+     * acknowledged or ended.
+     */
+    public void resting(final OrderContext existing) {
+        final OrderContext notice = claim();
+        notice.reset();
+        identify(existing, notice);
+        notice.restingNotice = true;
         commit();
     }
 

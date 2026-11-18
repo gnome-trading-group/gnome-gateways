@@ -5,5 +5,10 @@ public enum CancelResult {
     ACCEPTED,
     REJECTED,
     /** Refused for the rate limit, by the venue or before it was sent: the order is still working. */
-    RATE_LIMITED
+    RATE_LIMITED,
+    /**
+     * The venue doesn't hold the order as open: it has ended (cancelled or matched), or the order hasn't reached it yet.
+     * Says nothing of which, so the order is settled by the venue's events or its submit's answer, never by this.
+     */
+    NOT_FOUND
 }

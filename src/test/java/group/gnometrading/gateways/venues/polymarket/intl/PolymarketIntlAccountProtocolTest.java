@@ -11,10 +11,12 @@ import static org.mockito.Mockito.when;
 import group.gnometrading.gateways.account.reader.RecordedReports;
 import group.gnometrading.gateways.orders.OrderContext;
 import group.gnometrading.gateways.orders.OrderReports;
+import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.NullLogger;
 import group.gnometrading.networking.http.HTTPClient;
 import group.gnometrading.networking.http.HTTPResponse;
 import group.gnometrading.schemas.ExecType;
+import group.gnometrading.schemas.OrderStatus;
 import group.gnometrading.schemas.Side;
 import group.gnometrading.sm.fee.FeeTimeline;
 import java.nio.ByteBuffer;
@@ -49,12 +51,21 @@ class PolymarketIntlAccountProtocolTest {
     private final RecordedReports recorded = new RecordedReports();
     private final OrderReports reports = new OrderReports(64, SystemEpochNanoClock.INSTANCE, this.recorded);
     private PolymarketIntlAccountProtocol protocol;
+    private final List<String> errors = new ArrayList<>();
+    private final NullLogger logger = new NullLogger() {
+        @Override
+        public void logf(final LogMessage msg, final String format, final Object... args) {
+            if (msg == LogMessage.UNKNOWN_ERROR) {
+                PolymarketIntlAccountProtocolTest.this.errors.add(String.format(format, args));
+            }
+        }
+    };
 
     @BeforeEach
     void setUp() throws Exception {
         final PolymarketIntlAuthHeaders auth = new PolymarketIntlAuthHeaders("key", SECRET, "pass", "0xabc");
         this.protocol = new PolymarketIntlAccountProtocol(
-                new NullLogger(),
+                this.logger,
                 "key",
                 SECRET,
                 "pass",
@@ -62,6 +73,8 @@ class PolymarketIntlAccountProtocolTest {
                 SystemEpochNanoClock.INSTANCE);
         this.protocol.addMarket(EXCHANGE_ID, MARKET_A, "token-a", FeeTimeline.EMPTY);
         this.protocol.addMarket(EXCHANGE_ID, MARKET_B, "token-b", FeeTimeline.EMPTY);
+        // As the account's reader wires them.
+        this.reports.refusedAfterPlacedListener(this.protocol::onRefusedAfterPlaced);
         when(this.restClient.get(
                         any(),
                         anyString(),
@@ -129,6 +142,106 @@ class PolymarketIntlAccountProtocolTest {
         frame(orderEvent(ORDER_A, "token-a"));
         frame(cancellation(ORDER_A, "token-a", "0"));
         assertEquals(List.of(ExecType.NEW, ExecType.CANCEL), this.recorded.execTypes());
+    }
+
+    @Test
+    void anOrderAcknowledgedFromItsAnswerIsNotAcknowledgedAgainByItsPlacement() {
+        register(7, 1, MARKET_A, ORDER_A, 0);
+        restingNotice(7, 1, ORDER_A);
+        frame(orderEvent(ORDER_A, "token-a"));
+        frame(cancellation(ORDER_A, "token-a", "0"));
+
+        assertEquals(List.of(ExecType.NEW, ExecType.CANCEL), this.recorded.execTypes());
+        assertEquals(10_000_000L, this.recorded.reports.get(0).leavesQty());
+    }
+
+    @Test
+    void aPlacementBeforeTheAnswerIsTheOnlyNew() {
+        register(7, 1, MARKET_A, ORDER_A, 0);
+        frame(orderEvent(ORDER_A, "token-a"));
+        restingNotice(7, 1, ORDER_A);
+
+        assertEquals(List.of(ExecType.NEW), this.recorded.execTypes());
+    }
+
+    @Test
+    void aFillBeforeTheAnswerAcknowledgesTheOrderOnce() {
+        register(7, 1, MARKET_A, ORDER_A, 0);
+        frame(trade(ORDER_A, "token-a", "3"));
+        restingNotice(7, 1, ORDER_A);
+        frame(orderEvent(ORDER_A, "token-a"));
+
+        assertEquals(List.of(ExecType.NEW, ExecType.PARTIAL_FILL), this.recorded.execTypes());
+    }
+
+    @Test
+    void anAnswerForAnOrderAlreadyEndedSendsNothing() {
+        register(7, 1, MARKET_A, ORDER_A, 0);
+        frame(orderEvent(ORDER_A, "token-a"));
+        frame(cancellation(ORDER_A, "token-a", "0"));
+        restingNotice(7, 1, ORDER_A);
+
+        assertEquals(List.of(ExecType.NEW, ExecType.CANCEL), this.recorded.execTypes());
+    }
+
+    @Test
+    void anOrderRefusedAsCancelledEndsCancelledAndIsReportedIfPlacedAfterAll() {
+        register(7, 1, MARKET_A, ORDER_A, 0);
+        final OrderContext notice = RecordedReports.order(7, 1, EXCHANGE_ID, MARKET_A, ORDER_A, 10_000_000L);
+        notice.execType = ExecType.CANCEL;
+        notice.orderStatus = OrderStatus.CANCELED;
+        notice.endsRegistered = true;
+        notice.canceledBeforePlaced = true;
+        this.reports.onNotice(notice);
+        assertEquals(List.of(ExecType.CANCEL), this.recorded.execTypes());
+        assertTrue(this.errors.isEmpty());
+
+        // The venue placed it after all, then cancelled it.
+        frame(orderEvent(ORDER_A, "token-a"));
+        frame(cancellation(ORDER_A, "token-a", "0"));
+        assertEquals(List.of(ExecType.CANCEL), this.recorded.execTypes(), "nothing more for the OMS");
+        assertEquals(1, this.errors.size(), String.valueOf(this.errors));
+        assertTrue(this.errors.get(0).contains(ORDER_A));
+    }
+
+    @Test
+    void anOrderRefusedAsCancelledAfterItsPlacementArrivedIsAnError() {
+        register(7, 1, MARKET_A, ORDER_A, 0);
+        frame(orderEvent(ORDER_A, "token-a"));
+        assertEquals(List.of(ExecType.NEW), this.recorded.execTypes());
+
+        final OrderContext notice = RecordedReports.order(7, 1, EXCHANGE_ID, MARKET_A, ORDER_A, 10_000_000L);
+        notice.execType = ExecType.CANCEL;
+        notice.orderStatus = OrderStatus.CANCELED;
+        notice.endsRegistered = true;
+        notice.canceledBeforePlaced = true;
+        this.reports.onNotice(notice);
+
+        assertEquals(List.of(ExecType.NEW, ExecType.CANCEL), this.recorded.execTypes());
+        assertEquals(1, this.errors.size(), String.valueOf(this.errors));
+        assertTrue(this.errors.get(0).contains(ORDER_A), this.errors.get(0));
+    }
+
+    @Test
+    void anOrderRefusedAsCancelledWithNothingSeenOfItIsNotAnError() {
+        register(7, 1, MARKET_A, ORDER_A, 0);
+        final OrderContext notice = RecordedReports.order(7, 1, EXCHANGE_ID, MARKET_A, ORDER_A, 10_000_000L);
+        notice.execType = ExecType.CANCEL;
+        notice.orderStatus = OrderStatus.CANCELED;
+        notice.endsRegistered = true;
+        notice.canceledBeforePlaced = true;
+        this.reports.onNotice(notice);
+
+        assertTrue(this.errors.isEmpty(), String.valueOf(this.errors));
+    }
+
+    @Test
+    void eventsForOtherEndedOrdersAreNotAnError() {
+        register(7, 1, MARKET_A, ORDER_A, 0);
+        frame(orderEvent(ORDER_A, "token-a"));
+        frame(cancellation(ORDER_A, "token-a", "0"));
+        frame(orderEvent(ORDER_A, "token-a"));
+        assertTrue(this.errors.isEmpty());
     }
 
     @Test
@@ -336,6 +449,13 @@ class PolymarketIntlAccountProtocolTest {
         clocked.addMarket(EXCHANGE_ID, MARKET_A, "token-a", FeeTimeline.EMPTY);
         clocked.addMarket(EXCHANGE_ID, MARKET_B, "token-b", FeeTimeline.EMPTY);
         return clocked;
+    }
+
+    /** What the lane tells the reader when the venue's answer to the order's submit says it rests. */
+    private void restingNotice(final long slot, final long counter, final String hash) {
+        final OrderContext notice = RecordedReports.order(slot, counter, EXCHANGE_ID, MARKET_A, hash, 0);
+        notice.restingNotice = true;
+        this.reports.onNotice(notice);
     }
 
     private void register(

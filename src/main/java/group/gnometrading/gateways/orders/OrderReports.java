@@ -8,6 +8,7 @@ import group.gnometrading.schemas.OrderStatus;
 import group.gnometrading.schemas.RejectReason;
 import java.util.Collection;
 import org.agrona.collections.Long2ObjectHashMap;
+import org.agrona.collections.LongHashSet;
 import org.agrona.concurrent.EpochNanoClock;
 
 /**
@@ -37,13 +38,31 @@ public final class OrderReports implements OrderEventSink {
         void onVenueOrderId(OrderContext ctx, long key);
     }
 
+    /**
+     * Told of an order held under {@code key} that the venue refused as already cancelled after its events had shown it
+     * placed or filled.
+     */
+    public interface RefusedAfterPlacedListener {
+        RefusedAfterPlacedListener NONE = (ctx, key) -> {};
+
+        void onRefusedAfterPlaced(OrderContext ctx, long key);
+    }
+
     private final EpochNanoClock clock;
     private final Output output;
+    // Enough for the orders refused this way in a burst of re-quotes; one only matters until its events have come.
+    private static final int ENDED_BEFORE_PLACED_CAPACITY = 256;
     private final Long2ObjectHashMap<OrderContext> orderContexts;
+    // Orders ended because the venue refused them as already cancelled, the latest few, oldest evicted first.
+    private final LongHashSet endedBeforePlaced = new LongHashSet(ENDED_BEFORE_PLACED_CAPACITY * 2);
+    private final long[] endedBeforePlacedRing = new long[ENDED_BEFORE_PLACED_CAPACITY];
+    private int endedBeforePlacedHead;
+    private int endedBeforePlacedCount;
     private final OrderContext[] contextPool;
     private int contextPoolHead;
     private final OrderExecutionReport execReport = new OrderExecutionReport();
     private VenueIdListener venueIdListener = VenueIdListener.NONE;
+    private RefusedAfterPlacedListener refusedAfterPlacedListener = RefusedAfterPlacedListener.NONE;
     private long receiveNanos;
 
     public OrderReports(final int poolSize, final EpochNanoClock clock, final Output output) {
@@ -56,6 +75,10 @@ public final class OrderReports implements OrderEventSink {
         }
         this.contextPoolHead = poolSize;
         this.execReport.wrap(this.execReport.buffer);
+    }
+
+    public void refusedAfterPlacedListener(final RefusedAfterPlacedListener listener) {
+        this.refusedAfterPlacedListener = listener;
     }
 
     public void venueIdListener(final VenueIdListener listener) {
@@ -79,7 +102,7 @@ public final class OrderReports implements OrderEventSink {
     }
 
     /**
-     * Something only the sending thread saw: a new order to hold (where orders and notices share a queue), an amend or final fill to apply, the venue's id, or a report of its own
+     * Something only the sending thread saw: a new order to hold (where orders and notices share a queue), an amend or final fill to apply, the venue's id, an answer saying the order rests, or a report of its own
      * (a reject, a cancel of an order never sent, a refused cancel), which ends any order it names that is held here.
      */
     public void onNotice(final OrderContext src) {
@@ -99,18 +122,50 @@ public final class OrderReports implements OrderEventSink {
             applyVenueOrderId(src);
             return;
         }
+        if (src.restingNotice) {
+            applyResting(src);
+            return;
+        }
         onSenderReport(src);
+    }
+
+    /**
+     * Acknowledges an order the venue's answer says rests, unless its own event, or a fill, has already: whichever
+     * comes first sends the order's one NEW.
+     */
+    private void applyResting(final OrderContext src) {
+        final OrderContext ctx = this.orderContexts.get(OrderKeys.of(src.correlationIdBytes, src.correlationIdLength));
+        if (ctx == null || ctx.acked) {
+            return;
+        }
+        publishNew(
+                ctx,
+                ctx.cumulativeFilledQty,
+                Math.max(0, ctx.originalQty - ctx.cumulativeFilledQty),
+                OrderExecutionReportEncoder.timestampEventNullValue(),
+                this.clock.nanoTime());
+    }
+
+    /** Ended by the sender, with what the venue's events have filled of it; dropped if they ended it already. */
+    private void onSenderCanceled(final OrderContext src) {
+        final long key = OrderKeys.of(src.correlationIdBytes, src.correlationIdLength);
+        if (src.canceledBeforePlaced) {
+            rememberEndedBeforePlaced(key);
+        }
+        final OrderContext held = this.orderContexts.get(key);
+        if (held == null) {
+            return;
+        }
+        if (src.canceledBeforePlaced && (held.acked || held.cumulativeFilledQty > 0)) {
+            this.refusedAfterPlacedListener.onRefusedAfterPlaced(held, key);
+        }
+        publishCanceled(held, key, OrderExecutionReportEncoder.timestampEventNullValue());
     }
 
     /** A report the sender made itself, which ends any order it names that is held here. */
     private void onSenderReport(final OrderContext src) {
         if (src.execType == ExecType.CANCEL && src.endsRegistered) {
-            // Ended by the sender, with what the venue's events have filled of it; dropped if they ended it already.
-            final long key = OrderKeys.of(src.correlationIdBytes, src.correlationIdLength);
-            final OrderContext held = this.orderContexts.get(key);
-            if (held != null) {
-                publishCanceled(held, key, OrderExecutionReportEncoder.timestampEventNullValue());
-            }
+            onSenderCanceled(src);
             return;
         }
         if (src.execType == ExecType.REJECT || src.execType == ExecType.CANCEL) {
@@ -287,6 +342,24 @@ public final class OrderReports implements OrderEventSink {
         this.execReport.encoder.timestampRecv(timestampRecv);
         this.output.publish(ctx, this.execReport);
         ctx.acked = true;
+    }
+
+    private void rememberEndedBeforePlaced(final long key) {
+        if (!this.endedBeforePlaced.add(key)) {
+            return;
+        }
+        if (this.endedBeforePlacedCount == ENDED_BEFORE_PLACED_CAPACITY) {
+            this.endedBeforePlaced.remove(this.endedBeforePlacedRing[this.endedBeforePlacedHead]);
+        } else {
+            this.endedBeforePlacedCount++;
+        }
+        this.endedBeforePlacedRing[this.endedBeforePlacedHead] = key;
+        this.endedBeforePlacedHead = (this.endedBeforePlacedHead + 1) % ENDED_BEFORE_PLACED_CAPACITY;
+    }
+
+    @Override
+    public boolean endedBeforePlaced(final long correlationKey) {
+        return this.endedBeforePlaced.contains(correlationKey);
     }
 
     @Override

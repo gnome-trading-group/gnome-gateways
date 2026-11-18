@@ -147,6 +147,7 @@ public final class PolymarketIntlUserEvents {
     private void applyOrderEvent(final OrderEventSink sink) {
         final OrderContext ctx = sink.order(OrderKeys.of(this.idBytes, this.idLength));
         if (ctx == null) {
+            onEventForUnheldOrder(sink);
             return;
         }
         if (this.orderType == ORDER_TYPE_CANCELLATION || this.status == STATUS_CANCELED) {
@@ -180,6 +181,9 @@ public final class PolymarketIntlUserEvents {
             return;
         }
         final OrderContext taker = sink.order(OrderKeys.of(this.takerOrderIdBytes, this.takerOrderIdLength));
+        if (taker == null) {
+            warnIfPlacedAfterAll(sink, this.takerOrderIdBytes, this.takerOrderIdLength);
+        }
         if (this.ownLost > 0 || (taker != null && this.othersSetAside > 0)) {
             logOverflow(taker != null);
         }
@@ -200,12 +204,38 @@ public final class PolymarketIntlUserEvents {
         for (int i = 0; i < count; i++) {
             final MakerLeg leg = legs[i];
             final OrderContext maker = sink.order(OrderKeys.of(leg.orderIdBytes, leg.orderIdLength));
+            if (maker == null) {
+                warnIfPlacedAfterAll(sink, leg.orderIdBytes, leg.orderIdLength);
+            }
             if (maker != null) {
                 final long fee =
                         fee(markets.fees(maker), nowNanos, maker.side == Side.Bid, leg.price, leg.matchedAmount, true);
                 fill(sink, maker, leg.matchedAmount, leg.price, fee, Liquidity.MAKER);
             }
         }
+    }
+
+    private void onEventForUnheldOrder(final OrderEventSink sink) {
+        if (this.orderType == ORDER_TYPE_PLACEMENT) {
+            warnIfPlacedAfterAll(sink, this.idBytes, this.idLength);
+        }
+    }
+
+    /**
+     * An event for an order already reported cancelled, as the venue refused its submit as already cancelled: the venue
+     * placed it after all, and any fill it had is booked nowhere. Logged so reconciliation looks; rare, so it may
+     * allocate.
+     */
+    private void warnIfPlacedAfterAll(final OrderEventSink sink, final byte[] idBytes, final int idLength) {
+        if (idLength == 0 || !sink.endedBeforePlaced(OrderKeys.of(idBytes, idLength))) {
+            return;
+        }
+        this.logger.logf(
+                LogMessage.UNKNOWN_ERROR,
+                "Polymarket reported order %s after refusing it as already cancelled (event %s); "
+                        + "it was placed after all, and any fill on it is unbooked",
+                new String(idBytes, 0, idLength, StandardCharsets.US_ASCII),
+                this.eventType == EVENT_TYPE_TRADE ? "trade" : "order");
     }
 
     /** Off the hot path: a trade this large is rare, and its line allocates. */

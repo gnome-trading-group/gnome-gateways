@@ -32,6 +32,14 @@ public final class PolymarketIntlOrderCodec {
 
     // The CLOB's answer to an order whose hash it already has (seen live: "order 0x... is invalid. Duplicated.").
     private static final byte[] DUPLICATED = "Duplicated.".getBytes(StandardCharsets.US_ASCII);
+    private static final String STATUS_LIVE = "live";
+    private static final String STATUS_MATCHED = "matched";
+    // The submit's refusal when a cancel sent before its answer reached the venue first: "order 0x... is invalid.
+    // Already canceled."
+    private static final byte[] ALREADY_CANCELED = "Already canceled".getBytes(StandardCharsets.US_ASCII);
+    // A cancel's refusal for an order the venue doesn't hold open: "order can't be found - already canceled or
+    // matched", also its answer when the cancel arrives before the order.
+    private static final byte[] CANT_BE_FOUND = "can't be found".getBytes(StandardCharsets.US_ASCII);
     private static final String ZERO_BYTES32 = "0x0000000000000000000000000000000000000000000000000000000000000000";
     private static final int BUY_SIDE = 0;
     private static final int SELL_SIDE = 1;
@@ -152,6 +160,9 @@ public final class PolymarketIntlOrderCodec {
      * hash signed: events are matched on that hash, so a different one would leave a live order nothing tracks.
      */
     public SubmitResult readSubmitAnswer(final HTTPResponse response, final int status, final OrderContext ctx) {
+        ctx.answeredResting = false;
+        ctx.answeredHeldBack = false;
+        ctx.refusedAsCanceled = false;
         if (!response.isSuccess()) {
             return readRefusal(response, status, ctx);
         }
@@ -183,6 +194,11 @@ public final class PolymarketIntlOrderCodec {
             throw new IllegalStateException("Polymarket assigned an orderID that differs from the signed order's hash; "
                     + "the order signer no longer matches the venue");
         }
+        // `live` means resting on the book; its PLACEMENT event can trail this answer by hundreds of milliseconds.
+        ctx.answeredResting = answer.live;
+        // `delayed` (and `unmatched`) orders sit out a matching delay off the book: a cancel can't find them until it
+        // ends, when they may rest.
+        ctx.answeredHeldBack = answer.heldBack();
         return SubmitResult.ACCEPTED;
     }
 
@@ -194,8 +210,20 @@ public final class PolymarketIntlOrderCodec {
                 status == HTTP_SERVICE_UNAVAILABLE ? SubmitResult.REJECTED : SubmitPolicy.classifyFailure(status);
         if (result == SubmitResult.REJECTED) {
             ctx.rejectReason = VenueRejectText.POLYMARKET_INTL.classify(response.getBody());
+            ctx.refusedAsCanceled = says(response.getBody(), ALREADY_CANCELED);
         }
         return result;
+    }
+
+    /** Whether a cancel the venue refused was refused because it doesn't hold the order open. */
+    public static boolean saysNotFound(final HTTPResponse response) {
+        return says(response.getBody(), CANT_BE_FOUND);
+    }
+
+    private static boolean says(final ByteBuffer body, final byte[] text) {
+        return body != null
+                && body.hasRemaining()
+                && AsciiParsing.indexOf(body, body.position(), body.limit(), text) >= 0;
     }
 
     private static boolean saysDuplicate(final ByteBuffer body) {
@@ -240,6 +268,9 @@ public final class PolymarketIntlOrderCodec {
         boolean success;
         boolean sawId;
         boolean idMatches;
+        boolean sawStatus;
+        boolean live;
+        boolean matched;
         long makingAmount;
         long takingAmount;
 
@@ -248,8 +279,15 @@ public final class PolymarketIntlOrderCodec {
             this.success = false;
             this.sawId = false;
             this.idMatches = false;
+            this.sawStatus = false;
+            this.live = false;
+            this.matched = false;
             this.makingAmount = OrderContext.QTY_ABSENT;
             this.takingAmount = OrderContext.QTY_ABSENT;
+        }
+
+        boolean heldBack() {
+            return this.sawStatus && !this.live && !this.matched;
         }
 
         void read(final JsonDecoder.JsonNode entry, final OrderContext ctx) {
@@ -266,6 +304,11 @@ public final class PolymarketIntlOrderCodec {
                 this.sawId = id.length() > 0;
                 this.idMatches =
                         PolymarketIntlRequests.matches(id, ctx.exchangeOrderIdBytes, ctx.exchangeOrderIdLength);
+            } else if (name.equals("status")) {
+                final GnomeString status = entry.asString();
+                this.sawStatus = true;
+                this.live = status.equals(STATUS_LIVE);
+                this.matched = status.equals(STATUS_MATCHED);
             } else if (name.equals("makingAmount")) {
                 this.makingAmount = amount(entry.asString());
             } else if (name.equals("takingAmount")) {

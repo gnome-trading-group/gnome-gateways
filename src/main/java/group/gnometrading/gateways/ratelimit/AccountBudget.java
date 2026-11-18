@@ -115,6 +115,12 @@ public final class AccountBudget {
         return max;
     }
 
+    /** The most tokens the bucket {@code rule} draws on can hold; -1 if its venue doesn't limit it. */
+    public long burstTokens(final int rule) {
+        final int bucket = this.rules.bucket(rule);
+        return bucket == RequestRules.NO_BUCKET ? -1 : this.buckets[bucket].burstTokens();
+    }
+
     /** Tokens left now in the bucket {@code rule} draws on; -1 if its venue doesn't limit it. */
     public long tokensLeft(final int rule, final long nowNanos) {
         final int bucket = this.rules.bucket(rule);

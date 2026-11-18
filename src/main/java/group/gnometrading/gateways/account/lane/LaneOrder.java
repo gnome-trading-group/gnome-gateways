@@ -50,10 +50,32 @@ final class LaneOrder extends AdmissionEntry {
     boolean releaseWanted;
     // When its cancel was queued, for how long cancels wait.
     long cancelQueuedAtNanos;
+    // On a venue that cancels before the submit's answer: copies of the cancel on the wire, beside whatever other
+    // request the order has; whether a cancel round is open, queued, or went before the submit settled; and how the
+    // round's answers came back.
+    int cancelsInFlight;
+    boolean cancelRoundOpen;
+    boolean cancelQueued;
+    boolean cancelSentBeforeSettled;
+    boolean cancelSucceeded;
+    boolean cancelNotFound;
+    boolean cancelRefused;
+    boolean cancelRateLimited;
+    // The venue didn't find the order its cancel named while the submit was still out: the cancel goes again only
+    // once the submit has settled.
+    boolean cancelAwaitsSubmit;
     // A cancel the venue failed to answer, sent again: how many times so far, since when, and when next.
     int cancelRetries;
     long cancelFailedSinceNanos;
     long cancelRetryAtNanos;
+    // An order its answer held back from the book whose cancel found nothing: since when it has been tried again.
+    long heldBackSinceNanos;
+    // A cancel ended on "not found" with the order still held: when to cancel it again in case it never ended, which
+    // check that next one is, and which the cancel now out is (0 for none). The last check's "not found" is told to
+    // the OMS as a refusal.
+    long notFoundRecheckAtNanos;
+    int notFoundRecheckNext;
+    int notFoundRecheckRound;
     // When its submit's outcome was left unknown (0 while known), and when it is next looked for.
     long unknownSinceNanos;
     long nextSweepNanos;
@@ -105,6 +127,7 @@ final class LaneOrder extends AdmissionEntry {
                 .append(this.accepted ? " accepted" : " not accepted")
                 .append(", in flight ")
                 .append(this.inFlight)
+                .append(this.cancelsInFlight > 0 ? ", cancels in flight " + this.cancelsInFlight : "")
                 .append(this.cancelWanted ? ", cancel wanted" : "")
                 .append(this.releaseWanted ? ", release wanted" : "")
                 .append(this.held ? ", held" : "")
@@ -139,9 +162,22 @@ final class LaneOrder extends AdmissionEntry {
         this.releaseWanted = false;
         resetQueueing();
         this.cancelQueuedAtNanos = 0;
+        this.cancelsInFlight = 0;
+        this.cancelRoundOpen = false;
+        this.cancelQueued = false;
+        this.cancelSentBeforeSettled = false;
+        this.cancelSucceeded = false;
+        this.cancelNotFound = false;
+        this.cancelRefused = false;
+        this.cancelRateLimited = false;
+        this.cancelAwaitsSubmit = false;
         this.cancelRetries = 0;
         this.cancelFailedSinceNanos = 0;
         this.cancelRetryAtNanos = 0;
+        this.heldBackSinceNanos = 0;
+        this.notFoundRecheckAtNanos = 0;
+        this.notFoundRecheckNext = 0;
+        this.notFoundRecheckRound = 0;
         this.unknownSinceNanos = 0;
         this.nextSweepNanos = 0;
         this.submitIngressNanos = 0;

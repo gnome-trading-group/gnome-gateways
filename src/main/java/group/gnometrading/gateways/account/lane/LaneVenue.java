@@ -119,6 +119,25 @@ public interface LaneVenue<M> {
     /** The order has ended: anything the venue kept for it can go. */
     default void onReleased(final OrderContext ctx) {}
 
+    /**
+     * Whether a cancel may go while the order's submit is unanswered, on another connection: the venue must know the
+     * order by an id the lane holds before sending, and must refuse a submit whose cancel reached it first, so a cancel
+     * that overtakes its order can't leave the order resting. Such a venue's cancels also never wait on another of the
+     * order's requests.
+     */
+    default boolean cancelsBeforeAnswer() {
+        return false;
+    }
+
+    /**
+     * How many copies of each cancel to send at once, each on its own connection, when one is free and the cancel
+     * budget is over half full: the first answer that cancels settles it, so a cancel the venue sits on doesn't hold
+     * the order. Only on a venue that {@link #cancelsBeforeAnswer}; 1 elsewhere.
+     */
+    default int cancelCopies() {
+        return 1;
+    }
+
     // ----- batches: several submits, or several cancels, in one request -----
 
     /** Returned by the batch readers when every entry has its own result. */
