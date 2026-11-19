@@ -1,6 +1,7 @@
 package group.gnometrading.gateways.transport;
 
 import group.gnometrading.gateways.GatewayConfig;
+import group.gnometrading.networking.sockets.SocketWaker;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 
@@ -34,4 +35,15 @@ public interface Transport<C> {
 
     /** Whether the last {@link #read} saw any traffic at all, data or the transport's own: proof the link is alive. */
     boolean sawTraffic();
+
+    /** Whether {@link #read} waits for data (up to its read timeout) rather than returning at once; after configure. */
+    default boolean blocks() {
+        return false;
+    }
+
+    /**
+     * Ends a {@link #read} waiting for data, returning null, whenever {@code waker} is woken. Applies across
+     * reconnects. Transports that can't are left waiting for their next frame or timeout.
+     */
+    default void wakeReadsWith(final SocketWaker waker) {}
 }

@@ -11,6 +11,7 @@ import group.gnometrading.gateways.transport.RawDataSink;
 import group.gnometrading.gateways.transport.Transport;
 import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.Logger;
+import group.gnometrading.networking.sockets.SocketWaker;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.List;
@@ -81,6 +82,14 @@ public final class AccountConnection<C> {
 
     public String name() {
         return this.name;
+    }
+
+    /**
+     * Has the lane's notices wake the reader out of its wait on the socket (the same {@code waker} given to the lane's
+     * {@code wakeReader}). Before the reader starts.
+     */
+    public void wakeReaderWith(final SocketWaker waker) {
+        this.reader.wakeWith(waker);
     }
 
     public GnomeAgent reader() {

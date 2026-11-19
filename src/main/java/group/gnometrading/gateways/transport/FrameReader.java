@@ -6,6 +6,7 @@ import group.gnometrading.gateways.ReaderPauseControl;
 import group.gnometrading.gateways.SocketClosedException;
 import group.gnometrading.logging.LogMessage;
 import group.gnometrading.logging.Logger;
+import group.gnometrading.networking.sockets.SocketWaker;
 import java.nio.ByteBuffer;
 import org.agrona.concurrent.EpochNanoClock;
 
@@ -44,6 +45,8 @@ public final class FrameReader implements GnomeAgent {
     private final Handler handler;
     private volatile RawDataSink raw = RawDataSink.NO_OP;
     private volatile long lastTrafficNanos;
+    // When set, the handler's other threads wake this one out of a read waiting on the socket (see wakeWith).
+    private SocketWaker waker;
 
     /**
      * @param name the connection's name, in its log lines
@@ -75,19 +78,15 @@ public final class FrameReader implements GnomeAgent {
         if (!this.handler.mayRead()) {
             return 0;
         }
-        final ByteBuffer frame;
-        try {
-            frame = this.transport.read();
-        } catch (Exception e) {
-            this.pause.pauseSelf();
-            this.logger.logf(LogMessage.SOCKET_DISCONNECTED, "%s: %s", this.name, e);
-            throw new SocketClosedException(e);
-        }
+        final SocketWaker waker = this.waker;
+        final ByteBuffer frame = waker == null ? read() : readWakeably(waker);
         if (this.transport.sawTraffic()) {
             this.lastTrafficNanos = this.nanoClock.nanoTime();
         }
         if (frame == null) {
-            return 0;
+            // A wakeable read that waited on the socket was the idling: the idle strategy parking on top of it would
+            // only leave the socket unwatched, delaying the next frame and the next wake.
+            return waker != null && this.transport.blocks() ? 1 : 0;
         }
         final long receiveNanos = this.nanoClock.nanoTime();
         this.raw.capture(receiveNanos, frame);
@@ -102,6 +101,28 @@ public final class FrameReader implements GnomeAgent {
         return 1;
     }
 
+    private ByteBuffer readWakeably(final SocketWaker waker) {
+        waker.arm();
+        // The last look, now that a wake can't be missed: work handed over since the first is seen here, or its wake
+        // ends the read below.
+        this.handler.beforeRead();
+        try {
+            return read();
+        } finally {
+            waker.disarm();
+        }
+    }
+
+    private ByteBuffer read() {
+        try {
+            return this.transport.read();
+        } catch (Exception e) {
+            this.pause.pauseSelf();
+            this.logger.logf(LogMessage.SOCKET_DISCONNECTED, "%s: %s", this.name, e);
+            throw new SocketClosedException(e);
+        }
+    }
+
     /** When the socket last carried anything, frames or pings; read by the supervisor's silence check. */
     public long lastTrafficNanos() {
         return this.lastTrafficNanos;
@@ -110,6 +131,15 @@ public final class FrameReader implements GnomeAgent {
     /** Restarts the silence clock, as a fresh connection has carried nothing yet. */
     public void trafficAt(final long nanos) {
         this.lastTrafficNanos = nanos;
+    }
+
+    /**
+     * Has the handler's other threads end this reader's wait on its socket through {@code waker}, so work they hand
+     * it ({@link Handler#beforeRead}) is taken at once rather than with the next frame. Before the reader starts.
+     */
+    public void wakeWith(final SocketWaker waker) {
+        this.waker = waker;
+        this.transport.wakeReadsWith(waker);
     }
 
     /** Where every frame read is also written raw, for disputes and replays; nowhere unless set. */

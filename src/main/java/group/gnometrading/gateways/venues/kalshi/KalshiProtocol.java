@@ -29,7 +29,8 @@ import org.agrona.concurrent.EpochNanoClock;
  * and re-snapshots them all. (Measured on demo, 2026-10-26.)
  *
  * <p>Prices are YES-leg dollar strings (the subscription sets {@code use_yes_price}): YES levels are bids, NO levels
- * asks at the same price. Books are kept in tenths of a cent, Kalshi's finest tick; a price off every tick is dropped.
+ * asks at the same price. Books are kept in hundredths of a cent, Kalshi's finest tick (its 0.01¢ structures); a price
+ * off every tick is dropped.
  * Quantities are contract strings with two decimals. Assumes {@code type} precedes {@code msg} in data frames and
  * {@code market_ticker} leads {@code msg}, as Kalshi sends them.
  *
@@ -40,7 +41,7 @@ public final class KalshiProtocol implements VenueProtocol<WebSocketChannel> {
     static final String WEBSOCKET_PATH = "/trade-api/ws/v2";
     private static final int MARKETS_PER_COMMAND = 100;
     private static final long NANOS_PER_MILLI = 1_000_000L;
-    private static final int TICKS_PER_DOLLAR = 1000;
+    private static final int TICKS_PER_DOLLAR = 10_000;
     private static final long TICK_TO_PRICE = Statics.PRICE_SCALING_FACTOR / TICKS_PER_DOLLAR;
     // Read one digit finer than the finest tick, so a price off every tick can be told apart and dropped.
     private static final long FINE_TICKS_PER_DOLLAR = TICKS_PER_DOLLAR * 10L;
@@ -511,6 +512,7 @@ public final class KalshiProtocol implements VenueProtocol<WebSocketChannel> {
 
     /** The tick for a price read one digit finer: 0, so dropped, for a price off every tick or one unreadable. */
     private static int tick(final long fine) {
-        return fine >= 0 && fine % 10 == 0 ? (int) (fine / 10) : 0;
+        // Bounded before the cast: a malformed price past a dollar would otherwise wrap to a level inside it.
+        return fine >= 0 && fine < FINE_TICKS_PER_DOLLAR && fine % 10 == 0 ? (int) (fine / 10) : 0;
     }
 }

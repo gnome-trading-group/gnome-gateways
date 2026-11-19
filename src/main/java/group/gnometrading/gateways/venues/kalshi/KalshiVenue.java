@@ -17,7 +17,8 @@ public final class KalshiVenue {
 
     public static final VenueFeed FEED = new VenueFeed(
             KalshiVenue::subjectOf,
-            // Prices in tenths of a cent: 999 a side.
+            // Room each side starts with: a whole-cent or tenth-of-a-cent book fits. A hundredth-of-a-cent book can go
+            // deeper, and its sides grow.
             1000,
             new GatewayConfig.Builder().build(),
             "kalshi.ws.url",

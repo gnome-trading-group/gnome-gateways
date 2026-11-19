@@ -20,6 +20,8 @@ import group.gnometrading.networking.http.AsyncHTTPConnections;
 import group.gnometrading.networking.http.HTTPCompletion;
 import group.gnometrading.networking.http.HTTPRequestWriter;
 import group.gnometrading.networking.http.HTTPResponse;
+import group.gnometrading.networking.sockets.SocketPoller;
+import group.gnometrading.networking.sockets.SocketWaker;
 import group.gnometrading.schemas.RejectReason;
 import group.gnometrading.schemas.gateway.AdmissionAction;
 import java.util.concurrent.TimeUnit;
@@ -306,6 +308,15 @@ public final class AccountLane<M> implements GnomeAgent {
     private long retireAtNanos;
     // Read from another thread while the gateway hands over; written only when it changes, so rarely.
     private volatile int awaitingAnswer;
+    // Set by sleepWhenIdle: a pass with nothing to do waits on the in-flight connections and the waker instead of
+    // leaving its thread's idle strategy to park.
+    private SocketWaker sleepWaker;
+    private final SocketPoller sleepPoller = new SocketPoller();
+    private long maxSleepNanos;
+    private long timerSlackNanos;
+    private boolean timerSlackSet;
+    private final int commandCapacity;
+    private final int releasedCapacity;
 
     /**
      * @param maxOrders the most orders the account may have working
@@ -349,6 +360,8 @@ public final class AccountLane<M> implements GnomeAgent {
         this.releasedOrderQueue = releasedOrderQueue;
         this.noticeQueue = noticeQueue;
         this.notices = new ReaderNotices(noticeQueue);
+        this.commandCapacity = commands.remaining();
+        this.releasedCapacity = releasedOrderQueue.remaining();
         this.noticeReserve = noticeQueue.remaining() / 4;
         this.parked = new LaneCommand[PARKED_COMMANDS];
         for (int i = 0; i < PARKED_COMMANDS; i++) {
@@ -398,8 +411,70 @@ public final class AccountLane<M> implements GnomeAgent {
         this.shape = new RequestShape(maxPathLength);
     }
 
+    /**
+     * Wakes the reader for every notice that carries a report (see {@link ReaderNotices#wakeReader}). Before the lane
+     * starts.
+     */
+    public void wakeReader(final SocketWaker readerWaker) {
+        this.notices.wakeReader(readerWaker);
+    }
+
+    /**
+     * Makes a pass with nothing to do wait for work rather than return idle: on every connection with a request in
+     * flight (an answer ends the wait at once) and on {@code waker} (which whoever hands the lane a command wakes,
+     * {@link #wake}), for at most {@code maxSleepNanos}, the bound on how late anything else the lane waits for (a
+     * timer, the budget, a new connection) is seen. {@code timerSlackNanos} (above 0) is set as the thread's timer
+     * slack, so the bound holds that closely. Before the lane starts.
+     */
+    public void sleepWhenIdle(final SocketWaker waker, final long maxSleepNanos, final long timerSlackNanos) {
+        this.sleepWaker = waker;
+        this.maxSleepNanos = maxSleepNanos;
+        this.timerSlackNanos = timerSlackNanos;
+    }
+
+    /** Any thread, after handing the lane a command: ends its wait if it sleeps when idle and is waiting. */
+    public void wake() {
+        final SocketWaker waker = this.sleepWaker;
+        if (waker != null) {
+            waker.wake();
+        }
+    }
+
     @Override
     public int doWork() {
+        final int work = pass();
+        if (work > 0 || this.sleepWaker == null) {
+            return work;
+        }
+        sleepUntilWork();
+        // The wait was this pass's idling: the idle strategy mustn't park on top of it.
+        return 1;
+    }
+
+    private void sleepUntilWork() {
+        if (!this.timerSlackSet) {
+            this.timerSlackSet = true;
+            if (this.timerSlackNanos > 0) {
+                SocketPoller.setTimerSlackNanos(this.timerSlackNanos);
+            }
+        }
+        final SocketWaker waker = this.sleepWaker;
+        this.sleepPoller.clear();
+        if (!this.connections.addInFlightTo(this.sleepPoller)) {
+            // An answer is already off its socket: the next pass reads it.
+            return;
+        }
+        waker.arm();
+        if (this.commands.remaining() != this.commandCapacity
+                || this.releasedOrderQueue.remaining() != this.releasedCapacity) {
+            waker.disarm();
+            return;
+        }
+        this.sleepPoller.await(waker.fd(), this.maxSleepNanos);
+        waker.disarm();
+    }
+
+    private int pass() {
         retireIdleConnections();
         int work = drainReleased();
         work += pollAnswers();

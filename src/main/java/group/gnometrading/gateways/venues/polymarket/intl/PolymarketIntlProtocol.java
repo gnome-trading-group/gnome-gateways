@@ -3,6 +3,7 @@ package group.gnometrading.gateways.venues.polymarket.intl;
 import group.gnometrading.codecs.json.JsonDecoder;
 import group.gnometrading.codecs.json.JsonEncoder;
 import group.gnometrading.gateways.feed.GapReason;
+import group.gnometrading.gateways.feed.SpecChangeNotices;
 import group.gnometrading.gateways.feed.Subject;
 import group.gnometrading.gateways.feed.SubjectTable;
 import group.gnometrading.gateways.feed.VenueProtocol;
@@ -59,6 +60,7 @@ public final class PolymarketIntlProtocol implements VenueProtocol<WebSocketChan
     }
 
     private final SubjectTable table;
+    private final SpecChangeNotices specChanges;
     // By token, so a check carries over when a roll swaps the market. Added by the supervisor when a token is
     // subscribed, read by the reader.
     private final Map<String, Check> checks = new ConcurrentHashMap<>();
@@ -67,7 +69,16 @@ public final class PolymarketIntlProtocol implements VenueProtocol<WebSocketChan
     private boolean opened;
 
     public PolymarketIntlProtocol(final SubjectTable table) {
+        this(table, null);
+    }
+
+    /**
+     * {@code specChanges}, when given, takes each tick change the venue announces for a subscribed market, so the
+     * registry can date the market's new spec from when the venue said it.
+     */
+    public PolymarketIntlProtocol(final SubjectTable table, final SpecChangeNotices specChanges) {
         this.table = table;
+        this.specChanges = specChanges;
     }
 
     @Override
@@ -173,7 +184,8 @@ public final class PolymarketIntlProtocol implements VenueProtocol<WebSocketChan
         OTHER,
         BOOK,
         PRICE_CHANGE,
-        TRADE
+        TRADE,
+        TICK_SIZE_CHANGE
     }
 
     private final JsonDecoder decoder = new JsonDecoder();
@@ -186,6 +198,10 @@ public final class PolymarketIntlProtocol implements VenueProtocol<WebSocketChan
     private long tradePrice;
     private long tradeSize;
     private Side tradeSide;
+    // The notice's id is built here as the market is read, so a tick change allocates nothing on the reader.
+    private final byte[] noticeId = new byte[SpecChangeNotices.MAX_ID_BYTES];
+    private int marketLength;
+    private long newTick;
     private Subject[] touched = new Subject[INITIAL_TOUCHED];
     private long[] touchedBid = new long[INITIAL_TOUCHED];
     private long[] touchedAsk = new long[INITIAL_TOUCHED];
@@ -226,6 +242,8 @@ public final class PolymarketIntlProtocol implements VenueProtocol<WebSocketChan
         tradePrice = UNREADABLE;
         tradeSize = UNREADABLE;
         tradeSide = Side.None;
+        marketLength = 0;
+        newTick = UNREADABLE;
         touchedCount = 0;
         try (var object = node.asObject()) {
             while (object.hasNextKey()) {
@@ -242,8 +260,9 @@ public final class PolymarketIntlProtocol implements VenueProtocol<WebSocketChan
             case BOOK -> finishBook();
             case PRICE_CHANGE -> finishChanges();
             case TRADE -> finishTrade();
+            case TICK_SIZE_CHANGE -> noteTickSizeChange();
             default -> {
-                // tick_size_change, best_bid_ask, new_market: the raw capture keeps them.
+                // best_bid_ask, new_market: the raw capture keeps them.
             }
         }
     }
@@ -263,6 +282,10 @@ public final class PolymarketIntlProtocol implements VenueProtocol<WebSocketChan
             bookSide(key, Side.Ask);
         } else if (name.equals("price_changes")) {
             changes(key);
+        } else if (name.equals("market")) {
+            marketLength = copyAscii(key.asString(), noticeId, 0);
+        } else if (name.equals("new_tick_size")) {
+            newTick = key.asString().toFixedPointLong(Statics.PRICE_SCALING_FACTOR, UNREADABLE);
         } else {
             tradeField(name, key);
         }
@@ -290,11 +313,42 @@ public final class PolymarketIntlProtocol implements VenueProtocol<WebSocketChan
         levels(key, side);
     }
 
+    /** Queues the change for a market we subscribed; one we didn't can't be told apart from a stale event. */
+    private void noteTickSizeChange() {
+        if (specChanges == null || eventSubject == null || marketLength == 0 || newTick <= 0) {
+            return;
+        }
+        final String token = eventSubject.key();
+        final int idLength = marketLength + 1 + token.length();
+        // An id too long for the queue is still offered, so the queue counts it among its drops.
+        if (idLength <= noticeId.length) {
+            noticeId[marketLength] = ':';
+            for (int i = 0; i < token.length(); i++) {
+                noticeId[marketLength + 1 + i] = (byte) token.charAt(i);
+            }
+        }
+        specChanges.offer(noticeId, idLength, newTick, timestamp);
+    }
+
+    /** @return the value's length, though only a value that fits is copied */
+    private static int copyAscii(final GnomeString value, final byte[] into, final int at) {
+        final int length = value.length();
+        if (at + length > into.length) {
+            return length;
+        }
+        for (int i = 0; i < length; i++) {
+            into[at + i] = value.byteAt(i);
+        }
+        return length;
+    }
+
     private static Type type(final GnomeString value) {
         if (value.equals("book")) {
             return Type.BOOK;
         } else if (value.equals("price_change")) {
             return Type.PRICE_CHANGE;
+        } else if (value.equals("tick_size_change")) {
+            return Type.TICK_SIZE_CHANGE;
         }
         return value.equals("last_trade_price") ? Type.TRADE : Type.OTHER;
     }

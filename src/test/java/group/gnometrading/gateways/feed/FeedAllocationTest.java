@@ -111,6 +111,28 @@ class FeedAllocationTest {
     }
 
     @Test
+    void polymarketIntlTickSizeChangesDoNotAllocate() throws Exception {
+        final ByteBuffer[] messages = new ByteBuffer[MESSAGES];
+        messages[0] = ascii("[{\"market\":\"c\",\"asset_id\":\"token\",\"timestamp\":\"1782753357000\","
+                + "\"bids\":[{\"price\":\"0.08\",\"size\":\"3\"}],\"asks\":[{\"price\":\"0.10\",\"size\":\"6\"}],"
+                + "\"event_type\":\"book\",\"last_trade_price\":\"0.09\"}]");
+        for (int i = 1; i < messages.length; i++) {
+            final long timestamp = 1782753357000L + i;
+            messages[i] = ascii("[{\"market\":\"c\",\"price_changes\":[{\"asset_id\":\"token\",\"price\":\"0.07\","
+                    + "\"size\":\"" + (i % 2 == 0 ? "0" : "5") + "\",\"side\":\"BUY\",\"hash\":\"h\","
+                    + "\"best_bid\":\"0.08\",\"best_ask\":\"0.10\"}],\"timestamp\":\"" + timestamp
+                    + "\",\"event_type\":\"price_change\"},{\"event_type\":\"tick_size_change\",\"asset_id\":\"token\","
+                    + "\"market\":\"c\",\"old_tick_size\":\"0.01\",\"new_tick_size\":\"0.001\",\"timestamp\":\""
+                    + timestamp + "\"}]");
+        }
+        // Room for every notice, so the measured ones are queued rather than dropped, which costs less.
+        final SpecChangeNotices notices = new SpecChangeNotices(Integer.highestOneBit(MESSAGES) << 1);
+        assertNoAllocation(messages, "token", table -> new PolymarketIntlProtocol(table, notices), Projection.IDENTITY);
+        assertEquals(0, notices.dropped());
+        assertEquals(MESSAGES - 1, notices.drain((id, newTick, venueNanos) -> {}));
+    }
+
+    @Test
     void hyperliquidWholeBooksDoNotAllocate() throws Exception {
         final ByteBuffer[] messages = new ByteBuffer[MESSAGES];
         for (int i = 0; i < messages.length; i++) {

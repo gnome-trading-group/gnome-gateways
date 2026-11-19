@@ -6,12 +6,14 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import group.gnometrading.gateways.feed.SpecChangeNotices;
 import group.gnometrading.gateways.feed.Subject;
 import group.gnometrading.gateways.feed.SubjectState;
 import group.gnometrading.gateways.feed.VenueTestKit;
 import group.gnometrading.schemas.Mbp10Schema;
 import group.gnometrading.schemas.book.Action;
 import group.gnometrading.schemas.book.Side;
+import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -21,7 +23,8 @@ class PolymarketIntlProtocolTest {
     private final VenueTestKit kit = new VenueTestKit();
     private final VenueTestKit.Stream yes = kit.market("token-yes");
     private final VenueTestKit.Stream no = kit.market("token-no");
-    private final PolymarketIntlProtocol protocol = new PolymarketIntlProtocol(kit.table);
+    private final SpecChangeNotices specChanges = new SpecChangeNotices(8);
+    private final PolymarketIntlProtocol protocol = new PolymarketIntlProtocol(kit.table, specChanges);
     private long receive = 1_000;
 
     @BeforeEach
@@ -68,6 +71,59 @@ class PolymarketIntlProtocolTest {
                         level("0.07", "4") + "," + level("0.08", "3"),
                         level("0.11", "7") + "," + level("0.10", "6"))
                 + "]");
+    }
+
+    private static String tickSizeChange(final String token, final String newTick, final String timestamp) {
+        return "{\"event_type\":\"tick_size_change\",\"asset_id\":\"" + token + "\",\"market\":\"condition-1\","
+                + "\"old_tick_size\":\"0.01\",\"new_tick_size\":\"" + newTick + "\",\"timestamp\":\"" + timestamp
+                + "\"}";
+    }
+
+    private List<String> drainedNotices() {
+        final List<String> drained = new ArrayList<>();
+        specChanges.drain((id, newTick, venueNanos) -> drained.add(id + " " + newTick + " " + venueNanos));
+        return drained;
+    }
+
+    @Test
+    void aTickSizeChangeIsNoticedForItsListingAtTheVenuesTime() throws Exception {
+        frame(tickSizeChange("token-yes", "0.001", "1782753357257"));
+
+        assertEquals(List.of("condition-1:token-yes 1000000 1782753357257000000"), drainedNotices());
+        assertTrue(yes.drain().isEmpty(), "a tick change publishes nothing to the book");
+    }
+
+    @Test
+    void aTickSizeChangeForAMarketNotSubscribedIsIgnored() {
+        frame(tickSizeChange("token-other", "0.001", "1782753357257"));
+        frame(tickSizeChange("token-yes", "nonsense", "1782753357257"));
+        frame(tickSizeChange("token-yes", "0", "1782753357257"));
+
+        assertEquals(List.of(), drainedNotices());
+        assertEquals(0, specChanges.dropped());
+    }
+
+    @Test
+    void tickSizeChangesInAnArrayAreEachNoticedForTheirOwnListing() {
+        frame("[" + tickSizeChange("token-yes", "0.001", "1782753357257") + ","
+                + tickSizeChange("token-no", "0.01", "1782753357258").replace("condition-1", "condition-2") + "]");
+
+        assertEquals(
+                List.of(
+                        "condition-1:token-yes 1000000 1782753357257000000",
+                        "condition-2:token-no 10000000 1782753357258000000"),
+                drainedNotices());
+    }
+
+    @Test
+    void aTickSizeChangeWhoseIdIsTooLongForANoticeIsCountedAsDropped() {
+        final String tooLong = "c".repeat(SpecChangeNotices.MAX_ID_BYTES + 1);
+        frame(tickSizeChange("token-yes", "0.001", "1782753357257").replace("condition-1", tooLong));
+        final String fitsAlone = "c".repeat(SpecChangeNotices.MAX_ID_BYTES - "token-yes".length());
+        frame(tickSizeChange("token-yes", "0.001", "1782753357257").replace("condition-1", fitsAlone));
+
+        assertEquals(List.of(), drainedNotices());
+        assertEquals(2, specChanges.dropped());
     }
 
     @Test

@@ -1,6 +1,7 @@
 package group.gnometrading.gateways.orders;
 
 import group.gnometrading.collections.buffer.ManyToOneRingBuffer;
+import group.gnometrading.networking.sockets.SocketWaker;
 import group.gnometrading.schemas.ExecType;
 import group.gnometrading.schemas.OrderStatus;
 import group.gnometrading.schemas.RejectReason;
@@ -16,9 +17,19 @@ public final class ReaderNotices {
 
     private final ManyToOneRingBuffer<OrderContext> queue;
     private int claimed;
+    // Ends the reader's wait on its socket for a notice that carries a report; null leaves it to the next frame.
+    private SocketWaker readerWaker;
 
     public ReaderNotices(final ManyToOneRingBuffer<OrderContext> queue) {
         this.queue = queue;
+    }
+
+    /**
+     * Wakes the reader, if it waits on its socket, for every notice that carries a report, so the report goes out
+     * now rather than with the socket's next frame. Before the lane starts.
+     */
+    public void wakeReader(final SocketWaker waker) {
+        this.readerWaker = waker;
     }
 
     /**
@@ -29,7 +40,8 @@ public final class ReaderNotices {
         final OrderContext notice = claim();
         notice.copyFrom(ctx);
         notice.registration = true;
-        commit();
+        // The reader takes registrations before any frame it reads, so nothing waits on this one.
+        this.queue.commit(this.claimed);
     }
 
     /** Ends an order the reader may hold with a {@code REJECT}: the reader drops its copy and reports it. */
@@ -251,5 +263,9 @@ public final class ReaderNotices {
 
     private void commit() {
         this.queue.commit(this.claimed);
+        final SocketWaker waker = this.readerWaker;
+        if (waker != null) {
+            waker.wake();
+        }
     }
 }

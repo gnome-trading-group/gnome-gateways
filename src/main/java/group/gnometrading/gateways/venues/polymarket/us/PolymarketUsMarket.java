@@ -2,6 +2,7 @@ package group.gnometrading.gateways.venues.polymarket.us;
 
 import group.gnometrading.schemas.Statics;
 import group.gnometrading.sm.Listing;
+import group.gnometrading.sm.PriceGrid;
 import java.nio.charset.StandardCharsets;
 
 /**
@@ -13,10 +14,13 @@ public final class PolymarketUsMarket {
     private final PolymarketUsListing listing;
     private final PolymarketUsMarketInfo info;
     private final byte[] cancelBody;
+    // Set by whoever keeps the listing's spec current, read by the lane.
+    private volatile PriceGrid grid;
 
     public PolymarketUsMarket(final Listing listing, final PolymarketUsMarketInfo info) {
         this.listing = new PolymarketUsListing(listing);
         this.info = info;
+        this.grid = PriceGrid.single(info.tickSize(), Statics.PRICE_SCALING_FACTOR);
         this.cancelBody =
                 ("{\"marketSlug\":\"" + this.listing.marketSlug() + "\"}").getBytes(StandardCharsets.US_ASCII);
     }
@@ -39,10 +43,17 @@ public final class PolymarketUsMarket {
      * quantity down to the market's lot, rather than refusing them.
      */
     public boolean validTerms(final long price, final long size) {
-        return price > 0
-                && price < Statics.PRICE_SCALING_FACTOR
-                && price % this.info.tickSize() == 0
-                && size > 0
-                && size % this.info.lotSize() == 0;
+        return this.grid.valid(price) && size > 0 && size % this.info.lotSize() == 0;
+    }
+
+    /**
+     * The listing's current price grid, from its spec, replacing the tick read when the market was loaded. Its end
+     * must be a dollar: the grid is what keeps every price sent under it.
+     */
+    public void priceGrid(final PriceGrid newGrid) {
+        if (newGrid.end() != Statics.PRICE_SCALING_FACTOR) {
+            throw new IllegalArgumentException("a Polymarket US grid must end at a dollar: " + newGrid);
+        }
+        this.grid = newGrid;
     }
 }

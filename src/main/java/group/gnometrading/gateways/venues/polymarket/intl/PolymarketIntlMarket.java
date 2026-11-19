@@ -2,6 +2,7 @@ package group.gnometrading.gateways.venues.polymarket.intl;
 
 import group.gnometrading.schemas.Statics;
 import group.gnometrading.sm.Listing;
+import group.gnometrading.sm.PriceGrid;
 
 /**
  * What order entry needs to know about one Polymarket International listing: its outcome token (as the venue lists it
@@ -13,7 +14,8 @@ public final class PolymarketIntlMarket {
     private final String tokenId;
     private final byte[] tokenIdBytes;
     private final PolymarketIntlMarketInfo info;
-    private final long amountIncrement;
+    // Set by whoever keeps the listing's spec current, read by the lane.
+    private volatile long amountIncrement;
 
     private PolymarketIntlMarket(final String tokenId, final PolymarketIntlMarketInfo info) {
         this.tokenId = tokenId;
@@ -41,6 +43,14 @@ public final class PolymarketIntlMarket {
 
     public boolean negRisk() {
         return this.info.negRisk();
+    }
+
+    /**
+     * The listing's current price grid, from its spec: the venue moves a market to a finer tick near the ends of the
+     * range, and amounts then take its finer increment.
+     */
+    public void priceGrid(final PriceGrid grid) {
+        this.amountIncrement = amountIncrement(grid.finestStep());
     }
 
     /**

@@ -17,6 +17,7 @@ import group.gnometrading.logging.NullLogger;
 import group.gnometrading.networking.http.AsyncHTTPConnections;
 import group.gnometrading.networking.http.HTTPConnector;
 import group.gnometrading.networking.http.HTTPProtocol;
+import group.gnometrading.networking.sockets.SocketWaker;
 import group.gnometrading.schemas.OrderType;
 import group.gnometrading.schemas.Side;
 import group.gnometrading.schemas.TimeInForce;
@@ -127,6 +128,19 @@ class AccountLaneAllocationTest {
     void anOrdersTripAllocatesNothingOnTheLanesThread() {
         OrderPathTestKit.assertNoAllocation("lane order trip", 300, 500, this::trip);
         assertEquals(0, this.notices, "every order was accepted, so the reader was told nothing");
+        assertEquals(2 * 800, this.server.received(), "each trip sent its submit and its cancel");
+    }
+
+    @Test
+    void anOrdersTripSleepingBetweenPassesAllocatesNothing() throws Exception {
+        try (SocketWaker waker = SocketWaker.create()) {
+            this.lane.sleepWhenIdle(waker, TimeUnit.MILLISECONDS.toNanos(1), 0);
+            OrderPathTestKit.assertNoAllocation("lane order trip, sleeping when idle", 300, 500, () -> {
+                trip();
+                waker.arm();
+                waker.wake();
+            });
+        }
         assertEquals(2 * 800, this.server.received(), "each trip sent its submit and its cancel");
     }
 

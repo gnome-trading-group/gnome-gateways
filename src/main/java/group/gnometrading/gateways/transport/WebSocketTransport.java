@@ -1,6 +1,7 @@
 package group.gnometrading.gateways.transport;
 
 import group.gnometrading.gateways.GatewayConfig;
+import group.gnometrading.networking.sockets.SocketWaker;
 import group.gnometrading.networking.websockets.WebSocketClient;
 import group.gnometrading.networking.websockets.WebSocketResponse;
 import group.gnometrading.networking.websockets.enums.Opcode;
@@ -16,6 +17,7 @@ public final class WebSocketTransport implements Transport<WebSocketChannel> {
     private final WebSocketWriter writer;
     private final WebSocketChannel channel;
     private boolean sawTraffic;
+    private volatile boolean blocks;
 
     public WebSocketTransport(final WebSocketClient client, final int writeSlotBytes) {
         this.client = client;
@@ -35,7 +37,18 @@ public final class WebSocketTransport implements Transport<WebSocketChannel> {
 
     @Override
     public void configure(final GatewayConfig config) throws IOException {
-        config.configure(client, !config.spinReads());
+        this.blocks = !config.spinReads();
+        config.configure(client, this.blocks);
+    }
+
+    @Override
+    public boolean blocks() {
+        return this.blocks;
+    }
+
+    @Override
+    public void wakeReadsWith(final SocketWaker waker) {
+        client.setWaker(waker);
     }
 
     @Override

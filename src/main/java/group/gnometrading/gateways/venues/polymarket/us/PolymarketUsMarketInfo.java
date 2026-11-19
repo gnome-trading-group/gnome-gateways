@@ -53,6 +53,10 @@ public record PolymarketUsMarketInfo(long tickSize, long lotSize) {
         if (increments[0] <= 0 || increments[1] <= 0) {
             throw new IllegalStateException("Polymarket US market info has no tick size or minimum quantity");
         }
+        if (increments[0] >= Statics.PRICE_SCALING_FACTOR || Statics.PRICE_SCALING_FACTOR % increments[0] != 0) {
+            throw new IllegalStateException(
+                    "Polymarket US market info has a tick size that doesn't divide a dollar: " + increments[0]);
+        }
         return new PolymarketUsMarketInfo(increments[0], increments[1]);
     }
 

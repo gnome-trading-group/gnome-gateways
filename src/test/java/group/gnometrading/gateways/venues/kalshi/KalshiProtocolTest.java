@@ -251,9 +251,38 @@ class KalshiProtocolTest {
         assertEquals(price("0.551"), yes.last().decoder.bidPrice0());
         assertEquals(size("7"), yes.last().decoder.bidSize0());
 
-        delta(3, "0.55150", "9.00", "yes");
-        assertEquals(price("0.551"), yes.last().decoder.bidPrice0(), "0.5515 is on no Kalshi tick");
-        assertEquals(size("7"), yes.last().decoder.bidSize0());
+        delta(3, "0.5515", "9.00", "yes");
+        assertEquals(price("0.5515"), yes.last().decoder.bidPrice0());
+        assertEquals(size("9"), yes.last().decoder.bidSize0());
+        assertEquals(price("0.551"), yes.last().decoder.bidPrice1());
+
+        delta(4, "0.55155", "4.00", "yes");
+        assertEquals(price("0.5515"), yes.last().decoder.bidPrice0(), "0.55155 is on no Kalshi tick");
+        assertEquals(size("9"), yes.last().decoder.bidSize0());
+
+        delta(5, "429497.2296", "4.00", "yes");
+        // It would wrap to the 50¢ tick and add to that level.
+        assertEquals(price("0.50"), yes.last().decoder.bidPrice3());
+        assertEquals(size("200"), yes.last().decoder.bidSize3(), "a price past a dollar is no level");
+    }
+
+    @Test
+    void hundredthOfACentLevelsAreKeptToTheEdgesAndComplementExactly() throws Exception {
+        subscribed();
+        frame("{\"type\":\"orderbook_snapshot\",\"sid\":1,\"seq\":1,\"msg\":{\"market_ticker\":\"" + TICKER
+                + "\",\"yes_dollars_fp\":[[\"0.0001\",\"5.00\"],[\"0.1335\",\"10200.00\"]],"
+                + "\"no_dollars_fp\":[[\"0.9999\",\"3.00\"],[\"0.1349\",\"40.00\"]]}}");
+
+        Mbp10Schema book = yes.last();
+        assertEquals(price("0.1335"), book.decoder.bidPrice0());
+        assertEquals(size("10200"), book.decoder.bidSize0());
+        assertEquals(price("0.0001"), book.decoder.bidPrice1());
+        assertEquals(price("0.1349"), book.decoder.askPrice0());
+        assertEquals(price("0.9999"), book.decoder.askPrice1());
+
+        Mbp10Schema complement = no.last();
+        assertEquals(price("0.8665"), complement.decoder.askPrice0());
+        assertEquals(price("0.8651"), complement.decoder.bidPrice0());
     }
 
     @Test

@@ -36,6 +36,18 @@ class PolymarketUsMarketInfoTest {
     }
 
     @Test
+    void refusesATickThatDoesNotDivideADollar() {
+        assertThrows(
+                IllegalStateException.class,
+                () -> PolymarketUsMarketInfo.parse(
+                        body("{\"market\":{\"orderPriceMinTickSize\":0.003,\"minimumTradeQty\":1}}")));
+        assertThrows(
+                IllegalStateException.class,
+                () -> PolymarketUsMarketInfo.parse(
+                        body("{\"market\":{\"orderPriceMinTickSize\":1,\"minimumTradeQty\":1}}")));
+    }
+
+    @Test
     void loadAsksAgainWhenTheVenueRefusesForItsRateLimit() throws Exception {
         final HTTPClient httpClient = mock(HTTPClient.class);
         final HTTPResponse limited = response(429, "");

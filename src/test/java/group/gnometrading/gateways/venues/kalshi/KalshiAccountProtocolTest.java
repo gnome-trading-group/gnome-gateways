@@ -85,6 +85,30 @@ class KalshiAccountProtocolTest {
     }
 
     @Test
+    void aSubCentFractionalFillIsPricedSoItsCostIsExact() {
+        register(7, 1, MARKET_A, "alpha-1");
+        // 0.33 contracts at 5.3¢ (a tapered market's 0.1¢ band), then 1 more at 5.4¢: Kalshi's costs to 6 decimals.
+        frame(fill("alpha-1", "resting", "0.33", "2.67", "0.017490"));
+        frame(fill("alpha-1", "resting", "1.33", "1.67", "0.071490"));
+
+        final RecordedReports.Report first = this.recorded.reports.get(1);
+        final RecordedReports.Report second = this.recorded.reports.get(2);
+        assertEquals(53_000_000L, first.fillPrice());
+        assertEquals(17_490_000L, first.fillPrice() * first.filledQty() / 1_000_000L, "the ledger's cost is Kalshi's");
+        assertEquals(54_000_000L, second.fillPrice());
+    }
+
+    @Test
+    void anUpdateFillingAtSeveralPricesIsAveragedToWithinAPriceUnit() {
+        register(7, 1, MARKET_A, "alpha-1");
+        frame(fill("alpha-1", "resting", "1.33", "1.67", "0.071490"));
+
+        final RecordedReports.Report fill = this.recorded.reports.get(1);
+        final long cost = fill.fillPrice() * fill.filledQty() / 1_000_000L;
+        assertTrue(71_490_000L - cost >= 0 && 71_490_000L - cost <= 1, "cost " + cost + " vs 71490000");
+    }
+
+    @Test
     void kalshisIdForAnOrderIsLearnedFromItsFirstEvent() {
         register(7, 1, MARKET_A, "alpha-1");
         frame(update("alpha-1", "resting", "0.00", "3.00"));
@@ -137,6 +161,26 @@ class KalshiAccountProtocolTest {
                 + "\"remaining_count_fp\":\"" + remaining + "\","
                 + "\"taker_fill_cost_dollars\":\"0.000000\","
                 + "\"maker_fill_cost_dollars\":\"1.500000\","
+                + "\"last_updated_ts_ms\":1800000000000"
+                + "}}";
+    }
+
+    private static String fill(
+            final String clientOrderId,
+            final String status,
+            final String fillCount,
+            final String remaining,
+            final String takerCost) {
+        return "{\"type\":\"user_order\",\"sid\":1,\"msg\":{"
+                + "\"order_id\":\"venue-" + clientOrderId + "\","
+                + "\"client_order_id\":\"" + clientOrderId + "\","
+                + "\"status\":\"" + status + "\","
+                + "\"fill_count_fp\":\"" + fillCount + "\","
+                + "\"remaining_count_fp\":\"" + remaining + "\","
+                + "\"taker_fill_cost_dollars\":\"" + takerCost + "\","
+                + "\"maker_fill_cost_dollars\":\"0.000000\","
+                + "\"taker_fees_dollars\":\"0.001300\","
+                + "\"maker_fees_dollars\":\"0.000000\","
                 + "\"last_updated_ts_ms\":1800000000000"
                 + "}}";
     }
