@@ -362,12 +362,12 @@ class PolymarketIntlLaneVenueTest {
         submit(1);
         this.harness.runUntil(() -> this.harness.answered("POST", 1));
         this.harness.cancel(1);
-        final long start = System.nanoTime();
-        this.harness.runUntil(() -> !this.harness.notices.isEmpty(), 8_000);
+        this.harness.skip(4_900);
+        assertTrue(this.harness.notices.isEmpty(), "a matching delay is waited out first");
 
+        this.harness.skip(600);
         assertEquals(1, this.harness.notices.size());
         assertEquals(ExecType.CANCEL_REJECT, this.harness.notices.get(0).execType, "the OMS must not think it's gone");
-        assertTrue(System.nanoTime() - start >= TimeUnit.SECONDS.toNanos(5), "a matching delay is waited out first");
     }
 
     @Test
@@ -465,7 +465,7 @@ class PolymarketIntlLaneVenueTest {
         this.harness.cancel(1);
         this.harness.runUntil(() -> this.harness.answered("DELETE", 2));
         this.harness.release(1);
-        this.harness.runFor(3_500);
+        this.harness.skip(3_500);
 
         assertEquals(2, this.harness.requests("DELETE").size());
         assertTrue(this.harness.notices.isEmpty());
@@ -572,7 +572,7 @@ class PolymarketIntlLaneVenueTest {
             // The venue's events end the order, and the reader releases it: the gateway's later checks on a cancel
             // that found nothing (600 ms, 3 s) must then tell the session nothing more.
             this.harness.release(1);
-            this.harness.runFor(3_200);
+            this.harness.skip(3_200);
             assertTrue(
                     this.harness.notices.stream().noneMatch(n -> n.execType == ExecType.CANCEL_REJECT),
                     "a refused cancel told after the order ended: " + seen);

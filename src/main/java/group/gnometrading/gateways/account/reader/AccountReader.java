@@ -28,6 +28,7 @@ import org.agrona.concurrent.EpochNanoClock;
 public final class AccountReader implements FrameReader.Handler {
 
     private final AccountProtocol<?> protocol;
+    private final EpochNanoClock clock;
     private final ManyToOneRingBuffer<OrderContext> noticeQueue;
     private final ManyToOneRingBuffer<OrderContext> releasedOrderQueue;
     private final ManyToOneRingBuffer<AccountReport> reportQueue;
@@ -48,6 +49,7 @@ public final class AccountReader implements FrameReader.Handler {
             final ManyToOneRingBuffer<OrderContext> releasedOrderQueue,
             final ManyToOneRingBuffer<AccountReport> reportQueue) {
         this.protocol = protocol;
+        this.clock = clock;
         this.noticeQueue = noticeQueue;
         this.releasedOrderQueue = releasedOrderQueue;
         this.reportQueue = reportQueue;
@@ -57,9 +59,15 @@ public final class AccountReader implements FrameReader.Handler {
         this.noticeHandler = this.reports::onNotice;
     }
 
-    /** The lane's orders and notices, on one queue in the order it wrote them, so a notice never precedes its order. */
+    /**
+     * The lane's orders and notices, on one queue in the order it wrote them, so a notice never precedes its order.
+     *
+     * <p>What is applied here arrived on no frame, so its reports carry the time they are made: the last frame's time
+     * can be as old as the socket has been quiet, which on an account with nothing working is the keep-alive interval.
+     */
     @Override
     public void beforeRead() {
+        this.reports.receivedAt(this.clock.nanoTime());
         this.noticeQueue.read(this.noticeHandler, Integer.MAX_VALUE);
         if (this.catchUpPending) {
             this.catchUpPending = false;
@@ -79,12 +87,13 @@ public final class AccountReader implements FrameReader.Handler {
 
     /**
      * Drains the lane's queue again first: an order it registered after this pass began, then sent, may be the one
-     * this frame is about, and its registration was committed before the frame could have been read.
+     * this frame is about, and its registration was committed before the frame could have been read. Notices drained
+     * here are handled as the frame arrives, so they carry its time too, not the previous frame's.
      */
     @Override
     public void onFrame(final ByteBuffer frame, final long receiveNanos) {
-        this.noticeQueue.read(this.noticeHandler, Integer.MAX_VALUE);
         this.reports.receivedAt(receiveNanos);
+        this.noticeQueue.read(this.noticeHandler, Integer.MAX_VALUE);
         this.protocol.onFrame(frame, this.reports);
     }
 

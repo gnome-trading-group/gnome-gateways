@@ -138,13 +138,10 @@ class AccountReaderAllocationTest {
             final ByteBuffer acknowledged,
             final ByteBuffer ended,
             final int reportsPerOrder) {
+        // The reader reads its clock on every pass. Gateways give it gnome-core's SampledEpochNanoClock, which reads as
+        // System.nanoTime plus an offset; Agrona's SystemEpochNanoClock would build an Instant on every pass.
         final AccountReader reader = new AccountReader(
-                protocol,
-                SystemEpochNanoClock.INSTANCE,
-                16,
-                this.noticeQueue,
-                this.releasedOrderQueue,
-                this.reportQueue);
+                protocol, System::nanoTime, 16, this.noticeQueue, this.releasedOrderQueue, this.reportQueue);
         final Runnable life = () -> {
             this.notices.register(this.order);
             reader.beforeRead();

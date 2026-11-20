@@ -47,9 +47,15 @@ public final class LaneHarness<M> implements AutoCloseable {
             new ManyToOneRingBuffer<>(OrderContext[]::new, OrderContext::new, 256);
     // The connection pool's own default.
     private static final long DEFAULT_MAX_IDLE_NANOS = TimeUnit.SECONDS.toNanos(30);
+    // Finer than any two of the lane's timers are apart, so a skip fires them in order.
+    private static final long SKIP_STEP_MILLIS = 50;
+    // Long enough for a step's requests to reach the local fake venue, so the next step waits for their answers.
+    private static final long SKIP_SETTLE_MILLIS = 2;
     private final long sessionSlot;
     // Set to stop reading the lane's notices, as a reader paused for catch-up or stalled would.
     public boolean readerStalled;
+    // How far skip has moved the lane's clock past the real one, so tests sit out its seconds-long timers in no time.
+    private long skippedNanos;
     private final int exchangeId;
     private final long securityId;
 
@@ -171,7 +177,7 @@ public final class LaneHarness<M> implements AutoCloseable {
                 this.connections,
                 budget,
                 timing,
-                System::nanoTime,
+                this::laneNanos,
                 SystemEpochClock.INSTANCE,
                 64,
                 2048,
@@ -318,6 +324,26 @@ public final class LaneHarness<M> implements AutoCloseable {
         while (System.nanoTime() < until) {
             pass();
         }
+    }
+
+    /** The lane's clock: the real one, plus however far {@link #skip} has moved it. */
+    public long laneNanos() {
+        return System.nanoTime() + this.skippedNanos;
+    }
+
+    /**
+     * Moves the lane's clock {@code millis} on, a {@link #SKIP_STEP_MILLIS} step at a time, without waiting it out:
+     * each step's timers fire, and whatever they send is answered, before the next, so they go in the order they
+     * would have. The clock only moves with nothing in flight, so no request's answer looks later than it came.
+     */
+    public void skip(final long millis) {
+        final long target = this.skippedNanos + TimeUnit.MILLISECONDS.toNanos(millis);
+        while (this.skippedNanos < target) {
+            runUntil(() -> this.connections.inFlight() == 0);
+            this.skippedNanos = Math.min(target, this.skippedNanos + TimeUnit.MILLISECONDS.toNanos(SKIP_STEP_MILLIS));
+            runFor(SKIP_SETTLE_MILLIS);
+        }
+        runUntil(() -> this.connections.inFlight() == 0);
     }
 
     private void pass() {
