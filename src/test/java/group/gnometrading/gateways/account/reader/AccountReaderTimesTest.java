@@ -88,7 +88,7 @@ class AccountReaderTimesTest {
     }
 
     @Test
-    void catchUpCarriesWhenTheReaderAppliedIt() {
+    void catchUpCarriesWhenTheReaderAppliedIt() throws Exception {
         this.protocol.catchUp = List.of("FILL a 1");
         this.protocol.fetchCatchUp(0, List.of());
         this.reader.catchUpFetched();

@@ -6,7 +6,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import group.gnometrading.gateways.account.lane.FakeVenueServer.Reply;
 import group.gnometrading.gateways.account.lane.FakeVenueServer.Request;
+import group.gnometrading.gateways.account.lane.LaneCommand;
 import group.gnometrading.gateways.account.lane.LaneHarness;
+import group.gnometrading.gateways.orders.OrderContext;
 import group.gnometrading.logging.NullLogger;
 import group.gnometrading.schemas.ExecType;
 import group.gnometrading.schemas.RejectReason;
@@ -526,6 +528,79 @@ class PolymarketIntlLaneVenueTest {
                 - this.harness.requests("POST").get(0).receivedNanos();
         assertTrue(sinceSubmit >= TimeUnit.MILLISECONDS.toNanos(150), "sent again only after the order's answer");
         assertTrue(this.harness.notices.isEmpty(), "cancelled: the order ends on the venue's events");
+    }
+
+    @Test
+    void aRecoveredOrderTheVenueNoLongerHasStopsBeingCancelled() {
+        this.harness.server.script(
+                request -> request.method().equals("DELETE") ? Reply.ok(NOT_FOUND) : Reply.ok(ACCEPTED));
+        recoverRestingOrder(1);
+
+        this.harness.command(LaneCommand.CANCEL_SESSION, 0, command -> {});
+        this.harness.skip(60_000);
+
+        assertTrue(
+                this.harness.requests("DELETE").size() <= 6,
+                "cancels kept going: " + this.harness.requests("DELETE").size());
+        assertEquals(
+                List.of(ExecType.CANCEL_REJECT),
+                this.harness.notices.stream().map(n -> n.execType).toList());
+    }
+
+    @Test
+    void aRecoveredOrderKilledTwiceThenOrphanedStopsBeingCancelled() {
+        this.harness.server.script(
+                request -> request.method().equals("DELETE") ? Reply.ok(NOT_FOUND) : Reply.ok(ACCEPTED));
+        recoverRestingOrder(1);
+
+        this.harness.command(LaneCommand.CANCEL_ORDERS, 0, command -> {
+            command.exchangeId = 0;
+            command.securityId = 0;
+        });
+        this.harness.skip(1_000);
+        this.harness.command(LaneCommand.CANCEL_ORDERS, 0, command -> {
+            command.exchangeId = 0;
+            command.securityId = 0;
+        });
+        this.harness.skip(15_000);
+        this.harness.command(LaneCommand.CANCEL_SESSION, 0, command -> {});
+        this.harness.skip(60_000);
+
+        assertTrue(
+                this.harness.requests("DELETE").size() <= 18,
+                "cancels kept going: " + this.harness.requests("DELETE").size());
+    }
+
+    @Test
+    void anOrphanCancelAfterAKillGaveUpStillReachesTheVenue() {
+        this.harness.server.script(
+                request -> request.method().equals("DELETE") ? Reply.ok(NOT_FOUND) : Reply.ok(ACCEPTED));
+        recoverRestingOrder(1);
+
+        this.harness.command(LaneCommand.CANCEL_ORDERS, 0, command -> {
+            command.exchangeId = 0;
+            command.securityId = 0;
+        });
+        this.harness.skip(15_000);
+        final int afterKill = this.harness.requests("DELETE").size();
+        this.harness.command(LaneCommand.CANCEL_SESSION, 0, command -> {});
+        this.harness.skip(15_000);
+
+        assertTrue(
+                this.harness.requests("DELETE").size() > afterKill,
+                "the orphan cancel sent nothing after the kill's " + afterKill);
+    }
+
+    /** An order a restart took back from the ownership log: resting as far as the gateway knows, never sent again. */
+    private void recoverRestingOrder(final long counter) {
+        submit(counter);
+        this.harness.runUntil(() -> this.harness.answered("POST", 1));
+        final OrderContext recorded = new OrderContext();
+        recorded.copyFrom(this.harness.handed.get(0));
+        this.harness.release(counter);
+        this.harness.runFor(20);
+        assertTrue(this.harness.lane.recover(recorded), "taken back");
+        this.harness.notices.clear();
     }
 
     /**

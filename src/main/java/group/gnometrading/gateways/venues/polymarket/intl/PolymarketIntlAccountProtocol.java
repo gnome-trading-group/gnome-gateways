@@ -180,7 +180,8 @@ public final class PolymarketIntlAccountProtocol extends JsonAccountProtocol<Web
                             .ifPresent(ended::add);
                 } catch (final IOException e) {
                     // One order the venue can't answer for must not fail the connect, which would fail again on every
-                    // reconnect: the follow-up asks about it later.
+                    // reconnect: the follow-up asks about it later, from when it was sent, as this lookup did.
+                    this.tooYoungSubmittedAt.put(id, ctx.submittedAtMillis);
                     retryFollowUp(id, nowMillis, e);
                 }
             } else {

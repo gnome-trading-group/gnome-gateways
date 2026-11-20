@@ -174,7 +174,16 @@ public final class AccountLane<M> implements GnomeAgent {
 
         /** A queued amend or new order was refused for waiting too long with no connection open, not for the budget. */
         default void refusedWithoutConnection() {}
+
+        /**
+         * About once every {@link #ADMISSIONS_TICK_NANOS} on the lane's thread, busy or idle: whatever counts by time
+         * can close its period here, as a quiet lane decides nothing to close it with.
+         */
+        default void tick() {}
     }
+
+    /** How often the lane ticks its {@link Admissions}. */
+    public static final long ADMISSIONS_TICK_NANOS = TimeUnit.SECONDS.toNanos(1);
 
     /** The most sessions an account serves: a bound against a leak, far above what its budget can serve. */
     public static final int MAX_SESSIONS = FairQueue.MAX_SESSIONS;
@@ -306,6 +315,7 @@ public final class AccountLane<M> implements GnomeAgent {
     // Whether the last request held back was held by the budget rather than for want of a connection.
     private boolean heldByBudget;
     private long retireAtNanos;
+    private long admissionsTickAtNanos;
     // Read from another thread while the gateway hands over; written only when it changes, so rarely.
     private volatile int awaitingAnswer;
     // Set by sleepWhenIdle: a pass with nothing to do waits on the in-flight connections and the waker instead of
@@ -475,7 +485,9 @@ public final class AccountLane<M> implements GnomeAgent {
     }
 
     private int pass() {
-        retireIdleConnections();
+        final long now = this.nanoClock.getAsLong();
+        retireIdleConnections(now);
+        tickAdmissions(now);
         int work = drainReleased();
         work += pollAnswers();
         work += wakeWaiting();
@@ -496,11 +508,17 @@ public final class AccountLane<M> implements GnomeAgent {
      * wait, and on a quiet account every connection goes stale between orders. One per pass replaces all of them in
      * {@code connections x} {@link #RETIRE_INTERVAL_NANOS}, well inside half their max idle.
      */
-    private void retireIdleConnections() {
-        final long now = this.nanoClock.getAsLong();
+    private void retireIdleConnections(final long now) {
         if (now - this.retireAtNanos >= 0) {
             this.retireAtNanos = now + RETIRE_INTERVAL_NANOS;
             this.connections.retireIdle(now, this.connections.maxIdleNanos() / 2);
+        }
+    }
+
+    private void tickAdmissions(final long now) {
+        if (now - this.admissionsTickAtNanos >= 0) {
+            this.admissionsTickAtNanos = now + ADMISSIONS_TICK_NANOS;
+            this.admissions.tick();
         }
     }
 

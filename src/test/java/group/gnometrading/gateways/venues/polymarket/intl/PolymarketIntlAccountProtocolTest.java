@@ -391,6 +391,35 @@ class PolymarketIntlAccountProtocolTest {
     }
 
     @Test
+    void anOldOrderWhoseLookupFailedIsAskedAboutAgainFromWhenItWasSent() throws Exception {
+        final long[] nowMillis = {System.currentTimeMillis()};
+        final PolymarketIntlAccountProtocol clocked = clockedProtocol(nowMillis);
+        final long sentAt = nowMillis[0] - 3_600_000;
+        register(7, 1, MARKET_A, ORDER_A, sentAt);
+        final long catchUpAfter = (nowMillis[0] - 10_000) / 1_000 - 60;
+        this.restAnswers.put(
+                "/data/trades?after=" + catchUpAfter,
+                "{\"data\":[],\"next_cursor\":\"LTE=\",\"limit\":300,\"count\":0}");
+        this.restAnswers.put("/data/orders", "{\"data\":[],\"next_cursor\":\"LTE=\",\"limit\":100,\"count\":0}");
+        // Forgotten by the CLOB's lookup, so its fills come from the trades since it was sent, which fail to read.
+        this.restAnswers.put("/data/order/" + ORDER_A, "null");
+
+        clocked.fetchCatchUp(nowMillis[0] - 10_000, this.reports.held());
+        clocked.applyCatchUp(this.reports);
+        nowMillis[0] += 5_000;
+        assertTrue(clocked.wantsFollowUp());
+        clocked.fetchFollowUp();
+
+        final List<String> tradeReads = this.restPaths.stream()
+                .filter(path -> path.startsWith("/data/trades?after="))
+                .toList();
+        assertEquals(
+                "/data/trades?after=" + (sentAt / 1_000 - 60),
+                tradeReads.get(tradeReads.size() - 1),
+                "the follow-up must read the order's trades since it was sent, not the last few seconds'");
+    }
+
+    @Test
     void anOrderCatchUpCantReadFailsNoConnectAndIsAskedAboutAgainLater() throws Exception {
         final long[] nowMillis = {System.currentTimeMillis()};
         final PolymarketIntlAccountProtocol clocked = clockedProtocol(nowMillis);

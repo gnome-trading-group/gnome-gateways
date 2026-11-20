@@ -51,6 +51,9 @@ public final class AccountConnection<C> {
     // Supervisor thread: when the settle catch-up is due (0 when none is), and the window it covers.
     private long settleCatchUpAtNanos;
     private long settleSinceMillis;
+    // Where a catch-up that failed reached back to, or 0: the next connect reaches back at least as far, since each
+    // attempt marks its new socket heard and so would otherwise start from its own failed attempt.
+    private long owedSinceMillis;
 
     public AccountConnection(
             final String name,
@@ -132,13 +135,15 @@ public final class AccountConnection<C> {
     /**
      * Supervisor thread, through the connect controller. Catch-up covers from when the socket was last heard: every
      * event before then was read, and orders sent since, held or still queued for the reader, came after. On the first
-     * connect it reaches back to the oldest order held, for orders recovered from an earlier process.
+     * connect it reaches back to the oldest order held, for orders recovered from an earlier process. After a catch-up
+     * that failed, it reaches back at least as far as that one did.
      */
     void connect() throws IOException {
         this.state = AccountState.CONNECTING;
         this.pause.pause();
         final List<OrderContext> held = this.accountReader.copyHeld();
-        final long sinceMillis = sinceMillis(held);
+        final long sinceMillis = owedSince(sinceMillis(held));
+        this.owedSinceMillis = sinceMillis;
         try {
             synchronized (this.transport.writer().socketLock()) {
                 this.transport.close();
@@ -169,6 +174,7 @@ public final class AccountConnection<C> {
             throw new IOException(e);
         }
         this.accountReader.catchUpFetched();
+        this.owedSinceMillis = 0;
         this.settleSinceMillis = sinceMillis;
         this.settleCatchUpAtNanos = this.nanoClock.nanoTime() + this.readSettleNanos;
         this.state = AccountState.READY;
@@ -190,6 +196,7 @@ public final class AccountConnection<C> {
             this.accountReader.catchUpFetched();
         } catch (final Exception e) {
             this.logger.logf(LogMessage.SOCKET_RECONNECTING, "%s: catch-up after settling failed: %s", this.name, e);
+            this.owedSinceMillis = owedSince(this.settleSinceMillis);
             this.state = AccountState.DOWN;
             this.supervisor.forceReconnect();
         }
@@ -201,6 +208,10 @@ public final class AccountConnection<C> {
      * order held if earlier: orders recovered from an earlier process have events since they were sent, and catching
      * up on all of them keeps each order's fills whole.
      */
+    private long owedSince(final long sinceMillis) {
+        return this.owedSinceMillis == 0 ? sinceMillis : Math.min(sinceMillis, this.owedSinceMillis);
+    }
+
     private long sinceMillis(final List<OrderContext> held) {
         final long lastHeard = this.reader.lastTrafficNanos();
         if (lastHeard > 0) {

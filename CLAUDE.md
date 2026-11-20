@@ -201,7 +201,13 @@ All code is under `src/main/java/group/gnometrading/gateways/`.
   - The CLOB's order lookup answers `200 null` for a fully matched order, as for one it never knew, so
     `PolymarketIntlVenueOrderQuery.getOrder` then sums what the order filled from the trades that name it (its
     market's, or the account's without a listing, from a minute before it was placed). Startup recovery and
-    catch-up rely on this to book fills the socket never brought.
+    catch-up rely on this to book fills the socket never brought. A page of trades holds up to 300 (one naming many
+    of our orders runs to 17 KB), so the client reading them needs a multi-MB read buffer (the orchestrator gives it
+    8 MB); at the default 32 KB a restart's catch-up fails. A lookup that fails during catch-up is retried by the
+    follow-up from the order's own submit time.
+- A catch-up that fails (its connect then fails and is retried) is owed: the next connect reaches back at least as far
+  (`AccountConnection.owedSinceMillis`), as does the one after a failed settling catch-up. Each attempt marks its new
+  socket heard, so without that a retry would catch up only from its own failed attempt.
 - Submits with no clear answer: resent only where the venue dedups (`resendsAreSafe`), else looked up. Every OMS
   message must get exactly one report; do not add a path that drops or doubles one.
 - Rate limits (`VenueRateLimits`): Kalshi Advanced tier read/write buckets (300/s, burst 900; a by-id lookup costs 2)

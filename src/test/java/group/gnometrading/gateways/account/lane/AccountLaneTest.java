@@ -63,6 +63,21 @@ class AccountLaneTest {
     }
 
     @Test
+    void aQuietLaneStillTicksItsAdmissionsEachSecond() {
+        final int[] ticks = {0};
+        this.lane.admissions(new AccountLane.Admissions() {
+            @Override
+            public void tick() {
+                ticks[0]++;
+            }
+        });
+
+        this.harness.skip(3_500);
+
+        assertTrue(ticks[0] >= 3 && ticks[0] <= 5, "ticked " + ticks[0] + " times in 3.5 s with nothing to do");
+    }
+
+    @Test
     void anAcceptedOrderIsHandedToTheReaderAndCancelledByTheVenuesId() {
         this.server.script(request -> request.method().equals("POST") ? Reply.ok("v-" + request.body()) : Reply.ok(""));
         submit(1);

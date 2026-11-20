@@ -167,6 +167,34 @@ class AccountConnectionTest {
     }
 
     @Test
+    void aFirstCatchUpThatFailsStillReachesBackToTheOldestRecoveredOrderWhenRetried() throws Exception {
+        final long hourAgo = System.currentTimeMillis() - TimeUnit.HOURS.toMillis(1);
+        final OrderContext recovered = order("r", 9, 3, SLOT);
+        recovered.submittedAtMillis = hourAgo;
+        this.reader.recover(recovered);
+        this.protocol.catchUpFailures = 1;
+        try {
+            this.connection.supervisor().onStart();
+        } catch (final Exception expected) {
+            // The connect controller may surface the first failure or retry it itself.
+        }
+        await(() -> {
+            if (this.protocol.catchUpSince.size() < 2) {
+                try {
+                    this.connection.supervisor().doWork();
+                } catch (final Exception e) {
+                    throw new IllegalStateException(e);
+                }
+            }
+            return this.protocol.catchUpSince.size() >= 2;
+        });
+        assertEquals(
+                List.of(hourAgo, hourAgo),
+                this.protocol.catchUpSince.subList(0, 2),
+                "the retry must still catch up on the recovered order's events, not just the failed attempt's");
+    }
+
+    @Test
     void catchUpStartsWhenTheSocketWasLastHeardNotAtTheOldestOrderHeld() throws Exception {
         this.connection.supervisor().onStart();
         final OrderContext old = order("old", 1, 3, SLOT);

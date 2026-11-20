@@ -4,6 +4,7 @@ import group.gnometrading.gateways.orders.OrderContext;
 import group.gnometrading.gateways.orders.OrderEventSink;
 import group.gnometrading.gateways.orders.OrderKeys;
 import group.gnometrading.schemas.Liquidity;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -24,6 +25,8 @@ public final class TextAccountProtocol implements AccountProtocol<FakeAccountTra
     public volatile int keepAlives;
     // Set to hold a catch-up fetch until counted down, as a slow venue would.
     public volatile CountDownLatch fetchGate;
+    // How many catch-up fetches fail next, as one whose answer outgrew the client's read buffer would.
+    public volatile int catchUpFailures;
     // The venue ids the reader handed over, as a venue matching events by them would index them.
     public final List<String> venueIds = new ArrayList<>();
     private List<String> fetched = List.of();
@@ -51,7 +54,7 @@ public final class TextAccountProtocol implements AccountProtocol<FakeAccountTra
     }
 
     @Override
-    public void fetchCatchUp(final long sinceMillis, final Collection<OrderContext> held) {
+    public void fetchCatchUp(final long sinceMillis, final Collection<OrderContext> held) throws IOException {
         final CountDownLatch gate = this.fetchGate;
         if (gate != null) {
             try {
@@ -61,6 +64,10 @@ public final class TextAccountProtocol implements AccountProtocol<FakeAccountTra
             }
         }
         this.catchUpSince.add(sinceMillis);
+        if (this.catchUpFailures > 0) {
+            this.catchUpFailures--;
+            throw new IOException("Read buffer of 32768 bytes is full without a complete message");
+        }
         // Taken once, as a venue's listing would show these events only to the catch-up that follows them.
         this.fetched = this.catchUp;
         this.catchUp = List.of();
